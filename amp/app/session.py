@@ -6,8 +6,10 @@
 
 from __future__ import annotations
 
+import dataclasses
 import logging
 import os
+import time
 from pathlib import Path
 
 from PySide6.QtCore import QObject, QSettings, QStandardPaths, Signal
@@ -19,10 +21,13 @@ from amp.audio.data import AudioData
 from amp.audio.decoder import load_audio
 from amp.audio.peaks import WaveformPeaks
 from amp.core.errors import AmpError, AnalysisError
+from amp import __version__
 from amp.engine import stems as stem_store
+from amp.engine.merge import summarize
 from amp.engine.settings import AnalysisSettings
 from amp.engine.transcription import TranscriptionPipeline, TranscriptionRequest, redetect_notes
 from amp.engine.worker_client import run_worker
+from amp.project import runs
 from amp.project.export import ExportOptions, export_audio
 from amp.project.layout import DEFAULT_ROOT_NAME
 from amp.project.lock import ProjectLock, ProjectLockedError
@@ -408,6 +413,7 @@ class ProjectSession(QObject):
             if reused:
                 self.message.emit("재사용한 단계: " + ", ".join({"separation": "보컬 분리", "pitch": "피치 추출",
                                                                 "tempo": "BPM"}[k] for k in reused), 8000)
+            self._record_run(out.result, "full", out.timings, out.reused, out.resources)
             self.analysisReady.emit(out.result)
 
         handle.finished.connect(done)
@@ -418,10 +424,51 @@ class ProjectSession(QObject):
         if result is None or result.pitch_curve is None or self.busy:
             self.error.emit("음표를 다시 검출할 수 없습니다", "피치 분석 결과가 없습니다. 먼저 보컬 분석을 실행하세요.", "")
             return None
-        handle = self._submit("음표 다시 검출", lambda p, t: redetect_notes(result, settings))
+        def job(progress, token):
+            t0 = time.perf_counter()
+            new = redetect_notes(result, settings)
+            return new, time.perf_counter() - t0
+
+        handle = self._submit("음표 다시 검출", job)
         self._track_analysis(handle)
-        handle.finished.connect(self.analysisReady.emit)
+
+        def done(out) -> None:
+            new, seconds = out
+            self._record_run(new, "redetect", {"notes": seconds, "total": seconds})
+            self.analysisReady.emit(new)
+
+        handle.finished.connect(done)
         return handle
+
+    # --- 실행 기록 ----------------------------------------------------------------
+
+    def _record_run(self, result, kind: str, timings: dict | None = None, reused: dict | None = None,
+                    resources: dict | None = None) -> None:
+        """성공한 분석만 analysis/runs/에 남긴다. 실패해도 분석 결과 반영은 막지 않는다."""
+        if self.folder is None:
+            return
+        try:
+            record = runs.record_from_result(
+                result, kind, timings=timings, reused=reused, resources=resources,
+                score_summary=dataclasses.asdict(summarize(self.doc.project)), app_version=__version__)
+            path = runs.save_run(self.folder.paths.analysis, record)
+            log.info("분석 실행 기록 저장: %s (음표 %d개, %s)", path.name, len(record.notes),
+                     ", ".join(f"{k} {v:.2f}s" for k, v in record.timings_s.items()))
+        except (AmpError, OSError) as e:
+            log.warning("분석 실행 기록을 저장하지 못했습니다: %s", e)
+            self.message.emit("분석 실행 기록을 저장하지 못했습니다 (분석 결과에는 영향이 없습니다).", 8000)
+
+    def compare_recent_runs(self) -> tuple[Path, runs.RunComparison]:
+        """가장 최근 두 실행을 비교해 analysis/reports/에 Markdown 보고서를 쓴다."""
+        if self.folder is None:
+            raise AmpError("열린 프로젝트가 없습니다.")
+        records = runs.list_runs(self.folder.paths.analysis)
+        if len(records) < 2:
+            raise AmpError(f"비교하려면 분석 실행 기록이 2개 이상 필요합니다 (현재 {len(records)}개).")
+        a, b = records[-2], records[-1]
+        path = runs.write_report(self.folder.paths.analysis, a, b)
+        log.info("실행 비교 보고서: %s", path)
+        return path, runs.compare_runs(a, b)
 
     def run_sample(self) -> TaskHandle | None:
         if self.audio is None or self.busy:

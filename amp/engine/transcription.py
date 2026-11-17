@@ -20,6 +20,7 @@ import json
 import logging
 import shutil
 import tempfile
+import time
 import uuid
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
@@ -72,6 +73,11 @@ class TranscriptionOutput:
     stems: dict[str, AudioData]
     manifest: stem_store.StemManifest | None
     reused: dict[str, bool]
+    timings: dict[str, float] = field(default_factory=dict)  # 단계 → 초 (캐시 재사용이면 확인 시간만)
+    resources: dict[str, dict] = field(default_factory=dict)  # 단계 → 작업 프로세스 최대 메모리 등
+
+
+_COMMAND_STAGE = {"separate": "separation", "pitch": "pitch", "tempo": "tempo"}
 
 
 class _Progress:
@@ -93,6 +99,13 @@ class TranscriptionPipeline:
     def __init__(self, runner: Runner = run_worker, separation_model: str = SEPARATION_MODEL) -> None:
         self.runner = runner
         self.separation_model = separation_model  # 분리 모델 교체 지점 (작업 프로세스가 아는 이름)
+        self.resources: dict[str, dict] = {}
+
+    def _call(self, command: str, args: dict, progress: ProgressFn, token: CancelToken, numba_cache_dir) -> dict:
+        out = self.runner(command, args, progress, token, numba_cache_dir)
+        if isinstance(out, dict) and isinstance(out.get("resources"), dict):
+            self.resources[_COMMAND_STAGE.get(command, command)] = out["resources"]
+        return out
 
     def run(self, req: TranscriptionRequest, progress: ProgressFn | None = None,
             token: CancelToken | None = None) -> TranscriptionOutput:
@@ -107,6 +120,15 @@ class TranscriptionPipeline:
         cache = AnalysisCache(req.cache_root) if req.cache_root else None
         key = req.source_sha256[:32] or "nohash"
         models: dict[str, ModelInfo] = {}
+        self.resources = {}
+        timings: dict[str, float] = {}
+        t_start = clock = time.perf_counter()
+
+        def lap(stage: str) -> None:
+            nonlocal clock
+            now = time.perf_counter()
+            timings[stage] = now - clock
+            clock = now
 
         with tempfile.TemporaryDirectory(prefix="sonatlas-") as scratch:
             scratch = Path(scratch)
@@ -127,6 +149,7 @@ class TranscriptionPipeline:
                     )
                 models["separation"] = ModelInfo(manifest.model, str(manifest.model_info.get("demucs", "")),
                                                  params={**manifest.model_info, "presence": presence})
+                lap("separation")
                 pitch_input = str(stems_dir / manifest.files["vocals"]["path"])
                 tempo_input = str(stems_dir / manifest.files["instrumental"]["path"])
                 input_id = f"stems:{manifest.stems_id}"
@@ -140,15 +163,17 @@ class TranscriptionPipeline:
             expected = int(req.audio.duration * 100) + 1
             (frames, pmeta), reused["pitch"] = self._cached(
                 cache, key, "pitch", pitch_params, st.use_cache, scratch,
-                lambda out, p: self.runner("pitch", {"input": pitch_input, "out_dir": str(out)}, p, token, req.numba_cache_dir),
+                lambda out, p: self._call("pitch", {"input": pitch_input, "out_dir": str(out)}, p, token, req.numba_cache_dir),
                 lambda d: _load_pitch(d, expected), prog.stage("pitch"), warnings)
+            lap("pitch")
 
             token.raise_if_cancelled()
             tempo_params = {"estimator": "librosa", "v": TEMPO_VERSION, "input": input_id}
             tempo, reused["tempo"] = self._cached(
                 cache, key, "tempo", tempo_params, st.use_cache, scratch,
-                lambda out, p: self.runner("tempo", {"input": tempo_input, "out_dir": str(out)}, p, token, req.numba_cache_dir),
+                lambda out, p: self._call("tempo", {"input": tempo_input, "out_dir": str(out)}, p, token, req.numba_cache_dir),
                 _load_tempo, prog.stage("tempo"), warnings)
+            lap("tempo")
 
         token.raise_if_cancelled()
         notes_report = prog.stage("notes")
@@ -159,6 +184,8 @@ class TranscriptionPipeline:
         artic = articulation_envelope(frames.onset, frames.rms, frames.frame_rate, rms_fine=frames.rms_fine)
         notes = detect_notes(curve, artic, params)
         notes_report(1.0, f"음표 {len(notes)}개 검출")
+        lap("notes")
+        timings["total"] = time.perf_counter() - t_start
         if tempo.get("reason"):
             warnings.append(tempo["reason"])
 
@@ -182,7 +209,7 @@ class TranscriptionPipeline:
             warnings=tuple(warnings),
             settings=st.to_dict(),
         )
-        return TranscriptionOutput(result, stems, manifest, reused)
+        return TranscriptionOutput(result, stems, manifest, reused, timings, dict(self.resources))
 
     # --- 단계 -----------------------------------------------------------------
 
@@ -198,7 +225,7 @@ class TranscriptionPipeline:
         tmp = stems_dir / f".tmp-{uuid.uuid4().hex[:8]}"
         tmp.mkdir()
         try:
-            self.runner("separate", {"input": req.source_path, "out_dir": str(tmp), "model": self.separation_model,
+            self._call("separate", {"input": req.source_path, "out_dir": str(tmp), "model": self.separation_model,
                                      "device": req.settings.device}, report, token, req.numba_cache_dir)
             manifest = stem_store.commit(tmp, stems_dir, req.source_sha256, {"device": req.settings.device})
         finally:

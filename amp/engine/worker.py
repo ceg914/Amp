@@ -6,7 +6,7 @@ GUI가 ``python -m amp.engine.worker <명령> --args-json <JSON>`` 으로 실행
 
 표준 출력으로는 한 줄에 하나씩 JSON 이벤트만 보낸다 (라이브러리 출력은 표준 오류로 돌린다).
     {"event": "progress", "fraction": 0.4, "message": "..."}
-    {"event": "result", ...}
+    {"event": "result", ..., "resources": {"peak_rss_mb": ..., "gpu_peak_mb": ...}}
     {"event": "error", "code": "...", "message": "...", "detail": "..."}
 
 명령
@@ -127,8 +127,53 @@ def main(argv: list[str] | None = None) -> int:
         code, message = _classify(e)
         emit("error", code=code, message=message, detail=traceback.format_exc()[-4000:])
         return 1
+    result = dict(result)
+    result["resources"] = _resources()
     emit("result", **result)
     return 0
+
+
+def _peak_rss_mb() -> float | None:
+    """이 프로세스의 최대 상주 메모리(MB). 얻지 못하면 None."""
+    try:
+        if os.name == "nt":
+            import ctypes
+            from ctypes import wintypes
+
+            class _PMC(ctypes.Structure):
+                _fields_ = [("cb", wintypes.DWORD), ("PageFaultCount", wintypes.DWORD),
+                            ("PeakWorkingSetSize", ctypes.c_size_t), ("WorkingSetSize", ctypes.c_size_t),
+                            ("QuotaPeakPagedPoolUsage", ctypes.c_size_t), ("QuotaPagedPoolUsage", ctypes.c_size_t),
+                            ("QuotaPeakNonPagedPoolUsage", ctypes.c_size_t), ("QuotaNonPagedPoolUsage", ctypes.c_size_t),
+                            ("PagefileUsage", ctypes.c_size_t), ("PeakPagefileUsage", ctypes.c_size_t)]
+
+            k32, psapi = ctypes.WinDLL("kernel32"), ctypes.WinDLL("psapi")
+            k32.GetCurrentProcess.restype = wintypes.HANDLE
+            psapi.GetProcessMemoryInfo.argtypes = [wintypes.HANDLE, ctypes.POINTER(_PMC), wintypes.DWORD]
+            pmc = _PMC()
+            pmc.cb = ctypes.sizeof(_PMC)
+            if not psapi.GetProcessMemoryInfo(k32.GetCurrentProcess(), ctypes.byref(pmc), pmc.cb):
+                return None
+            return round(pmc.PeakWorkingSetSize / 2**20, 1)
+        import resource
+
+        peak = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss  # Linux: KB, macOS: 바이트
+        return round(peak / (2**20 if sys.platform == "darwin" else 1024), 1)
+    except Exception:  # noqa: BLE001 - 측정 실패가 분석 실패가 되면 안 된다
+        return None
+
+
+def _resources() -> dict:
+    out: dict = {"peak_rss_mb": _peak_rss_mb()}
+    torch = sys.modules.get("torch")
+    if torch is not None:
+        try:
+            if torch.cuda.is_available() and torch.cuda.is_initialized():
+                out["gpu_peak_mb"] = round(torch.cuda.max_memory_allocated() / 2**20, 1)
+                out["gpu_name"] = torch.cuda.get_device_name(0)
+        except Exception:  # noqa: BLE001
+            pass
+    return out
 
 
 def _classify(e: Exception) -> tuple[str, str]:

@@ -235,3 +235,51 @@ def test_copied_open_project_opens_in_second_window(qtbot, make_window, song, tm
     assert [n.pitch for n in w2.doc.score.notes()] == [64]
     w3 = make_window("c")
     assert not w3.open_project(str(folder.root))  # 원본은 여전히 보호된다
+
+
+def test_analysis_runs_are_recorded_and_compared(qtbot, window, song, monkeypatch):
+    """STEP 2.5: 성공한 분석만 analysis/runs/에 남고, 최근 두 실행 비교 보고서가 만들어진다."""
+    from amp.project import runs
+
+    monkeypatch.setattr("amp.app.session.TranscriptionPipeline", IdentityPipeline)
+    folder = create(qtbot, window, song)
+    window.run_analysis()
+    qtbot.waitUntil(lambda: window.doc.project.analysis is not None and not window.session.busy, timeout=120_000)
+    first = window.doc.score.notes()[0].id
+    window.doc.move_notes([first], 0.0, 2)  # 사용자 편집
+    monkeypatch.setattr(dialogs.ReanalysisDialog, "exec", lambda self: (setattr(self, "mode", "keep_edits"), 1)[1])
+    window.redetect_notes()
+    qtbot.waitUntil(lambda: not window.session.busy, timeout=20_000)
+    qtbot.wait(50)
+
+    records = runs.list_runs(folder.paths.analysis)
+    assert [r.kind for r in records] == ["full", "redetect"]
+    full, again = records
+    assert {"pitch", "tempo", "notes", "total"} <= set(full.timings_s) and full.timings_s["total"] > 0
+    assert full.models["pitch"]["name"] == "pyin" and full.models["notes"]["version"] == "2"
+    assert [n["pitch"] for n in full.notes] == [64, 67, 69]
+    assert all(0.0 <= n["confidence"] <= 1.0 for n in full.notes)
+    assert again.score_summary["modified"] == 1  # 실행 시점 편집 현황은 개수만 기록
+    assert 66 not in [n["pitch"] for n in again.notes]  # 기록은 자동 분석 결과만
+
+    before = [(n.start, n.end, n.pitch) for n in window.doc.score.notes()]
+    window.compare_recent_runs()
+    reports = list((folder.paths.analysis / "reports").glob("compare-*.md"))
+    assert len(reports) == 1 and "일치: 3개" in reports[0].read_text(encoding="utf-8")
+    assert [(n.start, n.end, n.pitch) for n in window.doc.score.notes()] == before  # 비교는 악보를 바꾸지 않는다
+
+
+def test_failed_analysis_is_not_recorded(qtbot, window, song, monkeypatch):
+    from amp.core.errors import AnalysisError
+    from amp.project import runs
+
+    class Failing:
+        def run(self, *a, **k):
+            raise AnalysisError("시험용 실패")
+
+    monkeypatch.setattr("amp.app.session.TranscriptionPipeline", Failing)
+    folder = create(qtbot, window, song)
+    window.run_analysis()
+    qtbot.waitUntil(lambda: not window.session.busy and bool(window.errors), timeout=20_000)
+    assert runs.list_runs(folder.paths.analysis) == []
+    assert window.doc.project.analysis is None

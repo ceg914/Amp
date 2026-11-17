@@ -49,7 +49,7 @@ from amp.app.widgets.track_panel import TRACK_HINTS, TRACK_LABELS, TrackPanel
 from amp.app.widgets.waveform import WaveformView
 from amp.app.workers import TaskHandle, TaskRunner
 from amp.audio.decoder import SUPPORTED_EXTENSIONS
-from amp.core.errors import EditError, ProjectFormatError
+from amp.core.errors import AmpError, EditError, ProjectFormatError
 from amp.core.model import AnalysisResult
 from amp.core.tempo import MAX_BPM, MIN_BPM, TempoMap
 from amp.engine.merge import KEEP_EDITS, REPLACE_ALL, plan_reanalysis, summarize
@@ -207,6 +207,7 @@ class MainWindow(QMainWindow):
         self.act_reseparate = A("보컬 분리 다시 실행", self.reseparate)
         self.act_cancel_analysis = A("분석 취소", self.session.cancel_analysis, icon_name="x")
         self.act_clear_cache = A("캐시 비우기", self.clear_cache)
+        self.act_compare_runs = A("최근 두 실행 비교 보고서", self.compare_recent_runs)
         self.act_probe = A("GPU 확인", self.probe_gpu, icon_name="cpu")
         self.act_sample = A("샘플 데이터 생성 (시험용, 실제 분석 아님)", self.run_sample_analysis)
 
@@ -247,7 +248,7 @@ class MainWindow(QMainWindow):
             m.addAction(a)
         m = mb.addMenu("분석(&A)")
         for a in (self.act_analyze, self.act_redetect, self.act_reseparate, self.act_cancel_analysis, None,
-                  self.act_probe, self.act_clear_cache, None, self.act_sample):
+                  self.act_compare_runs, self.act_probe, self.act_clear_cache, None, self.act_sample):
             m.addSeparator() if a is None else m.addAction(a)
         m = mb.addMenu("내보내기(&X)")
         m.addAction(self.act_export)
@@ -452,7 +453,8 @@ class MainWindow(QMainWindow):
         self.act_cancel_analysis.setEnabled(busy)
         self.act_play.setEnabled(has_audio)
         self.act_stop.setEnabled(has_audio)
-        for a in (self.act_save, self.act_save_as, self.act_open_folder, self.act_clear_cache, self.act_export):
+        for a in (self.act_save, self.act_save_as, self.act_open_folder, self.act_clear_cache, self.act_export,
+                  self.act_compare_runs):
             a.setEnabled(is_open)
         self.act_relink.setEnabled(is_open and self.session.folder.meta.original.mode == "link")
         panel = self.inspector.analysis
@@ -945,6 +947,19 @@ class MainWindow(QMainWindow):
         if result.warnings:
             QMessageBox.warning(self, "분석 안내", "\n".join(result.warnings))
         self.view.center_on_content()
+
+    def compare_recent_runs(self) -> None:
+        try:
+            path, cmp = self.session.compare_recent_runs()
+        except AmpError as e:
+            QMessageBox.information(self, "실행 비교", str(e))
+            return
+        QMessageBox.information(
+            self, "실행 비교",
+            f"{cmp.a.run_id} → {cmp.b.run_id}\n"
+            f"음표 {len(cmp.a.notes)}개 → {len(cmp.b.notes)}개 (일치 {len(cmp.matched)}, 음높이만 바뀜 "
+            f"{len(cmp.pitch_changed)}, 사라짐 {len(cmp.only_a)}, 새로 생김 {len(cmp.only_b)})\n\n"
+            f"보고서: {path}")
 
     def clear_cache(self) -> None:
         answer = QMessageBox.question(self, "캐시 비우기",
