@@ -20,7 +20,7 @@ from typing import Iterable
 import numpy as np
 
 from amp.core.errors import EditError
-from amp.core.pitch import MIDI_MAX, MIDI_MIN, hz_to_midi
+from amp.core.pitch import MIDI_MAX, MIDI_MIN, hz_to_midi, note_name
 from amp.core.tempo import TempoMap
 
 DEFAULT_BPM = 120.0
@@ -45,6 +45,7 @@ class Note:
     vibrato: Vibrato | None = None
     syllable_id: str | None = None
     origin_ids: tuple[str, ...] = ()
+    ornament: bool = False  # 최소 길이보다 짧지만 신뢰도가 높아 남긴 장식음
 
     def __post_init__(self) -> None:
         if not (math.isfinite(self.start) and math.isfinite(self.end)):
@@ -57,6 +58,11 @@ class Note:
     @property
     def duration(self) -> float:
         return self.end - self.start
+
+    @property
+    def name(self) -> str:
+        """음 이름 (예: C4)."""
+        return note_name(self.pitch)
 
     def with_(self, **changes) -> "Note":
         return replace(self, **changes)
@@ -160,6 +166,15 @@ class AnalysisResult:
     models: dict[str, ModelInfo] = field(default_factory=dict)
     created_at: str = ""
     audio_fingerprint: str = ""
+    # STEP 2에서 추가한 필드 (모두 기본값이 있어 이전 데이터도 읽힌다)
+    onset_envelope: np.ndarray | None = field(default=None, compare=False)  # 피치 곡선과 같은 프레임 격자
+    tempo_info: dict = field(default_factory=dict)  # 알고리즘, 후보(2배·절반), 신뢰 여부, 첫 박
+    warnings: tuple[str, ...] = ()
+    settings: dict = field(default_factory=dict)  # 분석에 쓴 AnalysisSettings
+
+    @property
+    def tempo_candidates(self) -> tuple[float, ...]:
+        return tuple(float(c["bpm"]) for c in self.tempo_info.get("candidates", ()))
 
     @property
     def is_placeholder(self) -> bool:

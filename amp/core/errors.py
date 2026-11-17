@@ -23,3 +23,7 @@ class AnalysisError(AmpError):
 
 class AnalysisCancelled(AmpError):
     """사용자가 분석을 취소했을 때."""
+
+
+class StorageError(AmpError):
+    """파일을 쓰거나 읽지 못했을 때 (디스크 부족, 권한, 잠김 등)."""

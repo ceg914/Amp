@@ -57,6 +57,8 @@ def note_to_dict(n: Note) -> dict:
         d["syllable_id"] = n.syllable_id
     if n.origin_ids:
         d["origin_ids"] = list(n.origin_ids)
+    if n.ornament:
+        d["ornament"] = True
     return d
 
 
@@ -72,6 +74,7 @@ def note_from_dict(d: dict) -> Note:
         vibrato=Vibrato(float(vib["rate_hz"]), float(vib["extent_cents"])) if vib else None,
         syllable_id=d.get("syllable_id"),
         origin_ids=tuple(d.get("origin_ids", ())),
+        ornament=bool(d.get("ornament", False)),
     )
 
 
@@ -134,10 +137,13 @@ def analysis_to_dict(a: AnalysisResult) -> dict:
         "created_at": a.created_at,
         "audio_fingerprint": a.audio_fingerprint,
         "has_pitch_curve": a.pitch_curve is not None,
+        "tempo_info": a.tempo_info,
+        "warnings": list(a.warnings),
+        "settings": a.settings,
     }
 
 
-def analysis_from_dict(d: dict, pitch_curve: PitchCurve | None) -> AnalysisResult:
+def analysis_from_dict(d: dict, pitch_curve: PitchCurve | None, onset=None) -> AnalysisResult:
     models = {
         k: ModelInfo(str(m.get("name", "")), str(m.get("version", "")), bool(m.get("placeholder", False)), dict(m.get("params", {})))
         for k, m in d.get("models", {}).items()
@@ -152,6 +158,10 @@ def analysis_from_dict(d: dict, pitch_curve: PitchCurve | None) -> AnalysisResul
         models=models,
         created_at=str(d.get("created_at", "")),
         audio_fingerprint=str(d.get("audio_fingerprint", "")),
+        onset_envelope=onset,
+        tempo_info=dict(d.get("tempo_info") or {}),
+        warnings=tuple(str(w) for w in d.get("warnings", ())),
+        settings=dict(d.get("settings") or {}),
     )
 
 

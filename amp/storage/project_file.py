@@ -38,21 +38,25 @@ def _dump(obj) -> bytes:
     return json.dumps(obj, ensure_ascii=False, indent=1).encode("utf-8")
 
 
-def _pitch_to_bytes(curve: PitchCurve) -> bytes:
+def _pitch_to_bytes(curve: PitchCurve, onset=None) -> bytes:
     buf = io.BytesIO()
-    np.savez_compressed(
-        buf,
+    arrays = dict(
         start_time=np.float64(curve.start_time),
         frame_rate=np.float64(curve.frame_rate),
         f0_hz=curve.f0_hz,
         confidence=curve.confidence,
     )
+    if onset is not None:
+        arrays["onset"] = np.asarray(onset, dtype=np.float32)
+    np.savez_compressed(buf, **arrays)
     return buf.getvalue()
 
 
-def _pitch_from_bytes(data: bytes) -> PitchCurve:
+def _pitch_from_bytes(data: bytes):
     with np.load(io.BytesIO(data), allow_pickle=False) as z:
-        return PitchCurve(float(z["start_time"]), float(z["frame_rate"]), z["f0_hz"], z["confidence"])
+        curve = PitchCurve(float(z["start_time"]), float(z["frame_rate"]), z["f0_hz"], z["confidence"])
+        onset = z["onset"].copy() if "onset" in z.files else None
+    return curve, onset
 
 
 def project_to_members(project: Project, project_path: str | None = None) -> dict[str, bytes]:
@@ -80,7 +84,7 @@ def project_to_members(project: Project, project_path: str | None = None) -> dic
     if project.analysis is not None:
         members["analysis/result.json"] = _dump(ser.analysis_to_dict(project.analysis))
         if project.analysis.pitch_curve is not None:
-            members["analysis/pitch.npz"] = _pitch_to_bytes(project.analysis.pitch_curve)
+            members["analysis/pitch.npz"] = _pitch_to_bytes(project.analysis.pitch_curve, project.analysis.onset_envelope)
     return members
 
 
@@ -129,8 +133,8 @@ def load_project(path: str) -> Project:
             score = ser.score_from_dict(read_json("score.json"))
             analysis = None
             if "analysis/result.json" in names:
-                curve = _pitch_from_bytes(z.read("analysis/pitch.npz")) if "analysis/pitch.npz" in names else None
-                analysis = ser.analysis_from_dict(read_json("analysis/result.json"), curve)
+                curve, onset = _pitch_from_bytes(z.read("analysis/pitch.npz")) if "analysis/pitch.npz" in names else (None, None)
+                analysis = ser.analysis_from_dict(read_json("analysis/result.json"), curve, onset)
     except FileNotFoundError:
         raise ProjectFormatError(f"파일을 찾을 수 없습니다: {path}") from None
     except zipfile.BadZipFile:
