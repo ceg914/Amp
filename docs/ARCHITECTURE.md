@@ -1,238 +1,130 @@
-# 구조 설계
+# SONATLAS 구조
 
 ## 디렉터리와 모듈 책임
 
 ```
 amp/
-├── __main__.py              python -m amp 진입점
-├── core/                    데이터 모델과 편집 규칙 (Qt 없음)
-│   ├── model.py             Note, PitchCurve, Syllable, LyricsTrack, AnalysisResult, Score, Project
-│   ├── tempo.py             TempoMap: 초 ↔ 박 변환, 스냅, 격자
-│   ├── editing.py           이동·길이 변경·분할·병합 순수 함수
-│   ├── pitch.py             Hz ↔ MIDI, 음 이름
-│   ├── errors.py            사용자에게 보여 줄 메시지를 담는 예외 계층
-│   └── ids.py
-├── audio/                   오디오 처리 (Qt 없음)
-│   ├── data.py              AudioData: (프레임, 채널) float32 배열
-│   ├── decoder.py           파일 디코딩 (soundfile → miniaudio 순), 진행률·취소, 파일 지문
-│   ├── peaks.py             다중 해상도 파형 min/max 요약
-│   └── pcm.py               재생 장치 형식으로 변환 (리샘플·채널·양자화)
-├── engine/                  분석 엔진 (Qt 없음)
-│   ├── interfaces.py        단계별 추상 클래스
-│   ├── registry.py          단계별 백엔드 등록소
-│   ├── pipeline.py          단계를 순서대로 실행해 AnalysisResult 생성
-│   ├── context.py           CancelToken, StageContext(진행률 환산)
-│   └── backends/sample.py   샘플(가짜) 백엔드
-├── storage/                 저장 (Qt 없음)
-│   ├── serialization.py     모델 ↔ dict 변환
-│   └── project_file.py      .ampproj 읽기/쓰기, 원자적 저장
-└── app/                     PySide6 UI
-    ├── main.py              QApplication, 로깅, 전역 예외 대화상자
-    ├── main_window.py       메뉴·툴바·작업 흐름(열기·저장·분석·복구)
-    ├── document.py          ProjectDocument: 편집 API, QUndoStack, 변경 시그널
-    ├── workers.py           TaskRunner: QThreadPool 작업 실행
-    ├── player.py            AudioPlayer: QAudioSink 재생
-    ├── autosave.py          자동 저장, 비정상 종료 감지
-    ├── timeline.py          파형·눈금자·피아노 롤이 공유하는 가로축 상태
-    ├── theme.py             색상, 어두운 테마
-    ├── pianoroll/
-    │   ├── mapping.py       시간·음높이 ↔ 장면 좌표
-    │   ├── items.py         NoteItem, PitchCurveItem, PlayheadItem
-    │   ├── scene.py         문서 시그널 → 항목 생성·갱신, 격자, 가사 글자
-    │   └── view.py          마우스·키보드 편집, 확대/스크롤
-    └── widgets/
-        ├── waveform.py      파형 (픽스맵 캐시)
-        ├── ruler.py         마디·초 눈금자
-        └── keyboard.py      왼쪽 건반
-tests/                       단위 테스트(코어) + pytest-qt 테스트(tests/ui)
-scripts/make_test_audio.py   시험용 오디오 생성
+├── __main__.py                 python -m amp 진입점 (Python·패키지 검사 후 앱 실행)
+├── core/                       데이터 모델·편집 규칙·파일 입출력 기초 (Qt 없음)
+│   ├── model.py                Note, PitchCurve, Syllable, AnalysisResult(원본), Score(작업본), Project
+│   ├── tempo.py                TempoMap: 초 ↔ 박, 스냅, 격자
+│   ├── editing.py              이동·길이·분할·병합 순수 함수
+│   ├── fileio.py               원자적 쓰기(+.bak), 긴 경로, 디스크 부족·권한 오류 메시지
+│   └── errors.py               사용자 메시지를 담는 예외 계층
+├── audio/                      디코딩, 파형 요약, PCM 변환·믹서 (Qt 없음)
+├── engine/                     분석 엔진 (Qt 없음)
+│   ├── worker.py               분석 작업 프로세스 (separate · pitch · tempo · probe)
+│   ├── worker_client.py        작업 프로세스 실행·진행률·취소·오류 코드 → 한국어 메시지
+│   ├── dsp/separation.py       Demucs htdemucs 실행, 시간 정렬, GPU→CPU 재시도
+│   ├── dsp/pitch.py            librosa pYIN (16kHz, 100fps, 30초 청크) + 온셋·RMS
+│   ├── dsp/tempo.py            BPM 추정, 2배·절반 후보, 박 간격 직선 보정
+│   ├── pitch_post.py           에너지 게이트, 옥타브·튐 보정, 재발음 지표
+│   ├── notes.py                피치 곡선 → 음표
+│   ├── transcription.py        분리 → 피치 → BPM → 음표 파이프라인, 음표만 재검출
+│   ├── stems.py                stems/ 목록(stems.json) 쓰기·검증·불러오기
+│   ├── cache.py                cache/ 키·원자적 기록·정리
+│   ├── merge.py                재분석 반영 계획 (사용자 편집 보호)
+│   ├── settings.py             분석 설정·민감도 프리셋
+│   ├── interfaces.py, pipeline.py, registry.py, backends/sample.py   STEP 1 메모리 기반 단계와 샘플 백엔드
+├── project/                    프로젝트 폴더 (Qt 없음)
+│   ├── layout.py               폴더 구조, Windows 이름 규칙, 중복 이름 처리
+│   ├── schema.py               파일 종류·스키마 버전·마이그레이션
+│   ├── workspace.py            생성(복사/연결)·열기·저장·재연결·다른 이름으로 저장
+│   ├── analysis_io.py          analysis/pitch·notes·tempo.json
+│   ├── export.py               WAV/MP3 내보내기
+│   └── legacy.py               .ampproj → 프로젝트 폴더 변환 (+백업)
+├── storage/                    STEP 1 단일 파일(.ampproj) 형식 — 이전 파일 읽기와 자동 복구 스냅샷에 사용
+└── app/                        PySide6 UI
+    ├── main_window.py          레이아웃·메뉴·도구막대, 세션 시그널 연결
+    ├── session.py              ProjectSession: 프로젝트 수명 주기·잠금·분석·내보내기 (컨트롤러)
+    ├── document.py             편집 API, QUndoStack, ApplyAnalysisCommand
+    ├── player.py               QAudioSink 재생, 트랙 믹서(솔로·음소거·음량)
+    ├── workers.py              TaskRunner (QThreadPool)
+    ├── autosave.py             자동 저장·비정상 종료 복구
+    ├── dialogs.py              새 프로젝트, 내보내기, 재분석 반영 대화상자
+    ├── theme/                  Obsidian Violet 토큰·QSS·글꼴(OFL)·아이콘(Lucide, ISC)
+    ├── pianoroll/              QGraphicsView 피아노 롤
+    └── widgets/                트랙 패널, 속성·분석 설정 패널, 파형, 눈금자, 건반, 로그
+scripts/install_separation.py   GPU에 맞는 PyTorch + demucs 설치
+run.bat, install_separation.bat Windows 실행·설치
 ```
 
-### 의존 방향
+의존 방향: `core ← audio ← engine ← project ← app`. `app`만 Qt를 씁니다. 분석 엔진과 저장 계층은 Qt 없이 테스트됩니다.
 
-```
-core  ←  audio  ←  engine
-  ↑        ↑         ↑
-storage    │         │
-  ↑        │         │
-  └──────  app  ─────┘
-```
+## 프로세스·스레드 모델
 
-`app`만 Qt를 씁니다. 나머지 패키지는 Qt 없이 import되고 테스트됩니다.
-분석 엔진을 다른 프로세스나 명령줄 도구로 옮길 때 UI 코드를 끌고 가지 않으려는 규칙입니다.
+| 작업 | 실행 위치 | 이유 |
+|---|---|---|
+| 보컬 분리 (torch) | 작업 프로세스 | Windows에서 PySide6와 torch를 한 프로세스에 올리면 DLL 충돌 사례가 있음. 강제 종료로 즉시 취소, 끝나면 메모리 반환 |
+| 피치 추출 (pYIN) | 작업 프로세스 | 측정 결과 30초 처리 중 GIL을 잡아 다른 스레드가 최대 0.78초 멈춤 |
+| BPM 추정 | 작업 프로세스 | 같은 이유 (numba) |
+| 디코딩·파형·음표 검출·내보내기 | QThreadPool 스레드 | numpy 위주라 UI를 막지 않음 (10분 MP3 불러오기 중 최대 25ms) |
+| 재생 | Qt 오디오 스레드 | PcmMixer가 블록마다 트랙을 섞음 |
 
-## 데이터 모델
+작업 프로세스는 `python -m amp.engine.worker <명령> --args-json …`으로 띄우고, 표준 출력으로 JSON 줄(progress/result/error)만 보냅니다.
+클라이언트는 0.1초마다 취소 토큰을 확인하고, 취소되면 프로세스를 끝내고 임시 결과 폴더를 지웁니다.
+오류 코드(missing_dependency, model_download, oom, decode, internal)는 설치 안내 등 한국어 메시지로 바뀝니다.
 
-### 원본과 작업본
+## 분석 파이프라인
 
-```
-Project
-├── audio: AudioRef            경로, 파일 지문, 길이
-├── analysis: AnalysisResult   분석 엔진이 만든 원본. 만든 뒤 바꾸지 않음
-│   ├── notes, pitch_curve, tempo, lyrics
-│   └── models: {단계: ModelInfo(name, version, placeholder)}
-└── score: Score               사용자가 편집하는 작업본
-    ├── notes (id → Note), tempo, lyrics
-```
+1. **분리**: `stems/stems.json`이 있고 원본 해시·파일 크기·프레임 수가 맞으면 재사용합니다. 아니면 작업 프로세스가 `stems/.tmp-*`에
+   쓰고, 기존 목록을 먼저 지운 뒤 파일을 옮기고 새 목록을 씁니다. 중간에 실패하면 목록이 없으므로 '분리 전'으로 보입니다.
+2. **시간 정렬**: 작업 프로세스도 GUI와 같은 디코더로 원본을 읽습니다. 44.1kHz로 바꿀 때와 되돌릴 때 `resample_poly`(지연 없는 필터)를
+   쓰고, 원본 프레임 수에 맞춰 자르거나 채웁니다. stems.json에 `offset_frames: 0`을 기록합니다.
+   시험: 48kHz 입력의 길이 일치·지연 0 샘플, 실제 htdemucs에서 원래 목소리와 상관 0.998·지연 0 샘플.
+3. **피치**: 보컬(또는 분리 안 함이면 원본)을 16kHz·100fps로 pYIN 분석하고 `cache/`에 원시 결과를 둡니다.
+   캐시 키 = 원본 해시 + 입력(분리 결과 id) + 파라미터·버전.
+4. **후처리**: 에너지 게이트 → 40ms 미만 유성 조각 제거 → 옥타브(±12) 보정 → 튐 보정 → 3프레임 중앙값. 무성은 NaN으로 남깁니다.
+5. **BPM**: 반주(또는 원본)에서 librosa로 추정하고, 박 위치에 직선을 맞춰 템포그램 양자화(512 hop에서 117.45/123.0)를 보정합니다.
+6. **음표**: 아래 절. 캐시하지 않습니다. `redetect_notes`는 1~5단계 결과를 그대로 쓰고 음표만 다시 만듭니다.
+7. **보컬 존재 판정**: 보컬/전체 에너지 비가 -25dB 아래이거나 보컬이 들리는 구간이 3% 미만이면 경고합니다.
 
-분석을 실행하면 `Score.from_analysis()`가 원본을 복사해 작업본을 만듭니다. 이후 편집은 작업본에만 반영됩니다.
-원본을 남겨 두기 때문에 "분석 원본으로 되돌리기"와 음표별 수정 여부 표시가 가능합니다.
+## 음표 검출 (`engine/notes.py`)
 
-`Note.origin_ids`는 작업본 음표가 어느 원본 음표에서 왔는지 기록합니다.
+- 유성 판정은 pYIN의 HMM 결과를 따르고, 확률은 아주 낮은 잡음만 거릅니다(합성 음성은 확률 중앙값이 0.02여도 유성).
+- 중심선 = 220ms 중앙값 필터. 4.5Hz 이상 비브라토가 상쇄되고, 음 경계는 날카롭게, 포르타멘토는 경사로 남습니다.
+- 변화점: 중심선이 현재 음에서 (기준 − 0.3)반음 이상 벗어나 hold 동안 안정(폭 0.45반음 미만, 흐름 0.3반음 미만)하면 나눕니다.
+  경계는 두 음 중간을 지나는 지점이고, 새 음 높이는 도착 지점부터 잽니다(글라이드 중간에서 두 번 나뉘지 않게).
+- 재발음 지표 = 온셋 × 직전 음량 하락 깊이. 분리된 보컬에서 비브라토만 있는 지속음은 온셋 피크가 생겨도 음량이 거의 떨어지지 않아
+  이 지표로 걸러집니다. 음높이 경계 근처(앞 40ms·뒤 150ms)의 뚜렷한 재발음으로 경계를 옮기고, 같은 높이 구간 안에서는 나눕니다.
+- 짧은 조각은 가까운 높이의 이웃에 합치고, 중심선 창보다 짧은 이탈은 따로 떼어 최소 길이 미만·고신뢰면 장식음, 이상이면 일반 음표로 만듭니다.
+- 실제 유성 프레임이 60% 미만인 구간(틈 잇기로 메운 곳)은 음표로 만들지 않습니다. 음표별 비브라토(3.5~9Hz, 20cent 이상)를 추정합니다.
 
-| 편집 | origin_ids |
-|---|---|
-| 분석 직후 | `(원본 id,)` |
-| 이동·길이 변경 | 그대로 |
-| 분할 | 두 조각 모두 부모 값을 물려받음 |
-| 병합 | 합친 음표들의 값을 시간 순으로 합침 |
-| 새로 그림 | `()` |
+## 데이터와 저장
 
-`Project.note_status()`는 이 값과 원본을 비교해 `original`, `modified`, `user` 중 하나를 돌려줍니다. 피아노 롤 색이 이 값으로 정해집니다.
+- `AnalysisResult`는 분석이 만든 원본이고 바꾸지 않습니다. `Score`는 작업본입니다. 작업본 음표의 `origin_ids`로 원본·수정·추가를 가립니다.
+- 프로젝트 폴더에서는 `notes.json`의 `analysis`(원본)와 `edits`(작업본), `tempo.json`의 `analysis`와 `user`를 나눠 저장합니다.
+  작업본만 바뀌는 저장에서도 원본 부분은 메모리의 불변 객체를 그대로 다시 쓰므로 손상되지 않고, 원자적 교체와 .bak으로 보호합니다.
+  `pitch.json`은 분석 결과가 바뀐 경우에만 다시 씁니다.
+- 각 JSON은 `schema`·`schema_version`을 가지고, `project/schema.py`의 `MIGRATIONS`로 버전을 올립니다. 더 새로운 버전은 열지 않습니다.
+- `project.json`: ID·이름·생성/수정 시각·스키마 버전·원본(방식, 상대/절대 경로, SHA-256, 크기, 길이)·분리 상태·분석 상태·
+  편집 상태(원본/수정/추가 개수)·분석 설정·재생 위치·트랙 상태·작업 공간(확대·스크롤·레이어·스냅·패널 크기).
+- 자동 복구 스냅샷은 STEP 1 형식(zip)으로 앱 데이터 폴더에 쓰고, 복구할 때 프로젝트 폴더를 연 뒤 내용을 덮어 변경 상태로 둡니다.
 
-### 가사와 멜리스마
+## 재분석과 사용자 편집 보호
 
-음절과 음표의 연결은 음표 쪽 `Note.syllable_id`에 둡니다. 같은 음절 id를 가진 음표가 둘 이상이면 멜리스마입니다.
-연결을 음표에 둔 이유는 분할·병합 같은 음표 편집이 음표 목록만 바꾸면 끝나게 하려는 것입니다.
-분할하면 두 조각이 같은 음절을 가리켜 자연스럽게 멜리스마가 되고, 병합하면 시간상 첫 음절이 남습니다.
+`engine/merge.plan_reanalysis`가 반영 계획을 만들고 `ApplyAnalysisCommand`가 원본 분석·음표·템포를 함께 바꿉니다(실행 취소 가능).
+편집이 있으면 대화상자에서 개수를 비교해 고릅니다.
 
-`Syllable`에는 글자, 발음 기호(`phonetic`), 가사 줄 번호, 정렬된 시작·끝 시간이 있습니다.
-자음·모음 단위 시간은 범위에서 제외했으므로 모델에도 없습니다.
+- **수정 유지하며 적용**: 수정·추가 음표는 그대로 두고, 손대지 않은 원본 음표만 교체. 보존 음표와 20% 넘게 겹치는 새 음표는 넣지 않음.
+  사용자가 바꾼 템포도 유지.
+- **전부 새 분석으로 교체** / **취소**.
 
-### 피치 곡선과 템포
+## 재생과 시간축
 
-`PitchCurve`는 일정 간격(`frame_rate`)으로 샘플링한 f0(Hz)와 신뢰도 배열입니다. 무성 구간은 NaN입니다.
-간격이 일정하면 화면에 보이는 시간 범위의 프레임 인덱스를 바로 계산할 수 있어 긴 곡에서도 빠르게 그릴 수 있습니다.
-
-음표 시간은 오디오와 맞추기 위해 초 단위로 저장합니다. `TempoMap`은 격자 표시, 스냅, 이후 MIDI 내보내기에서 초와 박을 변환할 때만 씁니다.
-구간별 템포(`TempoPoint` 여러 개)를 지원하지만, 현재 UI에서는 첫 구간 BPM만 바꿀 수 있습니다.
-
-## 편집 흐름
-
-```
-PianoRollView (마우스 드래그)
-   │  드래그 중: core.editing으로 미리보기 위치만 계산해 항목에 표시
-   │  놓을 때: doc.move_notes(ids, dt, dpitch)
-   ▼
-ProjectDocument
-   │  core.editing.move_notes()로 새 Note 계산 (검증 실패 시 EditError)
-   │  undo_stack.push(ReplaceNotesCommand(지울 음표, 넣을 음표))
-   ▼
-ReplaceNotesCommand.redo()
-   │  Score.replace_notes()  ← 모든 음표 편집이 지나는 단일 경로
-   │  notesReplaced, selectionRequested 시그널
-   ▼
-PianoRollScene  항목 추가·삭제·갱신, 가사 글자 다시 계산
-```
-
-이동, 길이 변경, 분할, 병합, 추가, 삭제는 모두 "음표 몇 개를 지우고 몇 개를 넣는다"로 표현됩니다.
-그래서 실행 취소 명령 클래스가 하나(`ReplaceNotesCommand`)뿐입니다. 연속된 BPM 변경은 `SetTempoCommand.mergeWith`로 하나로 합칩니다.
-
-## 분석 파이프라인과 모델 교체
-
-`AnalysisPipeline.run()`은 다음 순서로 단계를 실행합니다.
-
-1. `SourceSeparator.separate(mix)` → 보컬, 반주
-2. `TempoEstimator.estimate(mix)` → TempoMap
-3. `PitchTracker.track(vocals)` → PitchCurve
-4. `NoteTranscriber.transcribe(pitch, vocals, tempo)` → 음표 목록 (비브라토·멜리스마 처리 담당)
-5. `LyricsRecognizer.recognize(vocals)` → 음절 목록 (선택)
-6. `LyricsAligner.align(lyrics, notes, ...)` → 음절 시간, 음표의 syllable_id (선택)
-
-단계마다 `StageContext`를 받습니다. 단계는 0~1 진행률만 보고하고, 전체 진행률 환산과 취소 확인은 파이프라인이 맡습니다.
-백엔드에서 나온 예외는 `AnalysisError`로 감싸서 UI에 전달합니다.
-
-새 모델을 붙이는 방법:
-
-```python
-from amp.core.model import ModelInfo, PitchCurve
-from amp.engine.interfaces import PitchTracker
-from amp.engine.registry import StageKind
-
-
-class CrepeTracker(PitchTracker):
-    @property
-    def info(self):
-        return ModelInfo(name="crepe", version="0.0.16", params={"step_ms": 10})
-
-    def track(self, vocals, ctx):
-        ...  # ctx.progress(0.5, "피치 추적 중") 로 진행률 보고, 내부에서 취소 확인
-        return PitchCurve(start_time=0.0, frame_rate=100.0, f0_hz=f0, confidence=conf)
-
-
-registry.register(StageKind.PITCH, "crepe", CrepeTracker, "CREPE 피치 추적")
-pipeline = AnalysisPipeline(registry, PipelineConfig(pitch="crepe"))
-```
-
-사용한 모델 이름과 버전은 `AnalysisResult.models`에 기록되어 프로젝트 파일에 함께 저장됩니다.
-`placeholder=True`인 모델이 하나라도 있으면 상태 표시줄에 "샘플 데이터"라고 나옵니다.
-
-현재 등록된 백엔드는 `passthrough`(분리 안 함)와 `sample`뿐입니다. 샘플 백엔드는 오디오 길이와 고정 시드로 멜로디 계획을 만들고,
-각 단계가 같은 계획을 공유해 서로 맞는 결과를 냅니다. 소리 내용은 보지 않습니다.
-
-## 스레드와 응답성
-
-- **디코딩·파형 요약·분석**은 `TaskRunner`가 QThreadPool에서 실행합니다. 작업 함수는 `fn(progress, token)` 형태로 Qt를 모릅니다.
-  결과·실패·취소는 시그널로 UI 스레드에 전달됩니다. 진행률 시그널은 50ms 간격으로 줄여 보냅니다.
-- 작업은 `submit()` 다음 이벤트 루프에서 시작합니다. 즉시 실패하는 작업이라도 `submit()` 직후 연결한 시그널을 놓치지 않습니다.
-- 오디오를 새로 열면 이전 불러오기 결과는 순번 비교로 버립니다. 분석 도중 오디오가 바뀌면 분석 결과도 버립니다.
-- 분석 입력·출력은 피클 가능한 데이터(numpy 배열, frozen dataclass)입니다.
-  지금은 스레드에서 돌리지만, PyTorch 모델처럼 무겁거나 메모리를 많이 쓰는 백엔드가 들어오면 같은 `run()`을 별도 프로세스에서 호출하도록 실행기만 바꿀 계획입니다.
-
-화면 쪽에서 긴 오디오를 다루는 방법:
-
-- 파형은 불러올 때 32·128·512… 샘플 단위 min/max 요약을 만들어 두고, 그릴 때 화면 폭만큼만 다시 줄입니다. 결과는 픽스맵으로 캐시하고 재생선만 덧그립니다.
-- 피치 곡선 항목은 노출된 영역(`exposedRect`)의 프레임만 골라 그립니다.
-- 격자는 `drawBackground`에서 보이는 범위만 그리고, 선 간격이 7px보다 좁으면 생략합니다.
-
-## 재생
-
-`AudioPlayer`는 QMediaPlayer 대신 QAudioSink를 씁니다. 메모리에 있는 numpy 배열을 직접 흘려보내야
-나중에 분리된 보컬·반주를 섞거나 음표 안내음을 합성할 수 있기 때문입니다.
-
-- `PcmConverter`(Qt 없음)가 출력 프레임 번호 기준으로 필요한 구간만 리샘플·채널 변환·양자화합니다. 상태가 없어서 탐색이 단순합니다.
-- `PcmDevice`(QIODevice)가 변환기를 감쌉니다. 오디오 스레드에서 읽힐 수 있어 위치를 잠금으로 보호합니다.
-- 재생 위치는 `시작 위치 + sink.processedUSecs()`로 계산합니다. 장치가 실제로 처리한 양이라 소리와 재생선이 맞습니다.
-- PySide6 6.12에서 `QAudioSink.stateChanged` 시그널 인자 변환이 실패해서, 30ms 타이머에서 `sink.state()`를 직접 확인합니다.
-- 출력 장치가 없으면 오류 시그널을 보내고 정지 상태로 남습니다. 편집은 계속할 수 있습니다.
-
-## 프로젝트 파일과 복구
-
-`.ampproj`는 ZIP 파일입니다.
-
-| 항목 | 내용 |
-|---|---|
-| `manifest.json` | 형식 이름, 형식 버전, 앱 버전, 저장 시각 |
-| `project.json` | 오디오 경로, 프로젝트 기준 상대 경로, 파일 지문 |
-| `analysis/result.json` | 원본 분석 결과 (분석한 경우) |
-| `analysis/pitch.npz` | 원본 피치 곡선 배열 |
-| `score.json` | 사용자 작업본 |
-
-- 같은 폴더의 임시 파일에 쓴 뒤 `os.replace`로 바꿔치기합니다. 저장 중 실패해도 기존 파일은 그대로입니다.
-- 더 높은 형식 버전 파일은 열지 않고 업데이트를 안내합니다. 필드를 추가할 때는 읽기 쪽에 기본값을 둬서 이전 파일을 계속 엽니다.
-- 오디오 파일이 원래 경로에 없으면 프로젝트 기준 상대 경로를 시도하고, 그래도 없으면 위치를 묻습니다. 지문이 다르면 경고합니다.
-
-자동 복구는 세션마다 `<세션id>.lock`을 `QLockFile`로 잡고, 변경이 있으면 1분마다 `<세션id>.ampproj`를 씁니다.
-정상 종료하면 지웁니다. 시작할 때 잠금을 얻을 수 있는(주인 프로세스가 사라진) 복구 파일이 있으면 비정상 종료로 보고 복구를 제안합니다.
-`setStaleLockTime(0)`으로 시간 기준 만료를 꺼서, 오래 켜 둔 다른 창의 파일을 잘못 가져오지 않습니다.
-
-## 오류 처리
-
-- `AmpError` 하위 예외는 사용자에게 그대로 보여 줄 한국어 메시지를 담습니다.
-- 작업 스레드의 예외는 `TaskHandle.failed(메시지, traceback)`으로 전달되어 상세 보기가 있는 대화상자로 표시됩니다.
-- 편집 검증 실패(`EditError`)는 상태 표시줄에 짧게 띄웁니다.
-- 그 밖에 UI 슬롯에서 난 예외는 `sys.excepthook`이 잡아 로그 파일에 남기고 대화상자로 알립니다.
+`TimelineState` 하나를 눈금자·파형·피아노 롤이 공유하고, 재생선은 `시작 위치 + sink.processedUSecs()`로 계산합니다.
+트랙(원본·보컬·반주)은 같은 길이·샘플레이트여야 플레이어에 올라가므로, 트랙을 바꾸거나 섞어도 위치가 그대로입니다.
 
 ## 테스트
 
 | 파일 | 대상 |
 |---|---|
-| `tests/test_tempo.py`, `test_model.py`, `test_editing.py` | 템포 변환, 모델 검증, 편집 규칙 |
-| `tests/test_audio.py` | WAV·MP3 디코딩, 손상 파일, 파형 요약 정확성, PCM 변환 |
-| `tests/test_engine.py` | 파이프라인 실행, 취소, 백엔드 오류 감싸기, 등록소 검사 |
-| `tests/test_storage.py` | 저장/열기 왕복, 원본·작업본 분리, 저장 실패 시 기존 파일 보존, 손상 파일 |
-| `tests/ui/test_document.py` | 실행 취소/다시 실행, 변경 상태, 되돌리기 |
-| `tests/ui/test_pianoroll.py` | 실제 마우스·키 입력으로 이동·길이 변경·추가·선택·확대 |
-| `tests/ui/test_workers.py` | 작업 완료·실패·취소, 즉시 끝나는 작업 |
-| `tests/ui/test_player.py` | PCM 장치, 장치 없을 때 오류, 실제 장치가 있으면 재생 중 탐색·끝 감지 |
-| `tests/ui/test_autosave.py`, `test_main_window.py` | 자동 저장·복구, 불러오기·분석·저장·열기 통합 흐름 |
+| `test_pitch_tracking.py` | 요구 1: 220Hz 사인·배음 톤(±10cent, 시작 시각 ±40ms), 무음 구간 NaN, 옥타브·튐 보정, 재발음 지표 |
+| `test_note_detection.py` | 요구 2·3·4: 연속 음 분리·경계, 포르타멘토, 비브라토 1음, 최소 길이, 장식음 신뢰도, 무음·잡음·호흡, 음역 |
+| `test_tempo_estimation.py` | 96·120BPM 클릭, 2배·절반 후보, 첫 박, 짧은/무음 기본값 |
+| `test_transcription.py` | 단계 재사용·캐시 끄기·강제 재분리·원본 변경 무효화·취소 정리·음표만 재검출, 실제 작업 프로세스, 비브라토 곡 × 민감도 3단계, 실제 htdemucs(`AMP_TEST_DEMUCS=1`) |
+| `test_worker_and_stems.py` | 작업 프로세스 길이·지연 0, 취소, 오류 코드, 무음 입력, stems.json 검증(해시·크기·손상) |
+| `test_project_folder.py` | SONATLAS 요구 1~12: 생성(복사·연결), 중복 이름, stems 저장, WAV/MP3·일괄 내보내기, 저장·재열기, 폴더 이동, 재연결, 다른 이름으로 저장, 캐시 삭제 후 보존, 저장 실패 시 기존 파일 보존, 손상 파일 .bak 복구, 한글·특수문자 경로, 마이그레이션, .ampproj 변환 |
+| `test_cache_settings_merge.py` | 캐시 원자성·한글 경로, 설정 프리셋, 재분석 병합 규칙(요구 7) |
+| `ui/test_main_window.py` | 프로젝트 생성·샘플 분석, 손상 파일, 저장·재열기(재생 위치·트랙 상태), 이중 열기 잠금, 분할·병합·BPM·첫 박, 비정상 종료 복구, 분석→트랙→솔로·음소거→내보내기→편집 보호, .ampproj 변환, 시간축 동기화(요구 5) |
+| 나머지 | STEP 1 회귀: 모델, 편집, 템포, 오디오·PCM·믹서, 저장 형식, 문서·실행 취소, 피아노 롤 마우스 조작, 작업 실행기, 자동 저장, 재생기, 진입점, 설치 스크립트 |

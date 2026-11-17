@@ -157,7 +157,7 @@ class MainWindow(QMainWindow):
         self.splitter.addWidget(center)
         self.splitter.addWidget(self.inspector)
         self.splitter.setStretchFactor(1, 1)
-        self.splitter.setSizes([260, 940, 340])
+        self.splitter.setSizes([250, 900, 380])
         self.splitter.setChildrenCollapsible(False)
         self.setCentralWidget(self.splitter)
 
@@ -277,7 +277,7 @@ class MainWindow(QMainWindow):
             tb.addAction(a)
         self.time_label = QLabel()
         self.time_label.setObjectName("timecode")
-        self.time_label.setMinimumWidth(330)
+        self.time_label.setMinimumWidth(300)
         tb.addWidget(self.time_label)
         tb.addSeparator()
         tb.addWidget(QLabel(" BPM "))
@@ -300,7 +300,7 @@ class MainWindow(QMainWindow):
         self.bpm_half.clicked.connect(lambda: self._scale_bpm(0.5))
         tb.addWidget(self.bpm_double)
         tb.addWidget(self.bpm_half)
-        tb.addWidget(QLabel("  첫 박 "))
+        tb.addWidget(QLabel(" 첫 박 "))
         self.beat_offset = QDoubleSpinBox()
         self.beat_offset.setRange(0.0, 10.0)
         self.beat_offset.setDecimals(3)
@@ -310,11 +310,11 @@ class MainWindow(QMainWindow):
         self.beat_offset.setToolTip("박자선 위치를 맞춥니다 (마디 첫 박은 자동으로 판정하지 않습니다)")
         self.beat_offset.valueChanged.connect(self._on_offset_changed)
         tb.addWidget(self.beat_offset)
-        sig = QLabel("  4/4")
+        sig = QLabel(" 4/4 ")
         sig.setToolTip("박자는 4/4로 가정합니다")
         tb.addWidget(sig)
-        tb.addWidget(QLabel("  격자 "))
         self.snap_combo = QComboBox()
+        self.snap_combo.setToolTip("격자 (스냅 단위)")
         for label, value in SNAP_CHOICES:
             self.snap_combo.addItem(label, value)
         self.snap_combo.setCurrentIndex(3)
@@ -327,8 +327,6 @@ class MainWindow(QMainWindow):
         self.analyze_button.setProperty("primary", True)
         self.analyze_button.setIcon(icon("wand-sparkles", T.BG_PRIMARY))
         tb.addWidget(self.analyze_button)
-        tb.addAction(self.act_redetect)
-        tb.addAction(self.act_zoom_fit)
         self._update_time_label(0.0)
 
     def _build_statusbar(self) -> None:
@@ -486,16 +484,16 @@ class MainWindow(QMainWindow):
             w.blockSignals(False)
         a = self.doc.project.analysis
         if a is None:
-            self.bpm_state.setText("(기본값)")
+            self.bpm_state.setText("기본값")
             self.bpm_state.setToolTip("")
         elif tempo == a.tempo:
             reliable = a.tempo_info.get("reliable")
             cands = ", ".join(f"{c:.1f}" for c in a.tempo_candidates) or "-"
-            self.bpm_state.setText("(추정 — 확인 필요)" if not a.is_placeholder else "(샘플)")
+            self.bpm_state.setText("추정" if not a.is_placeholder else "샘플")
             self.bpm_state.setToolTip(f"자동 추정값입니다. 정확하다고 판정하지 않았습니다.\n후보(원래·2배·절반): {cands}"
                                       + ("" if reliable else "\n박을 충분히 찾지 못했습니다."))
         else:
-            self.bpm_state.setText("(수동)")
+            self.bpm_state.setText("수동")
             self.bpm_state.setToolTip("사용자가 정한 템포입니다.")
         self.ruler.update()
         self._update_time_label(self.current_time())

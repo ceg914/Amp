@@ -3,7 +3,7 @@
 필요한 패키지가 없으면 트레이스백 대신 해결 방법을 한국어로 알려 준다.
 이 파일은 표준 라이브러리만 import해야 한다 (패키지가 없어도 메시지를 띄워야 하므로).
 
-``python -m amp --check-python`` 은 이 Python으로 Amp를 설치·실행할 수 있는지만 검사한다.
+``python -m amp --check-python`` 은 이 Python으로 SONATLAS를 설치·실행할 수 있는지만 검사한다.
 run.bat이 공식 Python을 고를 때 쓴다 (종료 코드 0 = 사용 가능).
 """
 
@@ -14,7 +14,7 @@ import os
 import sys
 
 MIN_PYTHON = (3, 10)
-REQUIRED_MODULES = ("PySide6", "numpy", "soundfile")
+REQUIRED_MODULES = ("PySide6", "numpy", "soundfile", "scipy", "librosa")
 REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 
@@ -37,7 +37,7 @@ def help_message(
 ) -> str:
     req = os.path.join(repo_root, "requirements.txt")
     lines = [
-        f"[Amp] 실행에 필요한 패키지가 없습니다: {', '.join(missing)}",
+        f"[SONATLAS] 실행에 필요한 패키지가 없습니다: {', '.join(missing)}",
         f"지금 실행한 Python: {executable}",
         "",
     ]
@@ -70,7 +70,7 @@ def interpreter_problem(
     os_name: str = os.name,
     platform: str = sys.platform,
 ) -> str | None:
-    """이 Python으로 Amp를 설치할 수 없는 이유. 문제가 없으면 None."""
+    """이 Python으로 SONATLAS를 설치할 수 없는 이유. 문제가 없으면 None."""
     if tuple(version_info[:2]) < MIN_PYTHON:
         need = ".".join(map(str, MIN_PYTHON))
         return f"Python {need} 이상이 필요합니다 (지금 {version_info[0]}.{version_info[1]})."
@@ -83,7 +83,7 @@ def interpreter_problem(
 
 def interpreter_help(problem: str, executable: str = sys.executable) -> str:
     lines = [
-        "[Amp] 지금 실행한 Python으로는 Amp를 설치할 수 없습니다.",
+        "[SONATLAS] 지금 실행한 Python으로는 SONATLAS를 설치할 수 없습니다.",
         f"    {executable}",
         problem,
         "",
@@ -107,7 +107,7 @@ def run(argv: list[str] | None = None) -> int:
             print(f"{sys.executable}: {problem}", file=sys.stderr)
         return 1 if problem else 0
     if sys.version_info < MIN_PYTHON:
-        print(f"[Amp] {problem}", file=sys.stderr)
+        print(f"[SONATLAS] {problem}", file=sys.stderr)
         return 1
     missing = missing_modules()
     if missing:

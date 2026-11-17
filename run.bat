@@ -3,7 +3,7 @@ chcp 65001 >nul
 setlocal
 cd /d "%~dp0"
 
-rem Amp 실행기
+rem SONATLAS 실행기
 rem 1) python.org 공식 Python을 찾는다 (MSYS2·Cygwin Python은 PySide6를 설치할 수 없어 건너뜀)
 rem 2) 그 Python으로 가상 환경(.venv)을 만들고 패키지를 설치한다 (처음 한 번)
 rem 3) 프로그램을 실행한다
@@ -29,7 +29,7 @@ echo [Amp] 가상 환경을 만듭니다 (%BASE_PY%)
 if not exist "%VENV_PY%" goto venv_failed
 
 :venv_ready
-"%VENV_PY%" -c "import PySide6, numpy, soundfile" >nul 2>&1
+"%VENV_PY%" -c "import PySide6, numpy, soundfile, scipy, librosa" >nul 2>&1
 if errorlevel 1 (
     echo [Amp] 필요한 패키지를 설치합니다. 처음 한 번은 몇 분 걸릴 수 있습니다.
     "%VENV_PY%" -m pip install --upgrade pip

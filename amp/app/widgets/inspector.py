@@ -151,7 +151,7 @@ class AnalysisPanel(QGroupBox):
         self.run = QPushButton("보컬 분석 실행")
         self.run.setProperty("primary", True)
         self.redetect = QPushButton("음표만 다시 검출")
-        self.reseparate = QPushButton("보컬 분리 다시 실행")
+        self.reseparate = QPushButton("분리 다시 실행")
         self.redetect.setToolTip("보컬 분리·피치 추출 결과를 그대로 쓰고 음표 검출만 다시 합니다.")
         self.reseparate.setToolTip("기존 분리 결과를 쓰지 않고 htdemucs를 다시 실행합니다.")
 
@@ -255,7 +255,7 @@ class Inspector(QScrollArea):
         super().__init__(parent)
         self.setWidgetResizable(True)
         self.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
-        self.setMinimumWidth(330)
+        self.setMinimumWidth(370)
         inner = QWidget()
         inner.setObjectName("panel")
         lay = QVBoxLayout(inner)

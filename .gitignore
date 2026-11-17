@@ -9,3 +9,5 @@ dist/
 *.ampproj.tmp
 .coverage
 htmlcov/
+*.part
+.sonatlas-*.tmp
