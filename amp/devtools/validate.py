@@ -44,6 +44,7 @@ TYPES = {
         "같은 높이로 다시 부른 음절이 따로 나왔는가",
     ]),
 }
+TYPES["-"] = ("유형 미지정 (A·B·C 항목을 모두 확인)", [item for k in "ABC" for item in TYPES[k][1]])
 SENSITIVITIES = ("simple", "standard", "precise")
 _NOTE_RE = re.compile(r"^([A-Ga-g])([#b]?)(-?\d+)$")
 _PC = {"C": 0, "D": 2, "E": 4, "F": 5, "G": 7, "A": 9, "B": 11}
@@ -259,7 +260,7 @@ def validate(audio_path: str, kind: str = "A", ref_path: str | None = None, out_
     from amp.engine.settings import AnalysisSettings
 
     if kind not in TYPES:
-        raise ValueError(f"유형은 A·B·C 중 하나입니다: {kind}")
+        raise ValueError(f"유형은 A·B·C 또는 -(미지정)입니다: {kind}")
     src = Path(audio_path).resolve()  # 작업 프로세스는 저장소 폴더에서 실행되므로 절대 경로로 넘긴다
     stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
     out = Path(out_root).resolve() / f"{src.stem}-{stamp}"
@@ -340,7 +341,7 @@ def markdown(d: dict) -> str:
     if d.get("label"):
         lines += [f"> {d['label']}", ""]
     a = d["audio"]
-    lines += [f"- 유형 {t}: {d['type_label']}", f"- 길이 {a['duration_s']}초, {a['sample_rate']}Hz, {a['channels']}채널, "
+    lines += [f"- 유형 {t if t != '-' else '미지정'}: {d['type_label']}", f"- 길이 {a['duration_s']}초, {a['sample_rate']}Hz, {a['channels']}채널, "
               f"{a['format']}, {a['size_bytes']:,}바이트", f"- 분리: {d['separation']} (장치 설정 {d['device']})",
               f"- 생성: {d['created']}", ""]
     lines += ["## 처리 시간과 메모리", "", "| 단계 | 시간 | 작업 프로세스 최대 RAM | GPU 최대 |", "|---|---|---|---|"]
