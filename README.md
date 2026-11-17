@@ -33,45 +33,61 @@ AI 분석은 아직 없습니다. 메뉴의 "샘플 분석"은 오디오 길이�
 | 원본/수정본 분리 저장 | 프로젝트 파일 안에 `analysis/`(원본)와 `score.json`(작업본)을 따로 둠 |
 | 저장·자동 복구 | `storage/project_file.py`, `app/autosave.py` |
 | 긴 오디오 대응 | 백그라운드 디코딩, 다중 해상도 파형 요약, 보이는 구간만 그리기 |
-| 테스트·오류 처리 | `tests/` 테스트 86개, 사용자용 예외 계층(`core/errors.py`) |
+| 테스트·오류 처리 | `tests/` 테스트 90개, 사용자용 예외 계층(`core/errors.py`) |
 
 구조와 모듈별 책임은 [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)에 정리했습니다.
 
-## 설치 (Windows)
+## 설치와 실행 (Windows)
 
-1. [python.org](https://www.python.org/downloads/windows/)에서 Python 3.10~3.13 64비트를 설치합니다. 설치 화면에서 "Add python.exe to PATH"를 체크하세요.
-2. 명령 프롬프트(또는 PowerShell)에서 저장소 폴더로 이동한 뒤 가상 환경을 만듭니다.
+[python.org](https://www.python.org/downloads/windows/)에서 Python 3.10 이상 64비트를 설치합니다(개발은 3.13에서 확인).
+설치 첫 화면에서 "Add python.exe to PATH"를 꼭 체크하세요.
+
+### 방법 1: run.bat (권장)
+
+저장소 폴더의 `run.bat`을 더블클릭하거나 명령 프롬프트에서 실행합니다.
+
+```bash
+run.bat
+```
+
+처음 실행하면 저장소 폴더에 가상 환경(`.venv`)을 만들고 필요한 패키지를 설치한 뒤 프로그램을 켭니다.
+PySide6 내려받기 때문에 몇 분 걸릴 수 있습니다. 두 번째부터는 설치 단계를 건너뛰고 바로 켜집니다.
+
+### 방법 2: 직접 설치
+
+명령 프롬프트에서 저장소 폴더로 이동한 뒤 가상 환경을 만듭니다.
 
 ```bash
 python -m venv .venv
 ```
 
-3. 가상 환경을 켭니다. 명령 프롬프트는 `.venv\Scripts\activate.bat`, PowerShell은 `.venv\Scripts\Activate.ps1`입니다.
+가상 환경을 켭니다. PowerShell이라면 `.venv\Scripts\Activate.ps1`입니다.
+켜지면 프롬프트 앞에 `(.venv)`가 붙습니다. **새 창을 열 때마다 다시 켜야 합니다.**
 
 ```bash
 .venv\Scripts\activate.bat
 ```
 
-4. 필요한 패키지를 설치합니다.
+패키지를 설치합니다.
 
 ```bash
 pip install -r requirements.txt
 ```
 
-`soundfile` 휠에 MP3를 읽을 수 있는 libsndfile이 들어 있어 따로 FFmpeg를 설치하지 않아도 됩니다.
+실행합니다.
+
+```bash
+python -m amp
+```
+
+`soundfile` 휠에 MP3를 읽을 수 있는 libsndfile이 들어 있어 FFmpeg를 따로 설치하지 않아도 됩니다.
 일부 MP3를 못 읽을 때를 대비한 보조 디코더도 넣을 수 있습니다(선택).
 
 ```bash
 pip install miniaudio
 ```
 
-## 실행
-
-저장소 폴더에서 실행합니다.
-
-```bash
-python -m amp
-```
+### 실행 옵션
 
 오디오나 프로젝트 파일을 인자로 주면 바로 엽니다.
 
@@ -119,6 +135,23 @@ python scripts/make_test_audio.py test_tone.mp3 30
 자동 저장은 1분마다, 저장하지 않은 변경이 있을 때만 합니다.
 프로그램이 비정상 종료되면 다음 실행 때 복구 여부를 묻습니다.
 자동 저장 파일과 로그는 `%LOCALAPPDATA%\Amp\Amp\` 아래 `recovery`, `logs` 폴더에 있습니다.
+
+## 문제 해결
+
+**`ModuleNotFoundError: No module named 'PySide6'`**
+
+`python -m amp`를 실행한 Python에 패키지가 설치되지 않은 상태입니다. 흔한 경우는 두 가지입니다.
+
+- `pip install -r requirements.txt`를 실행하지 않았다.
+- 가상 환경에 설치했는데 새 창에서 가상 환경을 켜지 않고 실행했다. 프롬프트 앞에 `(.venv)`가 없으면 이 경우입니다.
+
+`run.bat`을 쓰면 두 경우 모두 자동으로 처리됩니다. 지금 버전은 패키지가 없을 때 트레이스백 대신
+어떤 Python으로 실행했는지와 설치 명령을 한국어로 보여 줍니다.
+
+**`python`을 입력하면 Microsoft Store가 열린다**
+
+Python 설치 때 PATH 추가를 체크하지 않은 경우입니다. Python 설치 프로그램을 다시 실행해 "Modify"에서 PATH 추가를 켜거나,
+`python` 대신 `py`를 쓰세요(예: `py -m venv .venv`).
 
 ## 테스트
 
