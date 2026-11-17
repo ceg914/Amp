@@ -19,6 +19,7 @@ GUI가 ``python -m amp.engine.worker <명령> --args-json <JSON>`` 으로 실행
 from __future__ import annotations
 
 import argparse
+import errno
 import json
 import os
 import sys
@@ -142,6 +143,10 @@ def _classify(e: Exception) -> tuple[str, str]:
         return "missing_dependency", f"필요한 라이브러리를 불러오지 못했습니다 ({getattr(e, 'name', '') or e})."
     if isinstance(e, MemoryError):
         return "oom", "메모리가 부족해 분석을 마치지 못했습니다."
+    if isinstance(e, OSError) and (e.errno == errno.ENOSPC or getattr(e, "winerror", None) in (39, 112)):
+        return "disk_full", f"디스크 공간이 부족해 결과를 쓰지 못했습니다: {e.filename or ''}"
+    if isinstance(e, PermissionError):
+        return "permission", f"파일에 쓸 권한이 없습니다 (읽기 전용 폴더일 수 있습니다): {e.filename or ''}"
     return "internal", f"{type(e).__name__}: {e}"
 
 

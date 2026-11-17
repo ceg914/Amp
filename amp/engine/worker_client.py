@@ -30,7 +30,12 @@ ERROR_HINTS = {
     "model_download": "처음 분석할 때 Demucs 모델(약 80MB)을 인터넷에서 내려받습니다. 인터넷 연결과 디스크 여유 공간을 확인하세요.",
     "oom": "메모리가 부족합니다. 다른 프로그램을 닫거나, 분석 설정에서 처리 장치를 CPU로 바꿔 보세요.",
     "decode": "오디오 파일을 다시 확인하세요.",
+    "disk_full": "디스크 공간을 확보한 뒤 다시 실행하세요. 분리 결과는 곡 1분당 약 30MB가 필요합니다.",
+    "killed": "메모리 부족이나 외부 요인으로 분석 프로세스가 강제 종료되었을 수 있습니다. 다른 프로그램을 닫거나 "
+              "처리 장치를 CPU로 바꿔 다시 시도하세요. 완성되지 않은 결과는 저장하지 않았습니다.",
 }
+# Windows 예외 종료 코드 (접근 위반, 스택 오버런, 메모리 부족 등)
+_WINDOWS_CRASH_CODES = {0xC0000005, 0xC0000409, 0xC0000017, 0xC00000FD, 0xC0000374}
 
 
 class WorkerError(AnalysisError):
@@ -120,11 +125,16 @@ def run_worker(
             t.join(timeout=2)
 
     if error is not None:
+        log.error("분석 프로세스 오류 (명령 %s, 코드 %s): %s\n%s", command, error.get("code"), error.get("message"),
+                  error.get("detail", ""))
         raise WorkerError(str(error.get("code", "internal")), str(error.get("message", "")), str(error.get("detail", "")))
     if result is None or proc.returncode != 0:
         tail = "\n".join(stderr_tail)[-2000:]
-        log.error("분석 프로세스 비정상 종료 (code=%s)\n%s", proc.returncode, tail)
-        raise WorkerError("internal", f"분석 프로세스가 비정상 종료했습니다 (종료 코드 {proc.returncode}).", tail)
+        code = proc.returncode
+        log.error("분석 프로세스 비정상 종료 (명령 %s, 종료 코드 %s)\n%s", command, code, tail)
+        killed = code is not None and (code < 0 or (code & 0xFFFFFFFF) in _WINDOWS_CRASH_CODES)
+        raise WorkerError("killed" if killed else "internal",
+                          f"분석 프로세스가 비정상 종료했습니다 (종료 코드 {code}).", tail)
     result.pop("event", None)
     return result
 

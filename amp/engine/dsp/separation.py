@@ -17,7 +17,7 @@ from typing import Callable
 import numpy as np
 
 DEMUCS_MODELS = ("htdemucs",)
-TEST_MODELS = ("_identity", "_sleep")
+TEST_MODELS = ("_identity", "_sleep", "_crash")
 MODEL_RATE = 44100
 
 
@@ -128,6 +128,14 @@ def separate(
 
 
 def _run_test_model(name: str, norm: np.ndarray, report) -> dict:
+    if name == "_crash":  # 강제 종료 시험용: 정리 코드 없이 프로세스가 죽는다 (메모리 부족 강제 종료 흉내)
+        report(0.5, "시험용 모델이 강제 종료됩니다")
+        import os
+        import signal
+
+        if hasattr(signal, "SIGKILL"):
+            os.kill(os.getpid(), signal.SIGKILL)
+        os._exit(0xC0000017 & 0xFF)
     if name == "_sleep":  # 취소 시험용: 오래 걸리는 척한다
         import time
 

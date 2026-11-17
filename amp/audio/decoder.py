@@ -103,6 +103,8 @@ def _load_with_soundfile(path: str, progress: ProgressFn | None, is_cancelled: C
             data = np.concatenate([buf] + extra, axis=0)
         else:
             data = buf[: min(pos, expected)]
+        if expected and pos < expected * 0.98:
+            log.warning("파일 끝이 잘린 것 같습니다: 헤더 %d 프레임, 실제 %d 프레임 (%s)", expected, pos, path)
     return AudioData(data, sr)
 
 

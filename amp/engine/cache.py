@@ -81,6 +81,12 @@ class AnalysisCache:
             shutil.rmtree(tmp, ignore_errors=True)
             raise
 
+    def remove(self, audio_key: str, stage: str, params: dict) -> None:
+        """손상된 항목을 지운다 (다음에 다시 계산)."""
+        d = self.entry_dir(audio_key, stage, params)
+        if d.exists():
+            shutil.rmtree(d, ignore_errors=True)
+
     def size_bytes(self) -> int:
         total = 0
         if not self.root.exists():

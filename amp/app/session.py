@@ -116,9 +116,13 @@ class ProjectSession(QObject):
     def _submit(self, label: str, fn) -> TaskHandle:
         handle = self.runner.submit(label, fn)
         self.taskStarted.emit(handle, label)
-        handle.failed.connect(lambda msg, tb, l=label: self.error.emit(f"{l} 실패", msg, tb))
+        handle.failed.connect(lambda msg, tb, l=label: self._failed(l, msg, tb))
         handle.cancelled.connect(lambda l=label: self.message.emit(f"{l}을(를) 취소했습니다.", 5000))
         return handle
+
+    def _failed(self, label: str, message: str, detail: str) -> None:
+        log.error("%s 실패: %s\n%s", label, message, detail)  # 원인 확인용 (로그 파일·로그 패널)
+        self.error.emit(f"{label} 실패", message, detail)
 
     # --- 생성·열기·닫기 ----------------------------------------------------------
 

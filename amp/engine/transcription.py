@@ -26,6 +26,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Callable
 
+import numpy as np
+
 from amp.audio.data import AudioData
 from amp.core.errors import AnalysisError
 from amp.core.model import AnalysisResult, ModelInfo
@@ -133,20 +135,18 @@ class TranscriptionPipeline:
 
             token.raise_if_cancelled()
             pitch_params = {"tracker": "pyin", "v": PITCH_VERSION, "fmin": FMIN_HZ, "fmax": FMAX_HZ, "input": input_id}
-            pdir, reused["pitch"] = self._cached(cache, key, "pitch", pitch_params, st.use_cache, scratch,
-                                                 lambda out, p: self.runner("pitch", {"input": pitch_input, "out_dir": str(out)},
-                                                                            p, token, req.numba_cache_dir),
-                                                 prog.stage("pitch"))
-            frames = PitchFrames.load(pdir / "pitch.npz")
-            pmeta = _read_json(pdir / "meta.json")
+            expected = int(req.audio.duration * 100) + 1
+            (frames, pmeta), reused["pitch"] = self._cached(
+                cache, key, "pitch", pitch_params, st.use_cache, scratch,
+                lambda out, p: self.runner("pitch", {"input": pitch_input, "out_dir": str(out)}, p, token, req.numba_cache_dir),
+                lambda d: _load_pitch(d, expected), prog.stage("pitch"), warnings)
 
             token.raise_if_cancelled()
             tempo_params = {"estimator": "librosa", "v": TEMPO_VERSION, "input": input_id}
-            tdir, reused["tempo"] = self._cached(cache, key, "tempo", tempo_params, st.use_cache, scratch,
-                                                 lambda out, p: self.runner("tempo", {"input": tempo_input, "out_dir": str(out)},
-                                                                            p, token, req.numba_cache_dir),
-                                                 prog.stage("tempo"))
-            tempo = _read_json(tdir / "tempo.json")
+            tempo, reused["tempo"] = self._cached(
+                cache, key, "tempo", tempo_params, st.use_cache, scratch,
+                lambda out, p: self.runner("tempo", {"input": tempo_input, "out_dir": str(out)}, p, token, req.numba_cache_dir),
+                _load_tempo, prog.stage("tempo"), warnings)
 
         token.raise_if_cancelled()
         notes_report = prog.stage("notes")
@@ -203,22 +203,63 @@ class TranscriptionPipeline:
 
     @staticmethod
     def _cached(cache: AnalysisCache | None, key: str, stage: str, params: dict, use_cache: bool, scratch: Path,
-                compute: Callable[[Path, ProgressFn], dict], report: ProgressFn) -> tuple[Path, bool]:
+                compute: Callable[[Path, ProgressFn], dict], load: Callable[[Path], object], report: ProgressFn,
+                warnings: list[str]):
+        """(불러온 값, 재사용 여부). 캐시가 깨졌으면 지우고 다시 계산한다.
+
+        새로 계산한 결과도 캐시로 확정하기 전에 load로 검사한다. 검사에 실패하면 캐시에 남지 않는다.
+        """
         if cache is not None:
             hit = cache.lookup(key, stage, params) if use_cache else None
             if hit is not None:
-                report(1.0, "캐시 사용")
-                return hit, True
+                try:
+                    value = load(hit)
+                    report(1.0, "캐시 사용")
+                    return value, True
+                except Exception as e:  # noqa: BLE001 - 어떤 손상이든 다시 계산하면 된다
+                    log.warning("%s 캐시가 손상되어 다시 계산합니다: %s (%s)", stage, hit, e)
+                    warnings.append(f"{stage} 캐시가 손상되어 다시 계산했습니다.")
+                    cache.remove(key, stage, params)
             with cache.writer(key, stage, params) as tmp:
                 compute(tmp, report)
-            found = cache.lookup(key, stage, params)
-            if found is None:
-                raise AnalysisError(f"{stage} 캐시를 저장하지 못했습니다.")
-            return found, False
+                value = load(tmp)  # 실패하면 writer가 임시 폴더를 지운다 → 깨진 결과가 캐시에 남지 않는다
+            return value, False
         out = scratch / stage
         out.mkdir(parents=True, exist_ok=True)
         compute(out, report)
-        return out, False
+        return load(out), False
+
+
+class CacheEntryError(AnalysisError):
+    pass
+
+
+def _load_pitch(d: Path, expected_frames: int) -> tuple[PitchFrames, dict]:
+    try:
+        frames = PitchFrames.load(d / "pitch.npz")
+    except Exception as e:  # noqa: BLE001 - zip·npz 손상
+        raise CacheEntryError(f"pitch.npz를 읽을 수 없습니다: {e}") from e
+    n = len(frames.f0_hz)
+    if not (len(frames.voiced_prob) == len(frames.onset) == len(frames.rms) == n):
+        raise CacheEntryError("피치 배열 길이가 서로 다릅니다.")
+    if abs(n - expected_frames) > 3:
+        raise CacheEntryError(f"피치 프레임 수({n})가 오디오 길이({expected_frames})와 맞지 않습니다.")
+    f0 = frames.f0_hz
+    if np.any(np.isfinite(f0) & (f0 <= 0)) or np.any(~np.isfinite(frames.voiced_prob)):
+        raise CacheEntryError("피치 값이 올바르지 않습니다.")
+    return frames, _read_json(d / "meta.json")
+
+
+def _load_tempo(d: Path) -> dict:
+    try:
+        data = json.loads((d / "tempo.json").read_text(encoding="utf-8"))
+        bpm = float(data["bpm"])
+        float(data.get("first_beat", 0.0))
+    except Exception as e:  # noqa: BLE001
+        raise CacheEntryError(f"tempo.json을 읽을 수 없습니다: {e}") from e
+    if not (20.0 <= bpm <= 400.0):
+        raise CacheEntryError(f"BPM 값이 올바르지 않습니다: {bpm}")
+    return data
 
 
 def _read_json(path: Path) -> dict:
