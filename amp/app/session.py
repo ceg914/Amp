@@ -20,7 +20,7 @@ from amp.app.workers import TaskHandle, TaskRunner
 from amp.audio.data import AudioData
 from amp.audio.decoder import load_audio
 from amp.audio.peaks import WaveformPeaks
-from amp.core.errors import AmpError, AnalysisError
+from amp.core.errors import AmpError, AnalysisError, SaveConflictError
 from amp import __version__
 from amp.engine import stems as stem_store
 from amp.engine.merge import summarize
@@ -89,6 +89,7 @@ class ProjectSession(QObject):
         self.analysis_handle: TaskHandle | None = None
         self._lock: ProjectLock | None = None
         self._seq = 0
+        self.last_conflict: list[str] = []  # 마지막 저장이 충돌로 멈췄을 때 바뀐 파일 이름
 
     # --- 설정 ---------------------------------------------------------------
 
@@ -308,14 +309,24 @@ class ProjectSession(QObject):
 
     # --- 저장 -----------------------------------------------------------------
 
-    def save(self, ui: dict | None = None, playback: dict | None = None, analysis_settings: dict | None = None) -> bool:
+    def save(self, ui: dict | None = None, playback: dict | None = None, analysis_settings: dict | None = None,
+             force: bool = False) -> bool:
+        """저장 충돌(다른 곳에서 파일이 바뀜)이면 False를 돌려주고 last_conflict에 바뀐 파일 이름을 둔다.
+
+        이때는 오류 창을 띄우지 않는다. 덮어쓸지는 메인 창이 묻고, 덮어쓰기로 하면 force=True로 다시 부른다.
+        """
+        self.last_conflict: list[str] = []
         if self.folder is None:
             self.error.emit("저장할 수 없습니다", "열린 프로젝트가 없습니다. 먼저 오디오를 열어 프로젝트를 만드세요.", "")
             return False
         try:
             if analysis_settings is not None:
                 self.folder.meta.analysis_settings = analysis_settings
-            self.folder.save(self.doc.project, ui=ui, playback=playback)
+            self.folder.save(self.doc.project, ui=ui, playback=playback, force=force)
+        except SaveConflictError as e:
+            log.warning("저장 충돌: %s", ", ".join(e.changed))
+            self.last_conflict = e.changed
+            return False
         except (AmpError, OSError) as e:
             self.error.emit("저장하지 못했습니다", str(e), "")
             return False

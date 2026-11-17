@@ -27,3 +27,11 @@ class AnalysisCancelled(AmpError):
 
 class StorageError(AmpError):
     """파일을 쓰거나 읽지 못했을 때 (디스크 부족, 권한, 잠김 등)."""
+
+
+class SaveConflictError(StorageError):
+    """연 뒤에 다른 곳에서 프로젝트 파일이 바뀌어, 덮어쓰지 않고 멈췄을 때."""
+
+    def __init__(self, message: str, changed: list[str]) -> None:
+        super().__init__(message)
+        self.changed = changed

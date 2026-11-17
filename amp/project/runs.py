@@ -47,6 +47,7 @@ class RunRecord:
     notes: list[dict]  # {start, end, pitch, confidence, ornament, vibrato}
     warnings: list[str] = field(default_factory=list)
     score_summary: dict = field(default_factory=dict)  # 실행 시점의 사용자 편집 현황 (개수만)
+    seq: int = 0  # 프로젝트 안 저장 순번 (save_run이 매긴다). 시각이 같아도 순서가 정해진다
     version: int = RECORD_VERSION
 
     @property
@@ -68,8 +69,9 @@ class RunRecord:
 
 
 def new_run_id(now: datetime | None = None) -> str:
+    """시각(밀리초까지) + 임의 4자리. 이름순이 곧 시간순이다."""
     now = now or datetime.now()
-    return now.strftime("%Y%m%d-%H%M%S-") + uuid.uuid4().hex[:6]
+    return now.strftime("%Y%m%d-%H%M%S-") + f"{now.microsecond // 1000:03d}-" + uuid.uuid4().hex[:4]
 
 
 def record_from_result(result, kind: str, *, timings: dict | None = None, reused: dict | None = None,
@@ -91,7 +93,7 @@ def record_from_result(result, kind: str, *, timings: dict | None = None, reused
         p0 = result.tempo.points[0]
         tempo = {"bpm": round(float(p0.bpm), 3), "first_beat": round(float(getattr(p0, "time", 0.0)), 4)}
     return RunRecord(
-        run_id=new_run_id(), kind=kind, created=datetime.now(timezone.utc).isoformat(timespec="seconds"),
+        run_id=new_run_id(), kind=kind, created=datetime.now(timezone.utc).isoformat(timespec="milliseconds"),
         app_version=app_version, audio_sha256=result.audio_fingerprint or "", settings=dict(result.settings or {}),
         models=models, timings_s={k: round(float(v), 3) for k, v in (timings or {}).items()},
         reused=dict(reused or {}), resources=dict(resources or {}), tempo=tempo, notes=notes,
@@ -106,6 +108,7 @@ def runs_dir(analysis_dir: str | os.PathLike) -> Path:
 
 
 def save_run(analysis_dir: str | os.PathLike, record: RunRecord) -> Path:
+    record.seq = max((r.seq for r in list_runs(analysis_dir)), default=0) + 1
     path = runs_dir(analysis_dir) / f"{record.run_id}.json"
     atomic_write_json(path, record.to_dict())
     return path
@@ -122,7 +125,7 @@ def list_runs(analysis_dir: str | os.PathLike) -> list[RunRecord]:
             out.append(RunRecord.from_dict(read_json(p, what="실행 기록")))
         except (ProjectFormatError, OSError, TypeError, ValueError) as e:
             log.warning("실행 기록을 읽지 못했습니다 (%s): %s", p.name, e)
-    out.sort(key=lambda r: (r.created, r.run_id))
+    out.sort(key=lambda r: (r.seq, r.created, r.run_id))
     return out
 
 

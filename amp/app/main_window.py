@@ -809,7 +809,20 @@ class MainWindow(QMainWindow):
             log.warning("작업 공간 상태를 복원하지 못했습니다: %s", ui)
 
     def save(self) -> bool:
-        ok = self.session.save(self._ui_state(), self._playback_state(), self.inspector.analysis.settings().to_dict())
+        args = (self._ui_state(), self._playback_state(), self.inspector.analysis.settings().to_dict())
+        ok = self.session.save(*args)
+        if not ok and self.session.last_conflict:
+            answer = QMessageBox.question(
+                self, "저장 충돌",
+                "프로젝트를 연 뒤에 다른 곳(다른 프로그램이나 공유 폴더의 다른 컴퓨터)에서 바뀐 파일이 있습니다:\n"
+                + ", ".join(self.session.last_conflict)
+                + "\n\n덮어쓰면 그쪽에서 바꾼 내용이 사라집니다. 덮어쓸까요?\n"
+                "'아니요'를 누르면 저장하지 않습니다. 지금 작업은 '다른 이름으로 저장'으로 따로 남길 수 있습니다.",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No, QMessageBox.StandardButton.No)
+            if answer == QMessageBox.StandardButton.Yes:
+                ok = self.session.save(*args, force=True)
+            else:
+                self.statusBar().showMessage("저장하지 않았습니다 (저장 충돌).", 8000)
         if ok:
             self.autosave.discard()
         return ok

@@ -158,6 +158,27 @@ def test_v2_fixes_v1_portamento_over_split_in_precise(bench):
     assert v1["est"] > v1["ref"] and v2["est"] == v2["ref"]
 
 
+@pytest.fixture(scope="module")
+def heldout():
+    rows = B.evaluate(B.HELDOUT_CASES, ("standard", "precise"))
+    return {(r["case"], r["sensitivity"], r["version"]): r for r in rows}
+
+
+@pytest.mark.parametrize("sens", ["standard", "precise"])
+def test_v2_not_worse_than_v1_on_variant_cases(heldout, sens):
+    """잔향·잡음·트레몰로·얕은 하락을 넣은 변형 사례 (B.HELDOUT_CASES 설명 참고)."""
+    for c in B.HELDOUT_CASES:
+        v1, v2 = heldout[(c.name, sens, "v1")], heldout[(c.name, sens, "v2")]
+        assert v2["f1"] >= v1["f1"], (c.name, v1["notes"], v2["notes"])
+        assert v2["voicing_false_alarm"] <= v1["voicing_false_alarm"], c.name
+
+
+def test_tremolo_and_vibrato_do_not_split_long_notes(heldout):
+    for case in ("h_tremolo", "h_tremolo_reverb"):
+        for sens in ("standard", "precise"):
+            assert heldout[(case, sens, "v2")]["est"] == 1, (case, sens)
+
+
 def test_v2_lowers_voicing_false_alarm_overall(bench):
     fa = {v: np.mean([bench[(c.name, "standard", v)]["voicing_false_alarm"] for c in B.CASES]) for v in ("v1", "v2")}
     assert fa["v2"] < fa["v1"] * 0.5

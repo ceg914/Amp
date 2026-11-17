@@ -19,7 +19,7 @@ from pathlib import Path
 from typing import Callable
 
 from amp import __version__
-from amp.core.errors import AmpError, AnalysisCancelled, ProjectFormatError, StorageError
+from amp.core.errors import AmpError, AnalysisCancelled, ProjectFormatError, SaveConflictError, StorageError
 from amp.core.fileio import atomic_write_json, long_path, read_json_with_backup, storage_error
 from amp.core.model import AudioRef, Project
 from amp.engine import stems as stem_store
@@ -253,14 +253,45 @@ class ProjectFolder:
 
     # --- 저장·불러오기 ----------------------------------------------------------
 
+    def _disk_state(self) -> dict[str, tuple[int, int]]:
+        """저장 충돌 확인용: 프로젝트 파일들의 (크기, 수정 시각 ns)."""
+        out = {}
+        for p in (self.paths.project_json, self.paths.notes_json, self.paths.tempo_json, self.paths.pitch_json):
+            try:
+                st = p.stat()
+                out[p.name] = (st.st_size, st.st_mtime_ns)
+            except OSError:
+                pass
+        return out
+
+    def conflicting_files(self) -> list[str]:
+        """연 뒤(또는 마지막 저장 뒤) 다른 곳에서 바뀐 프로젝트 파일 이름."""
+        known = getattr(self, "_known_state", None)
+        if known is None:
+            return []
+        now = self._disk_state()
+        return sorted(k for k in set(known) | set(now) if known.get(k) != now.get(k))
+
     def write_meta(self) -> None:
         self.meta.modified = now_iso()
         self.meta.last_path = str(self.root.resolve())
         self.meta.app_version = __version__
         atomic_write_json(self.paths.project_json, self.meta.to_dict(), backup=True)
+        if getattr(self, "_known_state", None) is not None:  # 내가 쓴 변경은 충돌이 아니다
+            self._known_state = self._disk_state()
 
-    def save(self, project: Project, *, ui: dict | None = None, playback: dict | None = None) -> None:
-        """분석 파일과 project.json을 저장한다. 피치는 분석 결과가 바뀌었을 때만 다시 쓴다."""
+    def save(self, project: Project, *, ui: dict | None = None, playback: dict | None = None,
+             force: bool = False) -> None:
+        """분석 파일과 project.json을 저장한다. 피치는 분석 결과가 바뀌었을 때만 다시 쓴다.
+
+        연 뒤에 다른 곳(잠금이 통하지 않는 공유 폴더의 다른 컴퓨터, 다른 프로그램)에서 프로젝트 파일이 바뀌었으면
+        덮어쓰지 않고 SaveConflictError를 던진다. force=True면 확인 없이 덮어쓴다.
+        """
+        changed = [] if force else self.conflicting_files()
+        if changed:
+            raise SaveConflictError(
+                "프로젝트를 연 뒤에 다른 곳에서 파일이 바뀌었습니다: " + ", ".join(changed) + ". "
+                "덮어쓰지 않았습니다. 지금 작업은 '다른 이름으로 저장'으로 따로 남길 수 있습니다.", changed)
         self.paths.ensure_dirs()
         write_pitch = project.analysis is not None and project.analysis is not self._analysis_written
         save_analysis_files(self.paths, project, write_pitch=write_pitch)
@@ -291,11 +322,13 @@ class ProjectFolder:
         if playback is not None:
             self.meta.playback = playback
         self.write_meta()
+        self._known_state = self._disk_state()  # 이후 저장은 이 상태와 비교한다
 
     def load_project(self) -> tuple[Project, LoadReport]:
         report = LoadReport()
         analysis, score = load_analysis_files(self.paths, report)
         self._analysis_written = analysis
+        self._known_state = self._disk_state()
         return Project(audio=self.audio_ref(), analysis=analysis, score=score), report
 
 

@@ -1,5 +1,6 @@
 """메인 창 통합 시험: 프로젝트 생성·저장·재열기·복구·분석·트랙·내보내기·동기화 (STEP 1·2·SONATLAS 회귀)."""
 
+import json
 import os
 
 import numpy as np
@@ -283,3 +284,22 @@ def test_failed_analysis_is_not_recorded(qtbot, window, song, monkeypatch):
     qtbot.waitUntil(lambda: not window.session.busy and bool(window.errors), timeout=20_000)
     assert runs.list_runs(folder.paths.analysis) == []
     assert window.doc.project.analysis is None
+
+
+def test_save_conflict_asks_before_overwriting(qtbot, window, song, monkeypatch):
+    folder = create(qtbot, window, song)
+    assert window.save()
+    data = json.loads(folder.paths.project_json.read_text(encoding="utf-8"))
+    data["name"] = "다른 곳에서 바꾼 이름"
+    folder.paths.project_json.write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
+    asked = []
+
+    def answer(choice):
+        return lambda *a, **k: (asked.append(a[1]), choice)[1]
+
+    monkeypatch.setattr(QMessageBox, "question", answer(QMessageBox.StandardButton.No))
+    assert window.save() is False and asked == ["저장 충돌"]
+    assert json.loads(folder.paths.project_json.read_text(encoding="utf-8"))["name"] == "다른 곳에서 바꾼 이름"
+    assert not window.errors
+    monkeypatch.setattr(QMessageBox, "question", answer(QMessageBox.StandardButton.Yes))
+    assert window.save() is True

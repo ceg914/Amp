@@ -43,14 +43,24 @@ def test_list_skips_corrupt_records_and_sorts(tmp_path):
     r1 = runs.record_from_result(result([note("a", 1.0, 1.5, 64)]), "full")
     r2 = runs.record_from_result(result([note("a", 1.0, 1.5, 64)]), "redetect")
     r1.created, r2.created = "2026-11-17T01:00:00+00:00", "2026-11-17T02:00:00+00:00"
-    runs.save_run(a, r2)
     runs.save_run(a, r1)
+    runs.save_run(a, r2)
     (a / "runs" / "broken.json").write_text("{not json", encoding="utf-8")
     (a / "runs" / "partial.json").write_text('{"run_id": "x"}', encoding="utf-8")
     got = runs.list_runs(a)
     assert [r.run_id for r in got] == [r1.run_id, r2.run_id]
     assert runs.find_run(a, r2.run_id[:15] + r2.run_id[15:]).run_id == r2.run_id
     assert runs.list_runs(tmp_path / "없음") == []
+
+
+def test_runs_in_the_same_second_keep_their_order(tmp_path):
+    a = tmp_path / "analysis"
+    ids = []
+    for kind in ("full", "redetect", "redetect"):
+        r = runs.record_from_result(result([note("a", 1.0, 1.5, 64)]), kind)
+        runs.save_run(a, r)
+        ids.append(r.run_id)
+    assert [r.run_id for r in runs.list_runs(a)] == ids
 
 
 def test_compare_runs_and_report(tmp_path):

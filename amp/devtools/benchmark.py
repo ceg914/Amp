@@ -5,7 +5,7 @@ pYIN은 두 버전이 같으므로 사례마다 한 번만 돌린다. 버전별�
     v1: STEP 2 온셋(128ms 창) + 64ms RMS + v1 후처리·음표 검출·프리셋 (amp/engine/baselines)
     v2: 현재 온셋(32ms 창) + 20ms RMS + 현재 후처리·음표 검출·프리셋
 
-실행: python -m amp.devtools.benchmark  (결과 표를 출력)
+실행: python -m amp.devtools.benchmark [민감도 ...] [--heldout]  (결과 표를 출력)
 """
 
 from __future__ import annotations
@@ -30,9 +30,11 @@ class Case:
     duration: float
     synth_kw: dict = field(default_factory=dict)
     extra: str = ""  # 추가 가공: "breath" | "octave" | "dips"
+    effects: tuple = ()  # 변형 사례의 가공: (이름, 인자 dict) 목록
+    ref_melody: list | None = None  # 정답이 melody와 다를 때 (음량 하락으로 다시 부른 경우)
 
     def reference(self) -> list[RefNote]:
-        return [RefNote(a, b, m) for a, b, m in self.melody]
+        return [RefNote(a, b, m) for a, b, m in (self.ref_melody or self.melody)]
 
 
 def _repeat(pitch, n, dur, gap, start=0.5):
@@ -60,6 +62,53 @@ CASES = [
 # "repeat_dip"의 정답: 음량 하락 지점마다 새 음표 (다시 부름)
 _DIP_TIMES = (0.9, 1.3, 1.7)
 
+# 변형 사례: v2 초안을 만든 뒤 과적합 여부를 보려고 추가한 사례(잔향·잡음·트레몰로·얕은 하락).
+# 완전한 미사용 데이터는 아니다. h_fast_reverb·h_glide_noise에서 드러난 규칙 문제 3개
+# (첫 조각이 재발음이면 미끄러짐 아님, 두 이웃 사이 높이 조각은 꾸밈음 아님, 이웃 쪽 가장자리 조각은 잘라내지 않음)를
+# 고쳤다. 임계값(split_strength 등)은 이 사례로 바꾸지 않았다.
+_FAST = [(0.5 + 0.13 * i, 0.63 + 0.13 * i, p) for i, p in enumerate([67, 69, 71, 72, 74, 72, 71, 69, 67])]
+_DIP4 = [(0.5, 0.9, 60), (0.9, 1.3, 60), (1.3, 1.7, 60), (1.7, 2.1, 60)]
+HELDOUT_CASES = [
+    Case("h_repeat_reverb", "같은 음 반복 60ms 틈 + 잔향", [(0.5, 0.8, 64), (0.86, 1.16, 64), (1.22, 1.52, 64)], 1.9,
+         {"same_vowel": True}, effects=(("reverb", {"rt": 0.4, "mix": 0.25, "seed": 1}),)),
+    Case("h_repeat_noise", "같은 음 반복 30ms 틈 (A4) + 잡음 -35dB", [(0.5, 0.78, 69), (0.81, 1.09, 69), (1.12, 1.40, 69)],
+         1.8, {"same_vowel": True}, effects=(("noise", {"db": -35, "seed": 2}),)),
+    Case("h_dip10", "음량 -10dB 하락 재발음", [(0.5, 2.1, 60)], 2.5, {"same_vowel": True},
+         effects=(("dips", {"times": (0.9, 1.3, 1.7), "db": 10}),), ref_melody=_DIP4),
+    Case("h_dip7", "음량 -7dB 하락 재발음 (얕음)", [(0.5, 2.1, 60)], 2.5, {"same_vowel": True},
+         effects=(("dips", {"times": (0.9, 1.3, 1.7), "db": 7}),), ref_melody=_DIP4),
+    Case("h_tremolo", "긴 음 + 트레몰로 ±3dB + 비브라토 60c", [(0.5, 3.0, 62)], 3.4, {"vibrato_cents": 60},
+         effects=(("tremolo", {"db": 3.0}),)),
+    Case("h_tremolo_reverb", "긴 음 + 트레몰로 ±5dB + 비브라토 40c + 잔향", [(0.5, 3.0, 67)], 3.4, {"vibrato_cents": 40},
+         effects=(("tremolo", {"db": 5.0}), ("reverb", {"rt": 0.4, "mix": 0.25, "seed": 3}))),
+    Case("h_glide_noise", "150ms 미끄러짐 + 잡음 -30dB", [(0.5, 1.2, 57), (1.2, 1.9, 62), (1.9, 2.6, 59)], 3.0,
+         {"glide_s": 0.15}, effects=(("noise", {"db": -30, "seed": 4}),)),
+    Case("h_fast_reverb", "130ms 빠른 음계 + 잔향", _FAST, 2.2, {}, effects=(("reverb", {"rt": 0.3, "mix": 0.2, "seed": 5}),)),
+]
+
+
+def _apply(y: np.ndarray, name: str, kw: dict) -> np.ndarray:
+    y = np.asarray(y, dtype=np.float64)
+    t = np.arange(len(y)) / SR
+    if name == "reverb":
+        rng = np.random.default_rng(kw["seed"])
+        n = int(kw["rt"] * SR)
+        ir = rng.standard_normal(n) * np.exp(-6.9 * np.arange(n) / n)
+        wet = np.convolve(y, ir)[:len(y)]
+        wet *= np.std(y) / (np.std(wet) + 1e-12)
+        return (1 - kw["mix"]) * y + kw["mix"] * wet
+    if name == "noise":
+        rng = np.random.default_rng(kw["seed"])
+        return y + rng.standard_normal(len(y)) * np.max(np.abs(y)) * 10 ** (kw["db"] / 20)
+    if name == "tremolo":
+        return y * 10 ** (kw["db"] / 20 * np.sin(2 * np.pi * kw.get("hz", 5.5) * t))
+    if name == "dips":
+        y = y.copy()
+        for d in kw["times"]:
+            y[(t > d - 0.06) & (t < d + 0.01)] *= 10 ** (-kw["db"] / 20)
+        return y
+    raise ValueError(name)
+
 
 def _reference(case: Case) -> list[RefNote]:
     if case.extra == "dips":
@@ -77,6 +126,8 @@ def render(case: Case) -> np.ndarray:
             y[sel] *= 10 ** (-18 / 20)
     if case.extra == "breath":
         y = y + synth.breath_noise(case.duration, [(1.3, 1.9)], -30)
+    for name, kw in case.effects:
+        y = _apply(y, name, kw)
     return y.astype(np.float32)
 
 
@@ -161,6 +212,8 @@ def markdown_table(rows: list[dict]) -> str:
 if __name__ == "__main__":
     import sys
 
-    sens = tuple(sys.argv[1:]) or ("standard",)
-    rows = evaluate(sensitivities=sens)
+    args = [a for a in sys.argv[1:] if not a.startswith("--")]
+    sens = tuple(args) or ("standard",)
+    cases = HELDOUT_CASES if "--heldout" in sys.argv else CASES
+    rows = evaluate(cases, sensitivities=sens)
     print(markdown_table(rows))

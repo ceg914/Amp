@@ -340,3 +340,28 @@ def test_import_legacy_ampproj(wav_src, tmp_path):
     assert p.score.get("a").pitch == 50 and p.note_status(p.score.get("a")) == "modified"
     assert p.analysis.notes == a.notes
     assert folder.meta.original.mode == LINK and folder.resolve_original().state == "ok"
+
+
+def test_save_conflict_when_files_changed_elsewhere(wav_src, tmp_path):
+    """STEP 2.5: 잠금이 통하지 않는 곳에서 다른 쪽이 파일을 바꿨으면 덮어쓰지 않는다."""
+    from amp.core.errors import SaveConflictError
+
+    folder = create_project(wav_src, tmp_path / "P", "곡", COPY)
+    project = _filled_project(folder)
+    folder.save(project)
+    mine, _ = open_folder(folder.root)
+    p_mine, _ = mine.load_project()
+    mine.save(p_mine)  # 내 저장끼리는 충돌이 아니다
+    mine.save(p_mine)
+    other, _ = open_folder(folder.root)  # 다른 컴퓨터가 같은 폴더를 열어 저장했다고 가정
+    p_other, _ = other.load_project()
+    p_other.score.replace_notes([p_other.score.notes()[0].id], [])
+    other.save(p_other)
+    theirs = folder.paths.notes_json.read_bytes()
+    with pytest.raises(SaveConflictError) as e:
+        mine.save(p_mine)
+    assert "notes.json" in e.value.changed and "project.json" in e.value.changed
+    assert folder.paths.notes_json.read_bytes() == theirs  # 그쪽 저장 내용이 그대로 있다
+    mine.save(p_mine, force=True)  # 사용자가 덮어쓰기를 고른 경우
+    assert folder.paths.notes_json.read_bytes() != theirs
+    assert mine.conflicting_files() == []
