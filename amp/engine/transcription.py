@@ -36,7 +36,7 @@ from amp.engine.context import CancelToken, ProgressFn
 from amp.engine.dsp.pitch import FMAX_HZ, FMIN_HZ, PitchFrames
 from amp.engine.features import vocal_presence
 from amp.engine.notes import detect_notes
-from amp.engine.pitch_post import build_curve
+from amp.engine.pitch_post import articulation_envelope, build_curve
 from amp.engine.settings import AnalysisSettings
 from amp.engine.worker_client import run_worker
 
@@ -153,7 +153,8 @@ class TranscriptionPipeline:
         notes_report(0.0, "음표 검출 중")
         curve = build_curve(frames.f0_hz, frames.voiced_prob, frames.rms, frames.frame_rate, frames.start_time)
         params = st.note_params()
-        notes = detect_notes(curve, frames.onset, params)
+        artic = articulation_envelope(frames.onset, frames.rms, frames.frame_rate)
+        notes = detect_notes(curve, artic, params)
         notes_report(1.0, f"음표 {len(notes)}개 검출")
         if tempo.get("reason"):
             warnings.append(tempo["reason"])
@@ -172,7 +173,7 @@ class TranscriptionPipeline:
             models=models,
             created_at=datetime.now(timezone.utc).isoformat(timespec="seconds"),
             audio_fingerprint=req.source_sha256,
-            onset_envelope=frames.onset,
+            onset_envelope=artic,  # 음표 재검출에 쓰는 재발음 지표 (온셋 × 음량 하락)
             tempo_info={k: v for k, v in tempo.items() if k != "versions"} | {"algorithm": "librosa beat_track + 박 간격 직선 보정"},
             warnings=tuple(warnings),
             settings=st.to_dict(),

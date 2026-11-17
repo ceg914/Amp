@@ -24,6 +24,9 @@ amp = "amp.app.main:main"
 [tool.setuptools.packages.find]
 include = ["amp*"]
 
+[tool.setuptools.package-data]
+"amp.app.theme" = ["fonts/*", "icons/*"]
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 pythonpath = ["."]

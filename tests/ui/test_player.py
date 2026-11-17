@@ -68,3 +68,21 @@ def test_seek_while_playing_keeps_updating(qtbot):
     qtbot.waitUntil(lambda: p.state is PlaybackState.STOPPED, timeout=8000)
     assert p.position() == pytest.approx(2.0)
     p.shutdown()
+
+
+def test_tracks_and_states_without_device(qapp):
+    p = AudioPlayer()
+    sr = 100
+    orig = AudioData(np.zeros((1000, 2), np.float32), sr)
+    p.set_audio(orig)
+    p.seek(3.0)
+    p.set_track("vocals", AudioData(np.zeros((1000, 2), np.float32), sr))
+    assert set(p.tracks) == {"original", "vocals"} and p.position() == 3.0  # 위치 유지
+    errors = []
+    p.errorOccurred.connect(errors.append)
+    p.set_track("bad", AudioData(np.zeros((999, 2), np.float32), sr))
+    assert "bad" not in p.tracks and errors
+    p.set_track_state("vocals", mute=True, gain=0.5)
+    assert p.track_state("vocals") == {"gain": 0.5, "mute": True, "solo": False}
+    p.set_track("vocals", None)
+    assert set(p.tracks) == {"original"}

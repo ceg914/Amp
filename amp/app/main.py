@@ -18,7 +18,7 @@ log = logging.getLogger("amp")
 
 def setup_logging() -> str:
     base = QStandardPaths.writableLocation(QStandardPaths.StandardLocation.AppLocalDataLocation)
-    log_dir = os.path.join(base or os.path.expanduser("~/.amp"), "logs")
+    log_dir = os.path.join(base or os.path.expanduser("~/.sonatlas"), "logs")
     os.makedirs(log_dir, exist_ok=True)
     path = os.path.join(log_dir, "amp.log")
     root = logging.getLogger()
@@ -60,11 +60,11 @@ def main(argv: list[str] | None = None) -> int:
     app = QApplication(argv)
 
     from amp.app.main_window import MainWindow
-    from amp.app.theme import apply_dark_palette
+    from amp.app.theme import apply_theme
 
     log_path = setup_logging()
     install_excepthook(log_path)
-    apply_dark_palette(app)
+    apply_theme(app)
     log.info("%s %s 시작", APP_NAME, __version__)
 
     window = MainWindow()
@@ -72,8 +72,8 @@ def main(argv: list[str] | None = None) -> int:
     QTimer.singleShot(0, window.check_recovery)
     if len(argv) > 1:
         path = argv[1]
-        if path.lower().endswith(".ampproj"):
+        if path.lower().endswith((".ampproj", ".json")) or os.path.isdir(path):
             QTimer.singleShot(0, lambda: window.open_project(path))
         else:
-            QTimer.singleShot(0, lambda: window.load_audio(path, new_project=True))
+            QTimer.singleShot(0, lambda: window.create_project_from_audio(path))
     return app.exec()

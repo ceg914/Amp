@@ -67,3 +67,16 @@ def test_short_islands_removed_and_energy_gate():
 
 def test_hz_to_midi_roundtrip():
     assert hz_to_midi(np.array([261.6256]))[0] == pytest.approx(60, abs=1e-3)
+
+
+def test_articulation_envelope_needs_energy_dip():
+    from amp.engine.pitch_post import articulation_envelope
+
+    n = 300
+    onset = np.ones(n)
+    onset[100] = onset[200] = 10.0
+    rms = np.full(n, 0.1)
+    rms[195:200] = 0.01  # 200 프레임 직전 20dB 하락 (재발음), 100은 하락 없음 (비브라토 흔들림)
+    art = articulation_envelope(onset, rms, 100.0)
+    assert art[200] > 8.0
+    assert art[100] < 1.0

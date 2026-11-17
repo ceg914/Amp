@@ -1,14 +1,23 @@
-"""메인 창: 메뉴·툴바·위젯 배치와 작업 흐름(열기·저장·분석)을 묶는다."""
+"""메인 창 (SONATLAS_UI_SPEC 5장 레이아웃).
+
+    ┌ 메뉴 / 도구막대: 프로젝트명·열기·저장·폴더 / 재생 / 타임코드 / BPM / 분석 실행 ┐
+    │ 좌: 프로젝트·트랙 │ 중앙: 눈금자·파형·피아노 롤 │ 우: 선택 음표·분석 설정 │
+    └ 상태 표시줄: 진행률·취소·메시지 (로그는 아래 도크로 펼침) ┘
+
+작업 흐름(프로젝트 생성·열기·저장·분석·내보내기)은 ProjectSession이 맡고, 이 클래스는 화면과 연결만 한다.
+"""
 
 from __future__ import annotations
 
 import logging
 import os
+from pathlib import Path
 
-from PySide6.QtCore import QSettings, Qt
-from PySide6.QtGui import QAction, QCloseEvent, QKeySequence
+from PySide6.QtCore import QSettings, Qt, QTimer, QUrl
+from PySide6.QtGui import QAction, QCloseEvent, QDesktopServices, QKeySequence
 from PySide6.QtWidgets import (
     QComboBox,
+    QDockWidget,
     QDoubleSpinBox,
     QFileDialog,
     QGridLayout,
@@ -16,41 +25,51 @@ from PySide6.QtWidgets import (
     QMainWindow,
     QMessageBox,
     QProgressBar,
-    QStyle,
+    QSplitter,
     QToolButton,
     QWidget,
 )
 
 from amp import APP_DISPLAY_NAME, __version__
+from amp.app import theme
 from amp.app.autosave import AutosaveManager, RecoveryEntry
+from amp.app.dialogs import ExportDialog, NewProjectDialog, ReanalysisDialog
 from amp.app.document import ProjectDocument
 from amp.app.pianoroll.view import PianoRollView
 from amp.app.player import AudioPlayer, PlaybackState
+from amp.app.session import ProjectSession
+from amp.app.theme import tokens as T
+from amp.app.theme.icons import ICON_SIZE, icon
 from amp.app.timeline import TimelineState
+from amp.app.widgets.inspector import Inspector
 from amp.app.widgets.keyboard import KEYBOARD_WIDTH, PianoKeyboard
+from amp.app.widgets.log_panel import LogPanel
 from amp.app.widgets.ruler import TimeRuler
+from amp.app.widgets.track_panel import TRACK_HINTS, TRACK_LABELS, TrackPanel
 from amp.app.widgets.waveform import WaveformView
 from amp.app.workers import TaskHandle, TaskRunner
-from amp.audio.data import AudioData
-from amp.audio.decoder import SUPPORTED_EXTENSIONS, file_fingerprint, load_audio
-from amp.audio.peaks import WaveformPeaks
+from amp.audio.decoder import SUPPORTED_EXTENSIONS
 from amp.core.errors import EditError, ProjectFormatError
-from amp.core.model import AudioRef
-from amp.core.tempo import MAX_BPM, MIN_BPM
-from amp.engine.pipeline import AnalysisPipeline, PipelineConfig
-from amp.engine.registry import default_registry
-from amp.storage.project_file import PROJECT_EXTENSION, load_project, save_project
+from amp.core.model import AnalysisResult
+from amp.core.tempo import MAX_BPM, MIN_BPM, TempoMap
+from amp.engine.merge import KEEP_EDITS, REPLACE_ALL, plan_reanalysis, summarize
+from amp.engine.settings import AnalysisSettings
+from amp.project.layout import PROJECT_FILE, is_project_folder
+from amp.storage.project_file import PROJECT_EXTENSION, load_project
 
 log = logging.getLogger(__name__)
 
 AUDIO_FILTER = "오디오 파일 (" + " ".join(f"*{e}" for e in SUPPORTED_EXTENSIONS) + ")"
-PROJECT_FILTER = f"Amp 프로젝트 (*{PROJECT_EXTENSION})"
+OPEN_FILTER = f"SONATLAS 프로젝트 ({PROJECT_FILE});;이전 형식 프로젝트 (*{PROJECT_EXTENSION})"
 SNAP_CHOICES = (("스냅 끔", 0.0), ("1/4", 1.0), ("1/8", 0.5), ("1/16", 0.25), ("1/32", 0.125))
+SETTINGS_KEY = "analysis/settings"
 
 HELP_TEXT = """<h3>조작 방법</h3>
 <ul>
-<li>오디오 열기 <b>Ctrl+O</b>, 재생/일시정지 <b>Space</b>, 정지 <b>Esc</b>(재생 시작 위치로), 처음으로 <b>Home</b></li>
-<li>눈금자·파형 클릭/드래그: 재생 위치 이동</li>
+<li>새 프로젝트(오디오 열기) <b>Ctrl+O</b>, 프로젝트 열기 <b>Ctrl+Shift+O</b>, 저장 <b>Ctrl+S</b></li>
+<li>재생/일시정지 <b>Space</b>, 정지 <b>Esc</b>(재생 시작 위치로), 처음으로 <b>Home</b></li>
+<li>눈금자·파형 클릭/드래그: 재생 위치 이동. 왼쪽 트랙 줄을 누르면 그 트랙의 파형을 보여 줍니다.</li>
+<li>트랙: 헤드폰 = 그 트랙만 듣기(솔로), 스피커 = 음소거, 막대 = 음량</li>
 <li>음표 클릭: 선택, Ctrl+클릭: 선택 추가/해제, 빈 곳 드래그: 범위 선택</li>
 <li>음표 드래그: 이동, 음표 양 끝 드래그: 길이 변경, 드래그 중 <b>Alt</b>: 스냅 해제</li>
 <li>빈 곳 더블클릭: 음표 추가, 오른쪽 클릭: 분할·병합·삭제</li>
@@ -58,44 +77,49 @@ HELP_TEXT = """<h3>조작 방법</h3>
 <li><b>Ctrl+E</b>: 재생 위치에서 선택 음표 분할, <b>Ctrl+M</b>: 선택 음표 병합</li>
 <li>Ctrl+휠: 가로 확대, Ctrl+Shift+휠: 세로 확대, Shift+휠: 가로 스크롤</li>
 </ul>
-<p>음표 색: 파랑 = 분석 원본 그대로, 주황 = 수정됨, 초록 = 직접 추가</p>
-<h3>현재 버전에서 동작하지 않는 것</h3>
-<p>보컬/반주 분리, 실제 음높이·BPM·가사 분석, 가사 입력·편집, 발음 기호 생성,
-MIDI·JSON 내보내기는 아직 구현하지 않았습니다.
-'샘플 분석'은 오디오 길이만 보고 고정 패턴을 만드는 테스트용 기능입니다.</p>"""
+<p>음표 구분: 꽉 찬 바이올렛 = 분석 원본 그대로, 점선 테두리 + 삼각 표식 = 수정함,
+옅은 채움 + '+' = 직접 추가, 점 테두리 = 장식음. 민트 곡선 = 실제 피치.</p>
+<h3>아직 없는 기능</h3>
+<p>가사 인식·입력·정렬, 발음 기호, MIDI·JSON 내보내기는 아직 구현하지 않았습니다.
+'샘플 데이터 생성'은 오디오 길이만 보고 고정 패턴을 만드는 시험용 기능입니다.</p>"""
 
 
 class MainWindow(QMainWindow):
-    def __init__(self, recovery_dir: str | None = None, autosave_interval_ms: int = 60_000) -> None:
+    def __init__(self, recovery_dir: str | None = None, autosave_interval_ms: int = 60_000,
+                 projects_root: str | None = None) -> None:
         super().__init__()
+        self.settings = QSettings()
         self.doc = ProjectDocument(self)
         self.timeline = TimelineState(self)
-        self.runner = TaskRunner(self)
+        self.runner = TaskRunner(self, max_threads=3)
         self.player = AudioPlayer(self)
-        self.registry = default_registry()
-        self.audio: AudioData | None = None
-        self.peaks: WaveformPeaks | None = None
-        self._time = 0.0  # 재생 장치가 없을 때도 쓰는 재생 위치
-        self._load_seq = 0
-        self._analysis: TaskHandle | None = None
+        self.session = ProjectSession(self.doc, self.player, self.runner, self.settings, projects_root, self)
+        self.autosave = AutosaveManager(self.doc, recovery_dir, autosave_interval_ms, self)
+        self._time = 0.0
         self._tracked: list[TaskHandle] = []
         self._player_error_shown = False
-        self.settings = QSettings()
-        self.autosave = AutosaveManager(self.doc, recovery_dir, autosave_interval_ms, self)
+        self._pending_ui: dict = {}
+        self._pending_playback: dict = {}
 
         self._build_central()
         self._build_actions()
         self._build_menus()
         self._build_toolbar()
         self._build_statusbar()
+        self._build_log_dock()
         self._connect()
+        self.inspector.analysis.set_settings(AnalysisSettings.from_dict(self._stored_settings()))
         self._update_title()
         self._update_actions()
         self._sync_tempo_widgets()
-        self.resize(1280, 800)
+        self._refresh_tracks()
+        self.resize(1440, 860)
         geometry = self.settings.value("window/geometry")
         if geometry is not None:
             self.restoreGeometry(geometry)
+        sizes = self.settings.value("window/splitter")
+        if sizes:
+            self.splitter.setSizes([int(x) for x in sizes])
 
     # --- 화면 구성 ----------------------------------------------------------------
 
@@ -104,30 +128,44 @@ class MainWindow(QMainWindow):
         self.ruler = TimeRuler(self.timeline, lambda: self.doc.score.tempo)
         self.waveform = WaveformView(self.timeline)
         self.keyboard = PianoKeyboard(self.view, self.view.mapper)
-
         corner = QLabel("시간")
         corner.setFixedWidth(KEYBOARD_WIDTH)
         corner.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        wave_label = QLabel("파형")
-        wave_label.setFixedWidth(KEYBOARD_WIDTH)
-        wave_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        corner.setProperty("role", "secondary")
+        self.wave_label = QLabel("파형")
+        self.wave_label.setFixedWidth(KEYBOARD_WIDTH)
+        self.wave_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.wave_label.setProperty("role", "secondary")
 
-        central = QWidget()
-        grid = QGridLayout(central)
+        center = QWidget()
+        grid = QGridLayout(center)
         grid.setContentsMargins(0, 0, 0, 0)
         grid.setSpacing(0)
         grid.addWidget(corner, 0, 0)
         grid.addWidget(self.ruler, 0, 1)
-        grid.addWidget(wave_label, 1, 0)
+        grid.addWidget(self.wave_label, 1, 0)
         grid.addWidget(self.waveform, 1, 1)
         grid.addWidget(self.keyboard, 2, 0)
         grid.addWidget(self.view, 2, 1)
         grid.setRowStretch(2, 1)
         grid.setColumnStretch(1, 1)
-        self.setCentralWidget(central)
 
-    def _action(self, text: str, slot, shortcut=None, checkable: bool = False, checked: bool = False) -> QAction:
+        self.tracks = TrackPanel()
+        self.inspector = Inspector()
+        self.splitter = QSplitter(Qt.Orientation.Horizontal)
+        self.splitter.addWidget(self.tracks)
+        self.splitter.addWidget(center)
+        self.splitter.addWidget(self.inspector)
+        self.splitter.setStretchFactor(1, 1)
+        self.splitter.setSizes([260, 940, 340])
+        self.splitter.setChildrenCollapsible(False)
+        self.setCentralWidget(self.splitter)
+
+    def _action(self, text: str, slot, shortcut=None, checkable: bool = False, checked: bool = False,
+                icon_name: str | None = None) -> QAction:
         a = QAction(text, self)
+        if icon_name:
+            a.setIcon(icon(icon_name))
         if shortcut is not None:
             if isinstance(shortcut, (list, tuple)):
                 a.setShortcuts([QKeySequence(s) for s in shortcut])
@@ -143,85 +181,138 @@ class MainWindow(QMainWindow):
 
     def _build_actions(self) -> None:
         A = self._action
-        self.act_open_audio = A("오디오 열기…", self.open_audio_dialog, QKeySequence.StandardKey.Open)
-        self.act_open_project = A("프로젝트 열기…", self.open_project_dialog, "Ctrl+Shift+O")
-        self.act_save = A("저장", self.save, QKeySequence.StandardKey.Save)
+        self.act_new = A("새 프로젝트 (오디오 열기)…", self.open_audio_dialog, QKeySequence.StandardKey.Open, icon_name="file-audio")
+        self.act_open_project = A("프로젝트 열기…", self.open_project_dialog, "Ctrl+Shift+O", icon_name="folder-open")
+        self.act_save = A("프로젝트 저장", self.save, QKeySequence.StandardKey.Save, icon_name="save")
         self.act_save_as = A("다른 이름으로 저장…", self.save_as, "Ctrl+Shift+S")
-        self.act_relink = A("오디오 파일 다시 연결…", self.relink_audio_dialog)
+        self.act_open_folder = A("프로젝트 폴더 열기", self.open_project_folder, icon_name="folder")
+        self.act_relink = A("원본 다시 연결…", self.relink_audio_dialog, icon_name="link")
+        self.act_change_root = A("기본 프로젝트 위치 변경…", self.change_projects_root)
         self.act_quit = A("종료", self.close, "Ctrl+Q")
 
         self.act_undo = self.doc.undo_stack.createUndoAction(self, "실행 취소")
         self.act_undo.setShortcut(QKeySequence.StandardKey.Undo)
+        self.act_undo.setIcon(icon("undo-2"))
         self.act_redo = self.doc.undo_stack.createRedoAction(self, "다시 실행")
         self.act_redo.setShortcuts([QKeySequence("Ctrl+Y"), QKeySequence("Ctrl+Shift+Z")])
-        self.act_delete = A("삭제", self.delete_selected, [QKeySequence.StandardKey.Delete, "Backspace"])
-        self.act_split = A("재생 위치에서 분할", self.split_selected_at_playhead, "Ctrl+E")
-        self.act_merge = A("선택한 음표 병합", self.merge_selected, "Ctrl+M")
+        self.act_redo.setIcon(icon("redo-2"))
+        self.act_delete = A("삭제", self.delete_selected, [QKeySequence.StandardKey.Delete, "Backspace"], icon_name="trash-2")
+        self.act_split = A("재생 위치에서 분할", self.split_selected_at_playhead, "Ctrl+E", icon_name="scissors")
+        self.act_merge = A("선택한 음표 병합", self.merge_selected, "Ctrl+M", icon_name="merge")
         self.act_select_all = A("모두 선택", self.select_all, QKeySequence.StandardKey.SelectAll)
-        self.act_revert = A("분석 원본으로 되돌리기", self.revert_to_analysis)
+        self.act_revert = A("분석 원본으로 되돌리기", self.revert_to_analysis, icon_name="rotate-ccw")
 
-        self.act_analyze = A("샘플 분석 실행 (실제 AI 분석 아님)", self.run_sample_analysis, "F5")
-        self.act_cancel_analysis = A("분석 취소", self.cancel_analysis)
+        self.act_analyze = A("보컬 분석 실행", self.run_analysis, "F5", icon_name="wand-sparkles")
+        self.act_redetect = A("음표만 다시 검출", self.redetect_notes, "Shift+F5", icon_name="refresh-cw")
+        self.act_reseparate = A("보컬 분리 다시 실행", self.reseparate)
+        self.act_cancel_analysis = A("분석 취소", self.session.cancel_analysis, icon_name="x")
+        self.act_clear_cache = A("캐시 비우기", self.clear_cache)
+        self.act_probe = A("GPU 확인", self.probe_gpu, icon_name="cpu")
+        self.act_sample = A("샘플 데이터 생성 (시험용, 실제 분석 아님)", self.run_sample_analysis)
 
-        self.act_play = A("재생", self.toggle_play, "Space")
-        self.act_stop = A("정지", self.stop, "Esc")
-        self.act_home = A("처음으로", lambda: self.seek(0.0), "Home")
+        self.act_export = A("오디오 내보내기…", lambda: self.export_dialog([]), "Ctrl+Shift+E", icon_name="download")
+        self.act_export_midi = A("MIDI 내보내기 (예정)", lambda: None)
+        self.act_export_midi.setEnabled(False)
 
-        self.act_zoom_in = A("가로 확대", lambda: self.view.zoom_time(1.25), ["Ctrl+=", "Ctrl++"])
-        self.act_zoom_out = A("가로 축소", lambda: self.view.zoom_time(0.8), "Ctrl+-")
-        self.act_zoom_fit = A("전체 보기", self.view.zoom_to_fit, "Ctrl+0")
+        self.act_play = A("재생", self.toggle_play, "Space", icon_name="play")
+        self.act_stop = A("정지", self.stop, "Esc", icon_name="square")
+        self.act_home = A("처음으로", lambda: self.seek(0.0), "Home", icon_name="skip-back")
+
+        self.act_zoom_in = A("가로 확대", lambda: self.view.zoom_time(1.25), ["Ctrl+=", "Ctrl++"], icon_name="zoom-in")
+        self.act_zoom_out = A("가로 축소", lambda: self.view.zoom_time(0.8), "Ctrl+-", icon_name="zoom-out")
+        self.act_zoom_fit = A("전체 보기", self.view.zoom_to_fit, "Ctrl+0", icon_name="maximize-2")
+        self.act_show_notes = A("음표 표시", self.view.roll.set_notes_visible, checkable=True, checked=True)
         self.act_show_curve = A("피치 곡선 표시", self.view.roll.curve_item.setVisible, checkable=True, checked=True)
         self.act_follow = A("재생 위치 따라가기", self._set_follow, checkable=True, checked=True)
-        self.act_help = A("조작법 및 구현 현황", self.show_help, "F1")
+        self.act_help = A("조작법 및 구현 현황", self.show_help, "F1", icon_name="info")
         self.act_about = A("정보", self.show_about)
 
     def _build_menus(self) -> None:
         mb = self.menuBar()
-        m = mb.addMenu("파일(&F)")
-        for a in (self.act_open_audio, self.act_open_project, None, self.act_save, self.act_save_as, None,
-                  self.act_relink, None, self.act_quit):
+        m = mb.addMenu("프로젝트(&P)")
+        m.addAction(self.act_new)
+        m.addAction(self.act_open_project)
+        self.recent_menu = m.addMenu("최근 프로젝트")
+        self.recent_menu.aboutToShow.connect(self._fill_recent)
+        m.addSeparator()
+        for a in (self.act_save, self.act_save_as, None, self.act_open_folder, self.act_relink, self.act_change_root,
+                  None, self.act_quit):
             m.addSeparator() if a is None else m.addAction(a)
         m = mb.addMenu("편집(&E)")
         for a in (self.act_undo, self.act_redo, None, self.act_delete, self.act_split, self.act_merge, None,
                   self.act_select_all, None, self.act_revert):
             m.addSeparator() if a is None else m.addAction(a)
-        m = mb.addMenu("재생(&P)")
+        m = mb.addMenu("재생(&L)")
         for a in (self.act_play, self.act_stop, self.act_home):
             m.addAction(a)
         m = mb.addMenu("분석(&A)")
-        m.addAction(self.act_analyze)
-        m.addAction(self.act_cancel_analysis)
-        m = mb.addMenu("보기(&V)")
-        for a in (self.act_zoom_in, self.act_zoom_out, self.act_zoom_fit, None, self.act_show_curve, self.act_follow):
+        for a in (self.act_analyze, self.act_redetect, self.act_reseparate, self.act_cancel_analysis, None,
+                  self.act_probe, self.act_clear_cache, None, self.act_sample):
             m.addSeparator() if a is None else m.addAction(a)
+        m = mb.addMenu("내보내기(&X)")
+        m.addAction(self.act_export)
+        m.addAction(self.act_export_midi)
+        m = mb.addMenu("보기(&V)")
+        for a in (self.act_zoom_in, self.act_zoom_out, self.act_zoom_fit, None, self.act_show_notes,
+                  self.act_show_curve, self.act_follow):
+            m.addSeparator() if a is None else m.addAction(a)
+        self.view_menu = m
         m = mb.addMenu("도움말(&H)")
         m.addAction(self.act_help)
         m.addAction(self.act_about)
 
     def _build_toolbar(self) -> None:
-        tb = self.addToolBar("재생")
-        tb.setObjectName("transport")
+        tb = self.addToolBar("도구")
+        tb.setObjectName("main")
         tb.setMovable(False)
-        icon = self.style().standardIcon
-        self.act_home.setIcon(icon(QStyle.StandardPixmap.SP_MediaSkipBackward))
-        self.act_play.setIcon(icon(QStyle.StandardPixmap.SP_MediaPlay))
-        self.act_stop.setIcon(icon(QStyle.StandardPixmap.SP_MediaStop))
-        tb.addAction(self.act_home)
-        tb.addAction(self.act_play)
-        tb.addAction(self.act_stop)
+        tb.setIconSize(ICON_SIZE)
+        self.project_label = QLabel("프로젝트 없음")
+        self.project_label.setObjectName("panelTitle")
+        self.project_label.setMinimumWidth(140)
+        tb.addWidget(self.project_label)
+        for a in (self.act_new, self.act_open_project, self.act_save, self.act_open_folder):
+            tb.addAction(a)
         tb.addSeparator()
+        for a in (self.act_home, self.act_play, self.act_stop):
+            tb.addAction(a)
         self.time_label = QLabel()
-        self.time_label.setMinimumWidth(190)
-        self.time_label.setStyleSheet("font-family: Consolas, 'D2Coding', monospace; font-size: 14px; padding: 0 8px;")
+        self.time_label.setObjectName("timecode")
+        self.time_label.setMinimumWidth(330)
         tb.addWidget(self.time_label)
         tb.addSeparator()
         tb.addWidget(QLabel(" BPM "))
         self.bpm_spin = QDoubleSpinBox()
         self.bpm_spin.setRange(MIN_BPM, MAX_BPM)
-        self.bpm_spin.setDecimals(1)
+        self.bpm_spin.setDecimals(2)
         self.bpm_spin.setKeyboardTracking(False)
         self.bpm_spin.valueChanged.connect(self._on_bpm_changed)
         tb.addWidget(self.bpm_spin)
+        self.bpm_state = QLabel()
+        self.bpm_state.setProperty("role", "secondary")
+        tb.addWidget(self.bpm_state)
+        self.bpm_double = QToolButton()
+        self.bpm_double.setText("×2")
+        self.bpm_double.setToolTip("BPM 두 배 (추정이 절반으로 나왔을 때)")
+        self.bpm_double.clicked.connect(lambda: self._scale_bpm(2.0))
+        self.bpm_half = QToolButton()
+        self.bpm_half.setText("½")
+        self.bpm_half.setToolTip("BPM 절반 (추정이 두 배로 나왔을 때)")
+        self.bpm_half.clicked.connect(lambda: self._scale_bpm(0.5))
+        tb.addWidget(self.bpm_double)
+        tb.addWidget(self.bpm_half)
+        tb.addWidget(QLabel("  첫 박 "))
+        self.beat_offset = QDoubleSpinBox()
+        self.beat_offset.setRange(0.0, 10.0)
+        self.beat_offset.setDecimals(3)
+        self.beat_offset.setSingleStep(0.01)
+        self.beat_offset.setSuffix(" s")
+        self.beat_offset.setKeyboardTracking(False)
+        self.beat_offset.setToolTip("박자선 위치를 맞춥니다 (마디 첫 박은 자동으로 판정하지 않습니다)")
+        self.beat_offset.valueChanged.connect(self._on_offset_changed)
+        tb.addWidget(self.beat_offset)
+        sig = QLabel("  4/4")
+        sig.setToolTip("박자는 4/4로 가정합니다")
+        tb.addWidget(sig)
         tb.addWidget(QLabel("  격자 "))
         self.snap_combo = QComboBox()
         for label, value in SNAP_CHOICES:
@@ -230,36 +321,60 @@ class MainWindow(QMainWindow):
         self.snap_combo.currentIndexChanged.connect(lambda _i: self.view.set_snap_beats(float(self.snap_combo.currentData())))
         tb.addWidget(self.snap_combo)
         tb.addSeparator()
-        tb.addAction(self.act_analyze)
+        self.analyze_button = QToolButton()
+        self.analyze_button.setDefaultAction(self.act_analyze)
+        self.analyze_button.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextBesideIcon)
+        self.analyze_button.setProperty("primary", True)
+        self.analyze_button.setIcon(icon("wand-sparkles", T.BG_PRIMARY))
+        tb.addWidget(self.analyze_button)
+        tb.addAction(self.act_redetect)
         tb.addAction(self.act_zoom_fit)
         self._update_time_label(0.0)
 
     def _build_statusbar(self) -> None:
         sb = self.statusBar()
         self.selection_label = QLabel()
+        self.hover_label = QLabel()
+        self.hover_label.setFont(theme.mono_font(12))
         self.analysis_label = QLabel()
-        legend = QLabel(
-            "<span style='color:#4682c8'>■</span> 원본 "
-            "<span style='color:#dc8c3c'>■</span> 수정 "
-            "<span style='color:#5ab46e'>■</span> 추가"
-        )
+        legend = QLabel("음표: ■ 원본  ▧ 수정(점선·삼각)  □ 추가(+)  ┄ 장식음   피치 곡선: ━")
+        legend.setToolTip("원본·수정·추가는 테두리와 표식으로도 구분합니다")
         self.progress = QProgressBar()
         self.progress.setRange(0, 1000)
-        self.progress.setFixedWidth(180)
+        self.progress.setFixedWidth(200)
         self.progress.setTextVisible(False)
         self.progress.hide()
         self.progress_label = QLabel()
         self.progress_label.hide()
         self.cancel_button = QToolButton()
         self.cancel_button.setText("취소")
+        self.cancel_button.setIcon(icon("x", size=14))
         self.cancel_button.clicked.connect(self._cancel_tracked)
         self.cancel_button.hide()
+        self.log_button = QToolButton()
+        self.log_button.setText("로그")
+        self.log_button.setCheckable(True)
         sb.addWidget(self.selection_label, 1)
+        sb.addWidget(self.hover_label)
         sb.addPermanentWidget(self.progress_label)
         sb.addPermanentWidget(self.progress)
         sb.addPermanentWidget(self.cancel_button)
         sb.addPermanentWidget(legend)
         sb.addPermanentWidget(self.analysis_label)
+        sb.addPermanentWidget(self.log_button)
+
+    def _build_log_dock(self) -> None:
+        self.log_panel = LogPanel()
+        self.log_panel.attach()
+        self.log_dock = QDockWidget("로그", self)
+        self.log_dock.setObjectName("log")
+        self.log_dock.setWidget(self.log_panel)
+        self.addDockWidget(Qt.DockWidgetArea.BottomDockWidgetArea, self.log_dock)
+        self.log_dock.hide()
+        self.log_button.toggled.connect(self.log_dock.setVisible)
+        self.log_dock.visibilityChanged.connect(self.log_button.setChecked)
+        self.view_menu.addSeparator()
+        self.view_menu.addAction(self.log_dock.toggleViewAction())
 
     def _connect(self) -> None:
         self.player.positionChanged.connect(self._on_position)
@@ -268,35 +383,86 @@ class MainWindow(QMainWindow):
         self.ruler.seekRequested.connect(self.seek)
         self.waveform.seekRequested.connect(self.seek)
         self.view.selectionInfoChanged.connect(self.selection_label.setText)
-        self.view.roll.selectionChanged.connect(self._update_actions)
+        self.view.hoverInfoChanged.connect(self.hover_label.setText)
+        self.view.roll.selectionChanged.connect(self._on_selection_changed)
         self.view.editFailed.connect(self._show_status_error)
         self.doc.dirtyChanged.connect(self._update_title)
         self.doc.filePathChanged.connect(self._update_title)
         self.doc.projectReset.connect(self._on_project_reset)
+        self.doc.analysisChanged.connect(self._on_analysis_changed)
         self.doc.tempoChanged.connect(self._sync_tempo_widgets)
+        self.doc.notesReplaced.connect(lambda *_: self._on_selection_changed())
+
+        s = self.session
+        s.opened.connect(self._on_session_opened)
+        s.audioReady.connect(self._on_audio_ready)
+        s.tracksChanged.connect(self._refresh_tracks)
+        s.originalChanged.connect(self._refresh_project_panel)
+        s.message.connect(lambda text, ms: self.statusBar().showMessage(text, ms))
+        s.error.connect(self._show_error)
+        s.notice.connect(lambda title, text: QMessageBox.information(self, title, text))
+        s.analysisReady.connect(self._on_analysis_ready)
+        s.busyChanged.connect(lambda _b: self._update_actions())
+        s.taskStarted.connect(self._track)
+
+        for row in self.tracks.rows.values():
+            row.soloToggled.connect(lambda name, on: self.player.set_track_state(name, solo=on))
+            row.muteToggled.connect(lambda name, on: self.player.set_track_state(name, mute=on))
+            row.volumeChanged.connect(lambda name, g: self.player.set_track_state(name, gain=g))
+            row.exportRequested.connect(lambda name: self.export_dialog([name]))
+            row.revealRequested.connect(self.reveal_track)
+            row.selected.connect(self._show_track_waveform)
+        self.tracks.open_folder.clicked.connect(self.open_project_folder)
+        self.tracks.relink.clicked.connect(self.relink_audio_dialog)
+
+        a = self.inspector.analysis
+        a.runRequested.connect(self.run_analysis)
+        a.redetectRequested.connect(self.redetect_notes)
+        a.reseparateRequested.connect(self.reseparate)
+        a.clearCacheRequested.connect(self.clear_cache)
+        a.probeRequested.connect(self.probe_gpu)
+        a.settingsChanged.connect(lambda s_: self.settings.setValue(SETTINGS_KEY, s_.to_dict()))
 
     # --- 상태 갱신 ----------------------------------------------------------------
 
+    def _stored_settings(self) -> dict:
+        v = self.settings.value(SETTINGS_KEY)
+        return v if isinstance(v, dict) else {}
+
     def _update_title(self, *_args) -> None:
-        name = os.path.basename(self.doc.file_path) if self.doc.file_path else "새 프로젝트"
-        if self.doc.project.audio and not self.doc.file_path:
-            name += f" ({os.path.basename(self.doc.project.audio.path)})"
+        folder = self.session.folder
+        name = folder.name if folder else "프로젝트 없음"
         self.setWindowTitle(f"{name}[*] - {APP_DISPLAY_NAME}")
         self.setWindowModified(self.doc.is_dirty)
+        self.project_label.setText(f"{name}{' •' if self.doc.is_dirty else ''}")
+        self.project_label.setToolTip("저장하지 않은 변경이 있습니다" if self.doc.is_dirty else "저장됨")
 
     def _update_actions(self) -> None:
         n_sel = len(self.view.selected_ids())
-        has_audio = self.audio is not None
-        running = self._analysis is not None
+        has_audio = self.session.audio is not None
+        is_open = self.session.is_open
+        busy = self.session.busy
+        has_pitch = self.doc.project.analysis is not None and self.doc.project.analysis.pitch_curve is not None
         self.act_delete.setEnabled(n_sel > 0)
         self.act_split.setEnabled(n_sel > 0)
         self.act_merge.setEnabled(n_sel >= 2)
         self.act_revert.setEnabled(self.doc.project.analysis is not None)
-        self.act_analyze.setEnabled(has_audio and not running)
-        self.act_cancel_analysis.setEnabled(running)
+        self.act_analyze.setEnabled(has_audio and is_open and not busy)
+        self.act_reseparate.setEnabled(has_audio and is_open and not busy)
+        self.act_redetect.setEnabled(has_pitch and not busy)
+        self.act_sample.setEnabled(has_audio and not busy)
+        self.act_cancel_analysis.setEnabled(busy)
         self.act_play.setEnabled(has_audio)
         self.act_stop.setEnabled(has_audio)
-        self.act_relink.setEnabled(self.doc.project.audio is not None)
+        for a in (self.act_save, self.act_save_as, self.act_open_folder, self.act_clear_cache, self.act_export):
+            a.setEnabled(is_open)
+        self.act_relink.setEnabled(is_open and self.session.folder.meta.original.mode == "link")
+        panel = self.inspector.analysis
+        panel.run.setEnabled(self.act_analyze.isEnabled())
+        panel.redetect.setEnabled(self.act_redetect.isEnabled())
+        panel.reseparate.setEnabled(self.act_reseparate.isEnabled())
+        panel.clear_cache.setEnabled(is_open)
+        panel.set_cache_size(self.session.cache_size())
 
     def _update_analysis_label(self) -> None:
         a = self.doc.project.analysis
@@ -304,15 +470,33 @@ class MainWindow(QMainWindow):
             self.analysis_label.setText("분석 결과 없음")
             self.analysis_label.setToolTip("")
         elif a.is_placeholder:
-            self.analysis_label.setText("<b style='color:#e0a040'>샘플 데이터 (실제 분석 아님)</b>")
-            self.analysis_label.setToolTip("\n".join(f"{k}: {m.name} v{m.version}" for k, m in a.models.items()))
+            self.analysis_label.setText(f"<b style='color:{T.WARNING}'>⚠ 샘플 데이터 (실제 분석 아님)</b>")
+            self.analysis_label.setToolTip("\n".join(f"{k}: {m.name} {m.version}" for k, m in a.models.items()))
         else:
-            self.analysis_label.setText("분석 결과: " + ", ".join(sorted({m.name for m in a.models.values()})))
+            sep = a.models.get("separation")
+            self.analysis_label.setText(f"분석: {sep.name if sep else '-'} · pYIN · 음표 {len(a.notes)}개")
+            self.analysis_label.setToolTip("\n".join(f"{k}: {m.name} {m.version}" for k, m in a.models.items())
+                                           + ("\n\n" + "\n".join(a.warnings) if a.warnings else ""))
 
     def _sync_tempo_widgets(self) -> None:
-        self.bpm_spin.blockSignals(True)
-        self.bpm_spin.setValue(self.doc.score.tempo.initial_bpm)
-        self.bpm_spin.blockSignals(False)
+        tempo = self.doc.score.tempo
+        for w, v in ((self.bpm_spin, tempo.initial_bpm), (self.beat_offset, tempo.first_beat_time)):
+            w.blockSignals(True)
+            w.setValue(v)
+            w.blockSignals(False)
+        a = self.doc.project.analysis
+        if a is None:
+            self.bpm_state.setText("(기본값)")
+            self.bpm_state.setToolTip("")
+        elif tempo == a.tempo:
+            reliable = a.tempo_info.get("reliable")
+            cands = ", ".join(f"{c:.1f}" for c in a.tempo_candidates) or "-"
+            self.bpm_state.setText("(추정 — 확인 필요)" if not a.is_placeholder else "(샘플)")
+            self.bpm_state.setToolTip(f"자동 추정값입니다. 정확하다고 판정하지 않았습니다.\n후보(원래·2배·절반): {cands}"
+                                      + ("" if reliable else "\n박을 충분히 찾지 못했습니다."))
+        else:
+            self.bpm_state.setText("(수동)")
+            self.bpm_state.setToolTip("사용자가 정한 템포입니다.")
         self.ruler.update()
         self._update_time_label(self.current_time())
 
@@ -322,16 +506,103 @@ class MainWindow(QMainWindow):
         self._update_analysis_label()
         self._sync_tempo_widgets()
         self.view.center_on_content()
+        self._on_selection_changed()
+
+    def _on_analysis_changed(self) -> None:
+        self._update_actions()
+        self._update_analysis_label()
+        self._sync_tempo_widgets()
+        self._on_selection_changed()
+
+    def _on_selection_changed(self) -> None:
+        self._update_actions()
+        notes = []
+        for nid in self.view.selected_ids():
+            if nid in self.doc.score:
+                notes.append(self.doc.score.get(nid))
+        self.inspector.note_info.show_notes(notes, self.doc.project)
 
     def _on_bpm_changed(self, value: float) -> None:
-        try:
-            self.doc.set_bpm(value)
-        except EditError as e:
-            self.statusBar().showMessage(str(e), 5000)
+        self._guard(lambda: self.doc.set_bpm(value))
+        self._sync_tempo_widgets()
+
+    def _on_offset_changed(self, value: float) -> None:
+        t = self.doc.score.tempo
+        self._guard(lambda: self.doc.set_tempo(TempoMap.constant(t.initial_bpm, value, t.beats_per_bar)))
+
+    def _scale_bpm(self, factor: float) -> None:
+        bpm = self.doc.score.tempo.initial_bpm * factor
+        if MIN_BPM <= bpm <= MAX_BPM:
+            self._guard(lambda: self.doc.set_bpm(bpm))
             self._sync_tempo_widgets()
 
     def _set_follow(self, on: bool) -> None:
         self.view.follow_playhead = on
+
+    # --- 프로젝트·트랙 패널 ----------------------------------------------------------------
+
+    def _refresh_project_panel(self) -> None:
+        f = self.session.folder
+        p = self.tracks
+        if f is None:
+            p.project_name.setText("프로젝트 없음")
+            p.project_info.setText("오디오를 열면 프로젝트 폴더가 만들어집니다.")
+            p.original_state.setText("")
+            p.relink.hide()
+            return
+        o = f.meta.original
+        p.project_name.setText(f.name)
+        p.project_info.setText(f"{f.root}\n원본: {'프로젝트에 복사' if o.mode == 'copy' else '외부 파일 연결'} · {o.file_name}")
+        st = self.session.original
+        state = st.state if st else "missing"
+        text = {"ok": "✓ 원본 확인됨", "changed": "⚠ 원본이 바뀌었습니다", "missing": "✕ 원본을 찾을 수 없습니다"}[state]
+        p.original_state.setText(text)
+        p.original_state.setProperty("state", {"ok": "ok", "changed": "warn", "missing": "error"}[state])
+        p.original_state.style().unpolish(p.original_state)
+        p.original_state.style().polish(p.original_state)
+        p.relink.setVisible(o.mode == "link" or state != "ok")
+        p.relink.setEnabled(True)
+        self._update_actions()
+
+    def _refresh_tracks(self) -> None:
+        s = self.session
+        for name, row in self.tracks.rows.items():
+            audio = s.track_audio(name)
+            if name == "original":
+                if audio is not None:
+                    o = s.folder.meta.original if s.folder else None
+                    info = f"{o.file_name if o else ''}\n{audio.duration:.1f}s · {audio.sample_rate}Hz · {audio.channels}ch"
+                    row.set_available(True, info, "✓ 원본", "ok")
+                else:
+                    row.set_available(False, "오디오 없음", "—", "muted")
+            elif audio is not None:
+                m = s.manifest
+                dev = m.model_info.get("device", "") if m else ""
+                info = f"stems/{name}.wav\n{audio.duration:.1f}s · {m.model if m else ''} · {dev.upper()}"
+                row.set_available(True, info, "✓ 분리됨", "ok")
+            else:
+                reason = s.stems_reason or "분리 전"
+                row.set_available(False, reason + " — 보컬 분석을 실행하면 만들어집니다", "분리 전" if reason == "분리 전" else "⚠ 무효",
+                                  "muted" if reason == "분리 전" else "warn")
+            st = self.player.track_state(name)
+            row.set_controls(st["solo"], st["mute"], st["gain"])
+        if self.tracks.selected_track not in self.player.tracks:
+            self.tracks.select("original")
+        self._show_track_waveform(self.tracks.selected_track)
+        self._update_actions()
+
+    def _show_track_waveform(self, name: str) -> None:
+        self.tracks.select(name)
+        peaks = self.session.peaks.get(name)
+        from PySide6.QtGui import QColor
+
+        self.waveform.set_peaks(peaks, QColor(T.TRACK_COLORS[name]), f"{TRACK_LABELS[name]}" if peaks else "")
+        self.wave_label.setText(TRACK_HINTS[name])
+
+    def reveal_track(self, name: str) -> None:
+        path = self.session.track_path(name)
+        if path is not None:
+            QDesktopServices.openUrl(QUrl.fromLocalFile(str(Path(path).parent)))
 
     # --- 재생 -----------------------------------------------------------------
 
@@ -339,9 +610,8 @@ class MainWindow(QMainWindow):
         return self.player.position() if self.player.has_audio else self._time
 
     def toggle_play(self) -> None:
-        if self.audio is None:
-            return
-        self.player.toggle()
+        if self.session.audio is not None:
+            self.player.toggle()
 
     def stop(self) -> None:
         self.player.stop()
@@ -360,15 +630,18 @@ class MainWindow(QMainWindow):
         self._update_time_label(t)
 
     def _update_time_label(self, t: float) -> None:
-        m, s = divmod(max(t, 0.0), 60)
+        def fmt(x: float) -> str:
+            m, s = divmod(max(x, 0.0), 60)
+            return f"{int(m):02d}:{s:06.3f}"
+
         bar, beat = self.doc.score.tempo.bar_beat(t)
-        self.time_label.setText(f"{int(m):02d}:{s:06.3f}   {bar}.{beat:.2f}")
+        total = self.session.audio.duration if self.session.audio else 0.0
+        self.time_label.setText(f"{fmt(t)} / {fmt(total)}   {bar}.{beat:.2f}")
 
     def _on_player_state(self, state: PlaybackState) -> None:
         playing = state is PlaybackState.PLAYING
         self.act_play.setText("일시정지" if playing else "재생")
-        pix = QStyle.StandardPixmap.SP_MediaPause if playing else QStyle.StandardPixmap.SP_MediaPlay
-        self.act_play.setIcon(self.style().standardIcon(pix))
+        self.act_play.setIcon(icon("pause" if playing else "play"))
 
     def _on_player_error(self, message: str) -> None:
         self.statusBar().showMessage(message, 8000)
@@ -399,6 +672,7 @@ class MainWindow(QMainWindow):
         if not self._tracked:
             for w in (self.progress, self.progress_label, self.cancel_button):
                 w.hide()
+        self._update_actions()
 
     def _cancel_tracked(self) -> None:
         if self._tracked:
@@ -413,152 +687,165 @@ class MainWindow(QMainWindow):
             box.setDetailedText(details)
         box.exec()
 
-    # --- 오디오 ---------------------------------------------------------------
+    # --- 프로젝트 ---------------------------------------------------------------
 
     def open_audio_dialog(self) -> None:
         if not self.maybe_save():
             return
         start = self.settings.value("paths/last_dir", "")
-        path, _ = QFileDialog.getOpenFileName(self, "오디오 열기", start, AUDIO_FILTER)
-        if path:
-            self.settings.setValue("paths/last_dir", os.path.dirname(path))
-            self.load_audio(path, new_project=True)
+        path, _ = QFileDialog.getOpenFileName(self, "오디오 열기 (새 프로젝트)", start, AUDIO_FILTER)
+        if not path:
+            return
+        self.settings.setValue("paths/last_dir", os.path.dirname(path))
+        existing = self.session.existing_projects_for(path)
+        dlg = NewProjectDialog(path, self.session.projects_root, existing, self)
+        if dlg.exec() != NewProjectDialog.DialogCode.Accepted:
+            return
+        choice = dlg.choice()
+        if choice.open_existing:
+            self.session.open_folder(choice.open_existing)
+            return
+        self.create_project_from_audio(path, choice.name, choice.mode, choice.parent)
 
-    def load_audio(self, path: str, new_project: bool) -> TaskHandle:
-        """오디오를 백그라운드에서 디코딩한다. new_project=False면 열린 프로젝트에 연결한다."""
-        self._load_seq += 1
-        seq = self._load_seq
-        self.player.stop()
-
-        def job(progress, token):
-            audio = load_audio(path, progress, lambda: token.cancelled)
-            progress(1.0, "파형 계산 중")
-            peaks = WaveformPeaks.build(audio.mono(), audio.sample_rate)
-            return audio, peaks, file_fingerprint(path)
-
-        handle = self.runner.submit("오디오 불러오기", job)
-        def loaded(result) -> None:
-            if seq == self._load_seq:  # 더 나중에 시작한 불러오기가 있으면 결과를 버린다
-                self._on_audio_loaded(path, result, new_project)
-
-        handle.finished.connect(loaded)
-        handle.failed.connect(lambda msg, tb: self._show_error("오디오를 불러오지 못했습니다", msg, tb))
-        handle.cancelled.connect(lambda: self.statusBar().showMessage("불러오기를 취소했습니다.", 5000))
-        self._track(handle, "오디오 불러오는 중")
-        return handle
-
-    def _on_audio_loaded(self, path: str, result, new_project: bool) -> None:
-        audio, peaks, fingerprint = result
-        ref = AudioRef(path, fingerprint, audio.duration, audio.sample_rate, audio.channels)
-        old = self.doc.project.audio
-        self.audio, self.peaks = audio, peaks
-        self.player.set_audio(audio)
-        self.waveform.set_peaks(peaks)
-        self.view.roll.set_audio_duration(audio.duration)
-        if new_project:
-            self.doc.set_audio(ref)
-            self.view.zoom_to_fit()
-        else:
-            if old is not None and old.fingerprint and old.fingerprint != fingerprint:
-                QMessageBox.warning(
-                    self, "오디오 파일이 다릅니다",
-                    "프로젝트를 저장할 때와 오디오 파일 내용이 다릅니다.\n음표 위치가 맞지 않을 수 있습니다.",
-                )
-            if old is None or old.path != path or old.fingerprint != fingerprint:
-                self.doc.relink_audio(ref)
-        self._on_position(0.0)
-        self._update_actions()
-        self.statusBar().showMessage(
-            f"{os.path.basename(path)} — {audio.duration:.1f}초, {audio.sample_rate}Hz, {audio.channels}채널", 8000
-        )
-
-    def relink_audio_dialog(self) -> None:
-        start = os.path.dirname(self.doc.project.audio.path) if self.doc.project.audio else ""
-        path, _ = QFileDialog.getOpenFileName(self, "오디오 파일 다시 연결", start, AUDIO_FILTER)
-        if path:
-            self.load_audio(path, new_project=False)
-
-    def _clear_audio(self) -> None:
-        self._load_seq += 1
-        self.audio = self.peaks = None
-        self.player.set_audio(None)
-        self.waveform.set_peaks(None)
-        self.view.roll.set_audio_duration(0.0)
-
-    # --- 프로젝트 ----------------------------------------------------------------
+    def create_project_from_audio(self, path: str, name: str | None = None, mode: str = "copy",
+                                  parent: str | None = None) -> TaskHandle:
+        return self.session.create_from_audio(path, name, mode, parent)
 
     def open_project_dialog(self) -> None:
         if not self.maybe_save():
             return
-        start = self.settings.value("paths/last_dir", "")
-        path, _ = QFileDialog.getOpenFileName(self, "프로젝트 열기", start, PROJECT_FILTER)
+        path, _ = QFileDialog.getOpenFileName(self, "프로젝트 열기", self.session.projects_root, OPEN_FILTER)
         if path:
-            self.settings.setValue("paths/last_dir", os.path.dirname(path))
             self.open_project(path)
 
-    def open_project(self, path: str, *, as_recovery_of: str | None = None) -> bool:
-        try:
-            project = load_project(path)
-        except ProjectFormatError as e:
-            self._show_error("프로젝트를 열 수 없습니다", str(e))
+    def open_project(self, path: str) -> bool:
+        """project.json 또는 프로젝트 폴더를 연다. .ampproj(이전 형식)는 새 폴더로 변환한다."""
+        p = Path(path)
+        if p.suffix.lower() == PROJECT_EXTENSION:
+            answer = QMessageBox.question(
+                self, "이전 형식 프로젝트",
+                f"{p.name}은(는) 이전 형식입니다. SONATLAS 프로젝트 폴더로 변환해 엽니다.\n"
+                "원래 파일은 그대로 두고, 새 폴더의 backup/에 사본도 남깁니다. 계속할까요?")
+            if answer != QMessageBox.StandardButton.Yes:
+                return False
+            return self.session.import_legacy(str(p))
+        root = p.parent if p.name == PROJECT_FILE else p
+        if not is_project_folder(root):
+            self._show_error("프로젝트를 열 수 없습니다", f"SONATLAS 프로젝트 폴더가 아닙니다: {root}")
             return False
-        self.cancel_analysis()
-        self._clear_audio()
-        if as_recovery_of is None:
-            self.doc.reset(project, path)
-        else:  # 복구본은 원래 경로로 저장되도록 하고, 저장 전까지 변경 상태로 둔다
-            self.doc.reset(project, as_recovery_of or None, dirty=True)
-        self._load_project_audio()
-        return True
+        return self.session.open_folder(str(root))
 
-    def _load_project_audio(self) -> None:
-        ref = self.doc.project.audio
-        if ref is None:
+    def _fill_recent(self) -> None:
+        self.recent_menu.clear()
+        items = self.session.recent()
+        if not items:
+            a = self.recent_menu.addAction("(없음)")
+            a.setEnabled(False)
+        for p in items:
+            self.recent_menu.addAction(p, lambda p=p: self.maybe_save() and self.open_project(p))
+
+    def _on_session_opened(self) -> None:
+        f = self.session.folder
+        self._pending_ui = dict(f.meta.ui) if f else {}
+        self._pending_playback = dict(f.meta.playback) if f else {}
+        if f and f.meta.analysis_settings:
+            self.inspector.analysis.set_settings(AnalysisSettings.from_dict(f.meta.analysis_settings))
+        self._apply_ui_state(self._pending_ui)
+        self._refresh_project_panel()
+        self._refresh_tracks()
+        self._update_title()
+
+    def _on_audio_ready(self) -> None:
+        audio = self.session.audio
+        self.view.roll.set_audio_duration(audio.duration)
+        for name, st in (self._pending_playback.get("tracks") or {}).items():
+            self.player.set_track_state(name, gain=float(st.get("gain", 1.0)), mute=bool(st.get("mute", False)),
+                                        solo=bool(st.get("solo", False)))
+        if not self._pending_ui:
+            self.view.zoom_to_fit()
+        else:
+            self._apply_ui_state(self._pending_ui)
+        self.seek(float(self._pending_playback.get("position", 0.0) or 0.0))
+        self._refresh_tracks()
+        self._update_actions()
+
+    def _ui_state(self) -> dict:
+        return {
+            "px_per_sec": self.view.mapper.px_per_sec,
+            "row_height": self.view.mapper.row_height,
+            "scroll_x": self.view.horizontalScrollBar().value(),
+            "scroll_y": self.view.verticalScrollBar().value(),
+            "show_notes": self.act_show_notes.isChecked(),
+            "show_pitch": self.act_show_curve.isChecked(),
+            "snap_beats": float(self.snap_combo.currentData()),
+            "follow": self.act_follow.isChecked(),
+            "waveform_track": self.tracks.selected_track,
+            "splitter": self.splitter.sizes(),
+        }
+
+    def _playback_state(self) -> dict:
+        return {"position": self.current_time(),
+                "tracks": {n: self.player.track_state(n) for n in TRACK_LABELS}}
+
+    def _apply_ui_state(self, ui: dict) -> None:
+        if not ui:
             return
-        if os.path.exists(ref.path):
-            self.load_audio(ref.path, new_project=False)
-            return
-        answer = QMessageBox.question(
-            self, "오디오 파일 없음",
-            f"프로젝트의 오디오 파일을 찾을 수 없습니다.\n{ref.path}\n\n파일 위치를 직접 지정하시겠습니까?",
-        )
-        if answer == QMessageBox.StandardButton.Yes:
-            self.relink_audio_dialog()
+        try:
+            if "px_per_sec" in ui:
+                self.view.zoom_time(float(ui["px_per_sec"]) / self.view.mapper.px_per_sec, 0.0)
+            if "row_height" in ui:
+                self.view.zoom_pitch(float(ui["row_height"]) / self.view.mapper.row_height)
+            self.act_show_notes.setChecked(bool(ui.get("show_notes", True)))
+            self.act_show_curve.setChecked(bool(ui.get("show_pitch", True)))
+            self.act_follow.setChecked(bool(ui.get("follow", True)))
+            idx = self.snap_combo.findData(float(ui.get("snap_beats", 0.25)))
+            if idx >= 0:
+                self.snap_combo.setCurrentIndex(idx)
+            if ui.get("splitter"):
+                self.splitter.setSizes([int(x) for x in ui["splitter"]])
+            QTimer.singleShot(0, lambda: (self.view.horizontalScrollBar().setValue(int(ui.get("scroll_x", 0))),
+                                          self.view.verticalScrollBar().setValue(int(ui.get("scroll_y", 0)))))
+        except (TypeError, ValueError):
+            log.warning("작업 공간 상태를 복원하지 못했습니다: %s", ui)
 
     def save(self) -> bool:
-        if not self.doc.file_path:
-            return self.save_as()
-        return self._write(self.doc.file_path)
+        ok = self.session.save(self._ui_state(), self._playback_state(), self.inspector.analysis.settings().to_dict())
+        if ok:
+            self.autosave.discard()
+        return ok
 
-    def save_as(self) -> bool:
-        start = self.doc.file_path or ""
-        if not start and self.doc.project.audio:
-            start = os.path.splitext(self.doc.project.audio.path)[0] + PROJECT_EXTENSION
-        path, _ = QFileDialog.getSaveFileName(self, "다른 이름으로 저장", start, PROJECT_FILTER)
-        if not path:
-            return False
-        if not path.lower().endswith(PROJECT_EXTENSION):
-            path += PROJECT_EXTENSION
-        return self._write(path)
+    def save_as(self) -> None:
+        if not self.session.is_open:
+            return
+        parent = QFileDialog.getExistingDirectory(self, "새 프로젝트를 만들 위치", self.session.projects_root)
+        if not parent:
+            return
+        self.session.save_as(parent, f"{self.session.folder.name} 사본", self._ui_state(), self._playback_state())
 
-    def _write(self, path: str) -> bool:
-        try:
-            save_project(self.doc.project, path)
-        except OSError as e:
-            self._show_error("저장하지 못했습니다", f"{path}\n{e}")
-            return False
-        self.doc.mark_saved(path)
-        self.autosave.discard()
-        self.statusBar().showMessage(f"저장했습니다: {path}", 5000)
-        return True
+    def open_project_folder(self) -> None:
+        if self.session.folder is not None:
+            QDesktopServices.openUrl(QUrl.fromLocalFile(str(self.session.folder.root)))
+
+    def relink_audio_dialog(self) -> None:
+        f = self.session.folder
+        if f is None:
+            return
+        start = os.path.dirname(f.meta.original.path) if f.meta.original.mode == "link" else str(f.root)
+        path, _ = QFileDialog.getOpenFileName(self, "원본 다시 연결", start, AUDIO_FILTER)
+        if path:
+            self.session.relink(path)
+
+    def change_projects_root(self) -> None:
+        d = QFileDialog.getExistingDirectory(self, "기본 프로젝트 위치", self.session.projects_root)
+        if d:
+            self.session.set_projects_root(d)
+            self.statusBar().showMessage(f"새 프로젝트는 {d}에 만듭니다.", 6000)
 
     def maybe_save(self) -> bool:
-        """저장하지 않은 변경이 있으면 묻는다. 계속 진행해도 되면 True."""
         if not self.doc.is_dirty:
             return True
         answer = QMessageBox.question(
-            self, "저장하지 않은 변경",
-            "저장하지 않은 변경 사항이 있습니다. 저장하시겠습니까?",
+            self, "저장하지 않은 변경", "저장하지 않은 변경 사항이 있습니다. 저장하시겠습니까?",
             QMessageBox.StandardButton.Save | QMessageBox.StandardButton.Discard | QMessageBox.StandardButton.Cancel,
         )
         if answer == QMessageBox.StandardButton.Save:
@@ -572,11 +859,10 @@ class MainWindow(QMainWindow):
         if not entries:
             return
         latest = entries[0]
-        target = latest.original_path or "저장하지 않은 프로젝트"
+        target = latest.original_path or "저장하지 않은 작업"
         answer = QMessageBox.question(
             self, "작업 복구",
-            f"이전 실행이 비정상 종료된 것 같습니다.\n자동 저장본({latest.saved_at}, {target})을 복구하시겠습니까?",
-        )
+            f"이전 실행이 비정상 종료된 것 같습니다.\n자동 저장본({latest.saved_at}, {target})을 복구하시겠습니까?")
         if answer == QMessageBox.StandardButton.Yes:
             self.restore(latest)
             others = entries[1:]
@@ -586,10 +872,20 @@ class MainWindow(QMainWindow):
             AutosaveManager.remove_entry(e)
 
     def restore(self, entry: RecoveryEntry) -> None:
-        ok = self.open_project(entry.project_path, as_recovery_of=entry.original_path or "")
+        try:
+            recovered = load_project(entry.project_path)
+        except ProjectFormatError as e:
+            self._show_error("복구하지 못했습니다", str(e))
+            AutosaveManager.remove_entry(entry)
+            return
+        folder = entry.original_path
+        if folder and is_project_folder(folder) and self.session.open_folder(folder):
+            recovered.audio = self.doc.project.audio
+            self.doc.reset(recovered, folder, dirty=True)
+        else:
+            self.doc.reset(recovered, None, dirty=True)
         AutosaveManager.remove_entry(entry)
-        if ok:
-            self.statusBar().showMessage("자동 저장본을 복구했습니다. 확인한 뒤 저장해 주세요.", 10000)
+        self.statusBar().showMessage("자동 저장본을 복구했습니다. 확인한 뒤 저장해 주세요.", 10000)
 
     # --- 편집 -----------------------------------------------------------------
 
@@ -616,44 +912,84 @@ class MainWindow(QMainWindow):
 
     # --- 분석 -----------------------------------------------------------------
 
+    def run_analysis(self) -> None:
+        self.session.run_analysis(self.inspector.analysis.settings())
+
+    def reseparate(self) -> None:
+        answer = QMessageBox.question(self, "보컬 분리 다시 실행",
+                                      "기존 분리 결과(stems/)를 쓰지 않고 htdemucs를 다시 실행합니다. "
+                                      "새 결과가 완성된 뒤에 기존 파일을 바꿉니다. 계속할까요?")
+        if answer == QMessageBox.StandardButton.Yes:
+            self.session.run_analysis(self.inspector.analysis.settings(), force_separation=True)
+
+    def redetect_notes(self) -> None:
+        self.session.redetect(self.inspector.analysis.settings())
+
     def run_sample_analysis(self) -> None:
-        if self.audio is None or self._analysis is not None:
-            return
-        if self.doc.project.analysis is not None or len(self.doc.score) > 0:
-            answer = QMessageBox.question(
-                self, "분석 실행",
-                "현재 음표를 새 분석 결과로 바꿉니다. 실행 취소 기록도 지워집니다.\n계속하시겠습니까?",
-            )
-            if answer != QMessageBox.StandardButton.Yes:
+        self.session.run_sample()
+
+    def _on_analysis_ready(self, result: AnalysisResult) -> None:
+        summary = summarize(self.doc.project)
+        mode = KEEP_EDITS
+        if summary.has_edits:
+            preview = plan_reanalysis(self.doc.project, result, KEEP_EDITS)
+            dlg = ReanalysisDialog(summary, len(result.notes), len(preview.kept), len(preview.dropped), self)
+            if dlg.exec() != ReanalysisDialog.DialogCode.Accepted or dlg.mode is None:
+                self.statusBar().showMessage("새 분석 결과를 반영하지 않았습니다.", 6000)
                 return
-        audio = self.audio
-        fingerprint = self.doc.project.audio.fingerprint if self.doc.project.audio else ""
-        pipeline = AnalysisPipeline(self.registry, PipelineConfig())
-        handle = self.runner.submit("분석", lambda progress, token: pipeline.run(audio, progress, token, fingerprint))
-        self._analysis = handle
+            mode = dlg.mode
+        elif self.doc.project.analysis is None and len(self.doc.score) == 0:
+            mode = REPLACE_ALL
+        plan = self.doc.apply_analysis(result, mode)
+        note = " — 샘플 데이터이며 실제 분석 결과가 아닙니다." if result.is_placeholder else ""
+        kept = f", 사용자 편집 {len(plan.kept)}개 유지" if plan.kept else ""
+        self.statusBar().showMessage(f"음표 {len(plan.added)}개를 반영했습니다{kept}{note}", 10000)
+        if result.warnings:
+            QMessageBox.warning(self, "분석 안내", "\n".join(result.warnings))
+        self.view.center_on_content()
 
-        def done(result) -> None:
-            if self.audio is not audio:
-                return  # 분석 도중 다른 오디오를 열었다
-            self.doc.set_analysis(result)
-            note = " — 샘플 데이터이며 실제 분석 결과가 아닙니다." if result.is_placeholder else ""
-            self.statusBar().showMessage(f"음표 {len(result.notes)}개를 만들었습니다{note}", 10000)
-
-        def ended() -> None:
-            if self._analysis is handle:
-                self._analysis = None
+    def clear_cache(self) -> None:
+        answer = QMessageBox.question(self, "캐시 비우기",
+                                      "cache/ 폴더의 중간 결과를 지웁니다. 원본·분리 결과·분석 결과·편집 내용·내보낸 파일은 "
+                                      "그대로입니다. 다음 분석은 피치 추출을 다시 계산합니다. 계속할까요?")
+        if answer == QMessageBox.StandardButton.Yes:
+            self.session.clear_cache()
             self._update_actions()
 
-        handle.finished.connect(done)
-        handle.failed.connect(lambda msg, tb: self._show_error("분석 실패", msg, tb))
-        handle.cancelled.connect(lambda: self.statusBar().showMessage("분석을 취소했습니다.", 5000))
-        handle.ended.connect(ended)
-        self._track(handle, "분석 중")
-        self._update_actions()
+    def probe_gpu(self) -> None:
+        handle = self.session.probe()
+        label = self.inspector.analysis.device_info
 
-    def cancel_analysis(self) -> None:
-        if self._analysis is not None:
-            self._analysis.cancel()
+        def done(info: dict) -> None:
+            if info.get("error"):
+                label.setText(f"⚠ {info['error']}  install_separation.bat 으로 설치할 수 있습니다.")
+            elif info.get("cuda"):
+                label.setText(f"✓ GPU 사용 가능: {info.get('gpu')} (CUDA {info.get('cuda_version')}, PyTorch {info.get('torch')})")
+            else:
+                label.setText(f"CPU로 실행합니다. CUDA를 쓸 수 없습니다 (PyTorch {info.get('torch')}).")
+
+        handle.finished.connect(done)
+
+    # --- 내보내기 -----------------------------------------------------------------
+
+    def export_dialog(self, preselect: list[str]) -> None:
+        f = self.session.folder
+        if f is None:
+            return
+        available = {n: self.session.track_audio(n) is not None for n in TRACK_LABELS}
+        dlg = ExportDialog(f.name, available, str(f.paths.exports), preselect or ["vocals", "instrumental"], self)
+        if dlg.exec() != ExportDialog.DialogCode.Accepted:
+            return
+        jobs = dlg.jobs()
+        if not jobs:
+            return
+        existing = [j.path for j in jobs if os.path.exists(j.path)]
+        if existing:
+            answer = QMessageBox.question(self, "덮어쓰기 확인", "같은 이름의 파일이 있습니다. 덮어쓸까요?\n"
+                                          + "\n".join(Path(p).name for p in existing))
+            if answer != QMessageBox.StandardButton.Yes:
+                return
+        self.session.export([(j.track, j.path) for j in jobs], dlg.options())
 
     # --- 기타 -----------------------------------------------------------------
 
@@ -661,15 +997,29 @@ class MainWindow(QMainWindow):
         QMessageBox.information(self, "조작법 및 구현 현황", HELP_TEXT)
 
     def show_about(self) -> None:
-        QMessageBox.about(self, "정보", f"<b>{APP_DISPLAY_NAME}</b> {__version__}<br>Python + PySide6 보컬 채보 편집기 (개발 중)")
+        QMessageBox.about(self, "정보", f"<b>{APP_DISPLAY_NAME}</b> {__version__}<br>"
+                          "Python + PySide6 보컬 분리·자동 채보 편집기 (개발 중)<br><br>"
+                          "글꼴: Pretendard, JetBrains Mono (SIL OFL 1.1) · 아이콘: Lucide (ISC)<br>"
+                          "보컬 분리: Demucs htdemucs (MIT) · 피치·BPM: librosa (ISC)")
 
     def closeEvent(self, event: QCloseEvent) -> None:  # noqa: N802
         if not self.maybe_save():
             event.ignore()
             return
         self.settings.setValue("window/geometry", self.saveGeometry())
+        self.settings.setValue("window/splitter", self.splitter.sizes())
+        f = self.session.folder
+        if f is not None:  # 작업 공간·재생 위치만 기록 (음표 내용은 저장 여부를 따른다)
+            try:
+                f.meta.ui = self._ui_state()
+                f.meta.playback = self._playback_state()
+                f.write_meta()
+            except Exception:  # noqa: BLE001 - 닫기를 막지 않는다
+                log.exception("작업 공간 상태 저장 실패")
         self.player.shutdown()
         if not self.runner.shutdown(5000):
             log.warning("백그라운드 작업이 5초 안에 끝나지 않았습니다.")
+        self.session.close()
         self.autosave.shutdown()
+        self.log_panel.detach()
         event.accept()

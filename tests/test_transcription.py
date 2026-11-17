@@ -139,3 +139,15 @@ def test_real_htdemucs(tmp_path):
     assert out.stems["vocals"].frames == load_audio(str(path)).frames
     assert [n.pitch for n in out.result.notes] == [64, 67, 69, 62]
     assert 115 < out.result.tempo.initial_bpm < 125 or 57 < out.result.tempo.initial_bpm < 63
+
+
+@pytest.mark.parametrize("sens", ["simple", "standard", "precise"])
+def test_vibrato_song_all_sensitivities(tmp_path, sens):
+    melody = [(1.0, 1.8, 64), (1.9, 2.7, 67), (2.8, 4.0, 69), (4.1, 5.0, 67), (5.2, 5.8, 65), (5.8, 6.4, 67)]
+    y = sung(melody, 7.0, vibrato_cents=30)
+    path = tmp_path / "vib.wav"
+    sf.write(path, y, SR)
+    settings = AnalysisSettings.for_sensitivity(sens, AnalysisSettings(separation="none"))
+    out = TranscriptionPipeline(InProcessRunner()).run(make_request(str(path), tmp_path, settings=settings))
+    assert [n.pitch for n in out.result.notes] == [64, 67, 69, 67, 65, 67]
+    assert any(n.vibrato for n in out.result.notes)

@@ -1,7 +1,8 @@
 """메모리에 올린 오디오를 QAudioSink로 재생한다.
 
-QMediaPlayer 대신 QAudioSink를 쓰는 이유: 이후 보컬/반주 분리 결과를 섞어 듣거나
-음표 안내음을 합성할 때 numpy 배열을 직접 흘려보내야 하기 때문이다.
+트랙(원본·보컬·반주)을 여러 개 올려 트랙별 음량·음소거·솔로로 섞어 들을 수 있다.
+모든 트랙은 원본과 같은 시간축이라 트랙을 바꾸거나 섞어도 재생 위치가 그대로다.
+QMediaPlayer 대신 QAudioSink를 쓰는 이유도 이것이다 (numpy 배열을 직접 섞어 흘려보낸다).
 """
 
 from __future__ import annotations
@@ -15,7 +16,7 @@ from PySide6.QtCore import QIODevice, QObject, QTimer, Signal
 from PySide6.QtMultimedia import QAudioFormat, QAudioSink, QMediaDevices
 
 from amp.audio.data import AudioData
-from amp.audio.pcm import PcmConverter, SampleFormat
+from amp.audio.pcm import PcmMixer, SampleFormat
 
 log = logging.getLogger(__name__)
 
@@ -39,7 +40,8 @@ class PlaybackState(Enum):
 class PcmDevice(QIODevice):
     """PcmConverter를 QIODevice로 감싼다. 오디오 스레드에서 읽힐 수 있어 잠금을 쓴다."""
 
-    def __init__(self, converter: PcmConverter, start_frame: int = 0) -> None:
+    def __init__(self, converter, start_frame: int = 0) -> None:
+        """converter는 read(start, count)·total_out_frames·bytes_per_frame를 가진 객체 (PcmConverter, PcmMixer)."""
         super().__init__()
         self._conv = converter
         self._frame = start_frame
@@ -74,7 +76,10 @@ class AudioPlayer(QObject):
 
     def __init__(self, parent: QObject | None = None) -> None:
         super().__init__(parent)
-        self._audio: AudioData | None = None
+        self._audio: AudioData | None = None  # 기준 트랙 (원본). 길이·샘플레이트의 기준
+        self._tracks: dict[str, AudioData] = {}
+        self._track_state: dict[str, dict] = {}
+        self._mixer: PcmMixer | None = None
         self._sink: QAudioSink | None = None
         self._device: PcmDevice | None = None
         self._state = PlaybackState.STOPPED
@@ -112,11 +117,54 @@ class AudioPlayer(QObject):
     # --- 제어 --------------------------------------------------------------
 
     def set_audio(self, audio: AudioData | None) -> None:
+        """원본 하나만 올린다 (다른 트랙은 지운다). 위치를 처음으로 돌린다."""
         self._teardown()
         self._audio = audio
+        self._tracks = {"original": audio} if audio is not None else {}
         self._pos = self._play_from = 0.0
         self._set_state(PlaybackState.STOPPED)
         self.positionChanged.emit(0.0)
+
+    @property
+    def tracks(self) -> dict[str, AudioData]:
+        return dict(self._tracks)
+
+    def set_track(self, name: str, audio: AudioData | None) -> None:
+        """트랙을 더하거나(분리 결과) 뺀다. 재생 중이면 같은 위치에서 이어서 재생한다."""
+        if audio is not None and self._audio is not None:
+            if audio.frames != self._audio.frames or audio.sample_rate != self._audio.sample_rate:
+                self.errorOccurred.emit(f"{name} 트랙의 길이·샘플레이트가 원본과 달라 재생 목록에 넣지 않았습니다.")
+                return
+        playing = self._state is PlaybackState.PLAYING
+        pos = self.position()
+        if playing:
+            self._teardown()
+        if audio is None:
+            self._tracks.pop(name, None)
+        else:
+            self._tracks[name] = audio
+        if playing:
+            self._pos = pos
+            if self._start_sink(pos):
+                self._timer.start()
+            else:
+                self._set_state(PlaybackState.STOPPED)
+
+    def track_state(self, name: str) -> dict:
+        return dict(self._track_state.get(name, {"gain": 1.0, "mute": False, "solo": False}))
+
+    def set_track_state(self, name: str, *, gain: float | None = None, mute: bool | None = None,
+                        solo: bool | None = None) -> None:
+        st = self.track_state(name)
+        if gain is not None:
+            st["gain"] = float(gain)
+        if mute is not None:
+            st["mute"] = bool(mute)
+        if solo is not None:
+            st["solo"] = bool(solo)
+        self._track_state[name] = st
+        if self._mixer is not None:
+            self._mixer.set_state(name, gain=gain, mute=mute, solo=solo)
 
     def toggle(self) -> None:
         if self._state is PlaybackState.PLAYING:
@@ -201,9 +249,12 @@ class AudioPlayer(QObject):
             self.errorOccurred.emit("출력 장치가 지원하는 오디오 형식을 찾지 못했습니다.")
             return False
         fmt, sample_format = chosen
-        conv = PcmConverter(
-            self._audio.samples, self._audio.sample_rate, fmt.sampleRate(), fmt.channelCount(), sample_format
-        )
+        tracks = {name: a.samples for name, a in self._tracks.items()} or {"original": self._audio.samples}
+        conv = PcmMixer(tracks, self._audio.sample_rate, fmt.sampleRate(), fmt.channelCount(), sample_format)
+        for name in tracks:
+            st = self.track_state(name)
+            conv.set_state(name, gain=st["gain"], mute=st["mute"], solo=st["solo"])
+        self._mixer = conv
         pcm = PcmDevice(conv, conv.out_frame_at(position))
         pcm.open(QIODevice.OpenModeFlag.ReadOnly)
         sink = QAudioSink(device, fmt, self)
@@ -223,6 +274,7 @@ class AudioPlayer(QObject):
         self._timer.stop()
         sink, pcm = self._sink, self._device
         self._sink = self._device = None
+        self._mixer = None
         if sink is not None:
             sink.stop()
             sink.deleteLater()

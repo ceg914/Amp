@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import numpy as np
 from PySide6.QtCore import QPointF, QRectF, Qt
-from PySide6.QtGui import QBrush, QColor, QPainter, QPainterPath, QPen
+from PySide6.QtGui import QBrush, QColor, QPainter, QPainterPath, QPen, QPolygonF
 from PySide6.QtWidgets import QGraphicsItem, QGraphicsRectItem, QStyle, QStyleOptionGraphicsItem
 
 from amp.app import theme
@@ -73,18 +73,54 @@ class NoteItem(QGraphicsRectItem):
         return "\n".join(parts)
 
     def paint(self, painter: QPainter, option: QStyleOptionGraphicsItem, widget=None) -> None:
+        """음표는 모두 바이올렛. 상태는 색만이 아니라 채움·테두리·표식으로 구분한다.
+
+        원본: 꽉 찬 채움 / 수정: 점선 테두리 + 오른쪽 위 삼각 표식 / 추가: 옅은 채움 + 굵은 테두리 + '+' 표식
+        장식음: 점 테두리 / 선택: 밝은 테두리 + 양 끝 크기 조절 손잡이
+        """
         r = self.rect()
-        fill = QColor(theme.NOTE_FILL.get(self.status, theme.NOTE_FILL["user"]))
         selected = bool(option.state & QStyle.StateFlag.State_Selected)
+        fill = QColor(theme.ACCENT)
+        fill.setAlpha({"original": 235, "modified": 205, "user": 110}.get(self.status, 235))
         if selected:
-            fill = fill.lighter(140)
-        painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
-        pen = QPen(theme.NOTE_SELECTED_BORDER if selected else theme.NOTE_BORDER, 1.5 if selected else 1.0)
+            fill = fill.lighter(115)
+        if selected:
+            pen = QPen(theme.NOTE_SELECTED_BORDER, 2.0)
+        elif self.status == "user":
+            pen = QPen(theme.ACCENT, 1.6)
+        elif self.status == "modified":
+            pen = QPen(theme.TEXT, 1.2, Qt.PenStyle.DashLine)
+        else:
+            pen = QPen(theme.NOTE_BORDER, 1.0)
+        if self.note.ornament and not selected:
+            pen.setStyle(Qt.PenStyle.DotLine)
         pen.setCosmetic(True)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
         painter.setPen(pen)
         painter.setBrush(QBrush(fill))
         radius = min(3.0, r.height() / 3)
         painter.drawRoundedRect(r, radius, radius)
+        h = r.height()
+        if r.width() > 10 and h >= 7:
+            mark = QPen(theme.TEXT, 1.2)
+            mark.setCosmetic(True)
+            painter.setPen(mark)
+            s = min(5.0, h / 2)
+            if self.status == "modified":
+                painter.setBrush(QBrush(theme.TEXT))
+                tri = QPolygonF([QPointF(r.right() - s - 1, r.top() + 1), QPointF(r.right() - 1, r.top() + 1),
+                                 QPointF(r.right() - 1, r.top() + 1 + s)])
+                painter.drawPolygon(tri)
+            elif self.status == "user":
+                cx, cy = r.left() + 2 + s / 2, r.top() + h / 2
+                painter.drawLine(QPointF(cx - s / 2, cy), QPointF(cx + s / 2, cy))
+                painter.drawLine(QPointF(cx, cy - s / 2), QPointF(cx, cy + s / 2))
+        if selected and r.width() > 8:
+            painter.setPen(Qt.PenStyle.NoPen)
+            painter.setBrush(QBrush(theme.TEXT))
+            hw = 3.0
+            painter.drawRect(QRectF(r.left(), r.top() + h * 0.2, hw, h * 0.6))
+            painter.drawRect(QRectF(r.right() - hw, r.top() + h * 0.2, hw, h * 0.6))
 
 
 class PitchCurveItem(QGraphicsItem):
@@ -154,7 +190,7 @@ class PitchCurveItem(QGraphicsItem):
             else:
                 path.moveTo(x, y)
                 pen_down = True
-        pen = QPen(theme.PITCH_CURVE, 1.6)
+        pen = QPen(theme.PITCH_CURVE, 1.8)
         pen.setCosmetic(True)
         painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
         painter.setPen(pen)

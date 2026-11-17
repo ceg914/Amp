@@ -22,13 +22,19 @@ class WaveformView(QWidget):
         self._playhead = 0.0
         self._cache: QPixmap | None = None
         self._cache_key: tuple | None = None
+        self._color = theme.WAVE
+        self._label = ""
         self.setMinimumHeight(60)
         self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
         self.setFixedHeight(90)
         timeline.changed.connect(self.update)
 
-    def set_peaks(self, peaks: WaveformPeaks | None) -> None:
+    def set_peaks(self, peaks: WaveformPeaks | None, color=None, label: str = "") -> None:
+        """표시할 트랙의 파형. 다른 트랙으로 바꿔도 같은 시간축이라 재생 위치·정렬이 그대로다."""
         self._peaks = peaks
+        if color is not None:
+            self._color = color
+        self._label = label
         self._cache_key = None
         self.update()
 
@@ -43,7 +49,7 @@ class WaveformView(QWidget):
     def _render(self) -> QPixmap:
         dpr = self.devicePixelRatioF()
         w, h = self.width(), self.height()
-        key = (w, h, dpr, self.timeline.px_per_sec, self.timeline.scroll_x, id(self._peaks))
+        key = (w, h, dpr, self.timeline.px_per_sec, self.timeline.scroll_x, id(self._peaks), self._color.name(), self._label)
         if self._cache is not None and self._cache_key == key:
             return self._cache
         pm = QPixmap(int(w * dpr), int(h * dpr))
@@ -63,11 +69,14 @@ class WaveformView(QWidget):
                 xs = valid / dpr
                 y_top = mid - maxs[valid] * (mid - 2)
                 y_bot = mid - mins[valid] * (mid - 2)
-                p.setPen(QPen(theme.WAVE, 1.0 / dpr))
+                p.setPen(QPen(self._color, 1.0 / dpr))
                 p.drawLines([QLineF(x, a, x, b + 0.5) for x, a, b in zip(xs.tolist(), y_top.tolist(), y_bot.tolist())])
         else:
             p.setPen(theme.TEXT_DIM)
             p.drawText(self.rect(), Qt.AlignmentFlag.AlignCenter, "오디오 파일을 열면 파형이 표시됩니다 (Ctrl+O)")
+        if self._label and self._peaks is not None:
+            p.setPen(self._color)
+            p.drawText(8, 16, self._label)
         p.end()
         self._cache, self._cache_key = pm, key
         return pm

@@ -43,6 +43,7 @@ class _Drag(Enum):
 class PianoRollView(QGraphicsView):
     editFailed = Signal(str)
     selectionInfoChanged = Signal(str)
+    hoverInfoChanged = Signal(str)  # 마우스 위치의 음높이·시간
 
     def __init__(self, doc: ProjectDocument, timeline: TimelineState, parent=None) -> None:
         super().__init__(parent)
@@ -222,6 +223,7 @@ class PianoRollView(QGraphicsView):
     def mouseMoveEvent(self, event: QMouseEvent) -> None:  # noqa: N802
         if self._drag is _Drag.NONE:
             self._update_cursor(event.position())
+            self._emit_hover(event.position())
             super().mouseMoveEvent(event)
             return
         moved = event.position() - self._press_view
@@ -297,6 +299,15 @@ class PianoRollView(QGraphicsView):
             item = self.roll.items_by_id.get(note.id)
             if item is not None:
                 item.sync()
+
+    def _emit_hover(self, view_pos) -> None:
+        from amp.core.pitch import midi_to_hz, note_name
+
+        sp = self.mapToScene(view_pos.toPoint())
+        t = max(0.0, self.mapper.x_to_time(sp.x()))
+        p = self.mapper.y_to_pitch(sp.y())
+        bar, beat = self.doc.score.tempo.bar_beat(t)
+        self.hoverInfoChanged.emit(f"{note_name(p)} ({p}, {float(midi_to_hz(p)):.1f} Hz)  {t:.3f}s  {bar}.{beat:.2f}")
 
     def _update_cursor(self, view_pos) -> None:
         item = self._note_item_at(view_pos)

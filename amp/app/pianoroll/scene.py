@@ -37,6 +37,7 @@ class PianoRollScene(QGraphicsScene):
         self.setItemIndexMethod(QGraphicsScene.ItemIndexMethod.BspTreeIndex)
 
         doc.projectReset.connect(self.rebuild)
+        doc.analysisChanged.connect(self.rebuild)
         doc.notesReplaced.connect(self._on_notes_replaced)
         doc.tempoChanged.connect(self._on_tempo_changed)
         doc.selectionRequested.connect(self.select_ids)
@@ -81,6 +82,7 @@ class PianoRollScene(QGraphicsScene):
 
     def _add_item(self, note: Note) -> NoteItem:
         item = NoteItem(note, self.doc.note_status(note), self.mapper)
+        item.setVisible(getattr(self, "notes_visible", True))
         self.items_by_id[note.id] = item
         self.addItem(item)
         return item
@@ -156,6 +158,13 @@ class PianoRollScene(QGraphicsScene):
         if not blocked and set(self.selected_ids()) != set(before):
             self.selectionChanged.emit()
 
+    def set_notes_visible(self, visible: bool) -> None:
+        """음표 레이어 표시/숨김 (피치 곡선과 따로)."""
+        self.notes_visible = visible
+        for item in self.items_by_id.values():
+            item.setVisible(visible)
+        self.update()
+
     def set_playhead(self, t: float) -> None:
         self._playhead_time = t
         self.playhead.set_time(t)
@@ -213,7 +222,7 @@ class PianoRollScene(QGraphicsScene):
     # --- 가사 글자 ---------------------------------------------------------------
 
     def drawForeground(self, painter: QPainter, rect: QRectF) -> None:  # noqa: N802
-        labelled = [i for i in self.items(rect) if isinstance(i, NoteItem) and i.label]
+        labelled = [i for i in self.items(rect) if isinstance(i, NoteItem) and i.label and i.isVisible()]
         if not labelled:
             return
         font = painter.font()

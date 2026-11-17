@@ -98,3 +98,75 @@ class PcmConverter:
         if self.sample_format is SampleFormat.INT32:
             return (block.astype(np.float64) * 2147483647.0).astype("<i4")
         return block.astype("<f4")
+
+
+class PcmMixer:
+    """여러 트랙(원본·보컬·반주)을 트랙별 음량·음소거·솔로에 따라 섞어 PCM으로 만든다.
+
+    - 솔로가 하나라도 켜져 있으면 솔로 트랙만 들린다. 아니면 음소거하지 않은 트랙이 모두 들린다.
+    - 상태는 재생 중에도 바꿀 수 있다. 오디오 스레드는 블록을 읽을 때마다 현재 상태를 쓴다.
+    - 모든 트랙은 같은 샘플레이트·프레임 수여야 한다(분리 결과가 원본과 같은 시간축을 쓰므로 성립).
+    """
+
+    def __init__(
+        self,
+        tracks: dict[str, np.ndarray],
+        in_rate: int,
+        out_rate: int,
+        out_channels: int,
+        sample_format: SampleFormat = SampleFormat.INT16,
+    ) -> None:
+        if not tracks:
+            raise ValueError("트랙이 하나 이상 필요합니다.")
+        lengths = {t.shape[0] for t in tracks.values()}
+        if len(lengths) != 1:
+            raise ValueError("모든 트랙의 길이가 같아야 합니다.")
+        self._converters = {
+            name: PcmConverter(samples, in_rate, out_rate, out_channels, sample_format)
+            for name, samples in tracks.items()
+        }
+        first = next(iter(self._converters.values()))
+        self.out_rate = first.out_rate
+        self.out_channels = first.out_channels
+        self.sample_format = sample_format
+        self.total_out_frames = first.total_out_frames
+        self.state = {name: {"gain": 1.0, "mute": False, "solo": False} for name in tracks}
+
+    @property
+    def bytes_per_frame(self) -> int:
+        return self.out_channels * self.sample_format.bytes_per_sample
+
+    def out_frame_at(self, seconds: float) -> int:
+        return next(iter(self._converters.values())).out_frame_at(seconds)
+
+    def seconds_at(self, out_frame: int) -> float:
+        return out_frame / self.out_rate
+
+    def set_state(self, name: str, *, gain: float | None = None, mute: bool | None = None, solo: bool | None = None) -> None:
+        if name not in self.state:
+            return
+        s = dict(self.state[name])
+        if gain is not None:
+            s["gain"] = float(max(0.0, gain))
+        if mute is not None:
+            s["mute"] = bool(mute)
+        if solo is not None:
+            s["solo"] = bool(solo)
+        self.state = {**self.state, name: s}  # 통째로 바꿔 오디오 스레드가 반쯤 바뀐 상태를 보지 않게 한다
+
+    def audible(self) -> list[tuple[str, float]]:
+        state = self.state
+        solo = [n for n, s in state.items() if s["solo"]]
+        names = solo if solo else [n for n, s in state.items() if not s["mute"]]
+        return [(n, state[n]["gain"]) for n in names if state[n]["gain"] > 0]
+
+    def read(self, start: int, count: int) -> bytes:
+        start = max(0, int(start))
+        count = max(0, min(int(count), self.total_out_frames - start))
+        if count == 0:
+            return b""
+        mix = np.zeros((count, self.out_channels), dtype=np.float32)
+        for name, gain in self.audible():
+            conv = self._converters[name]
+            mix += conv._map_channels(conv._resample(start, count)) * gain
+        return self._converters[next(iter(self._converters))]._quantize(mix).tobytes()

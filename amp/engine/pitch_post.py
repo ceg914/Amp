@@ -102,3 +102,27 @@ def build_curve(f0_hz: np.ndarray, voiced_prob: np.ndarray, rms: np.ndarray | No
     conf = np.where(np.isfinite(clean), np.asarray(voiced_prob, dtype=np.float32), 0.0).astype(np.float32)
     f0 = np.where(np.isfinite(clean), midi_to_hz(np.nan_to_num(clean)), np.nan).astype(np.float32)
     return PitchCurve(start_time, frame_rate, f0, conf)
+
+
+def articulation_envelope(onset: np.ndarray, rms: np.ndarray, frame_rate: float,
+                          window_s: float = 0.15, dip_full_db: float = 12.0) -> np.ndarray:
+    """재발음 지표 = 온셋 강도 × (직전 음량 하락 깊이).
+
+    실제로 다시 부르는 지점은 자음·끊김 때문에 음량이 잠깐 떨어졌다가 오른다. 비브라토만 있는 지속음은
+    스펙트럼이 흔들려 온셋 피크가 생겨도 음량은 거의 떨어지지 않는다(분리된 보컬에서 확인).
+    하락이 dip_full_db 이상이면 온셋을 그대로, 없으면 0에 가깝게 줄인다.
+    """
+    onset = np.asarray(onset, dtype=np.float64)
+    rms = np.asarray(rms, dtype=np.float64)
+    if onset.shape != rms.shape or onset.size == 0:
+        return onset
+    db = 20 * np.log10(rms + 1e-6)
+    from scipy.ndimage import maximum_filter1d, minimum_filter1d
+
+    w = max(3, int(window_s * frame_rate))
+    ref = maximum_filter1d(db, size=2 * w + 1, mode="nearest")
+    size = max(3, w // 2)
+    # origin > 0이면 창이 과거 쪽으로 밀린다: 온셋 직전·직후의 최저 음량을 본다
+    recent_min = minimum_filter1d(db, size=size, origin=min(size // 2, w // 4), mode="nearest")
+    depth = np.clip((ref - recent_min) / dip_full_db, 0.0, 1.0)
+    return (onset * depth).astype(np.float32)

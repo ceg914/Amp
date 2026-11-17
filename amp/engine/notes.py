@@ -33,7 +33,7 @@ from amp.engine.settings import NoteDetectionParams
 DETECT_TOLERANCE = 0.3  # 반음. 가수의 음정 오차를 감안해 기준보다 조금 작은 변화도 인정한다
 MIN_ISLAND_S = 0.03  # 이보다 짧은 유성 조각은 잡음으로 본다
 MIN_VOICED_FRACTION = 0.6  # 음표 구간 중 실제 유성 프레임이 이 비율 미만이면 버린다
-SNAP_BEFORE_S, SNAP_AFTER_S = 0.08, 0.15  # 음높이 경계를 온셋으로 옮길 수 있는 범위
+SNAP_BEFORE_S, SNAP_AFTER_S = 0.04, 0.15  # 음높이 경계를 온셋으로 옮길 수 있는 범위
 EDGE_GUARD_FRAMES = 15  # 재발음 분할은 구간 끝에서 150ms(100fps 기준) 이상 떨어진 온셋에서만
 REF_WINDOW_S = 0.5  # 현재 음 높이를 추정할 때 볼 최근 구간
 
@@ -301,7 +301,9 @@ def _carve_ornaments(segs, params, fr, min_len, midi, filled, center, conf, voic
     max_len = max(min_len, int(round(params.center_window_s * fr)))
     detect = max(0.5, params.change_semitones - DETECT_TOLERANCE)
     out: list[_Seg] = []
-    for g in segs:
+    for idx, g in enumerate(segs):
+        prev_pitch = segs[idx - 1].pitch if idx > 0 and segs[idx - 1].e == g.s else None
+        next_pitch = segs[idx + 1].pitch if idx + 1 < len(segs) and segs[idx + 1].s == g.e else None
         vib = _vibrato(filled, center, g.s, g.e, fr)
         if vib is not None and vib.extent_cents / 100.0 >= detect - 0.15:
             out.append(g)  # 비브라토 꼭대기·골짜기를 장식음으로 오인하지 않도록
@@ -315,7 +317,11 @@ def _carve_ornaments(segs, params, fr, min_len, midi, filled, center, conf, voic
             run = smooth[a:b]
             if not (orn_len <= b - a < max_len) or (run.max() - run.min()) >= 0.5:
                 continue
-            if round(float(np.median(run))) == g.pitch:
+            run_pitch = round(float(np.median(run)))
+            if run_pitch == g.pitch:
+                continue
+            # 가장자리 조각이 이웃 음과 같은 높이면 경계가 조금 어긋난 것이지 새 음이 아니다
+            if (a == 0 and run_pitch == prev_pitch) or (b == len(raw) and run_pitch == next_pitch):
                 continue
             probe = _Seg(g.s + a, g.s + b)
             _evaluate(probe, midi, filled, center, conf, voiced)

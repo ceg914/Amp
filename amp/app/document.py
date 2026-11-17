@@ -61,8 +61,33 @@ class SetTempoCommand(QUndoCommand):
         self._doc._apply_tempo(self._old)
 
 
+class ApplyAnalysisCommand(QUndoCommand):
+    """새 분석 결과를 반영한다: 원본 분석 교체 + 음표 교체(보호 음표는 유지) + 템포. 실행 취소 가능."""
+
+    def __init__(self, doc: "ProjectDocument", new: AnalysisResult, plan, text: str) -> None:
+        super().__init__(text)
+        self._doc = doc
+        self._old_analysis = doc.project.analysis
+        self._new_analysis = new
+        self._removed = list(plan.removed)
+        self._added = list(plan.added)
+        self._old_tempo = doc.score.tempo
+        self._new_tempo = plan.tempo
+        self._old_lyrics = doc.score.lyrics
+        self._new_lyrics = plan.lyrics
+
+    def redo(self) -> None:
+        self._doc._apply_analysis_state(self._new_analysis, [n.id for n in self._removed], self._added,
+                                        self._new_tempo, self._new_lyrics)
+
+    def undo(self) -> None:
+        self._doc._apply_analysis_state(self._old_analysis, [n.id for n in self._added], self._removed,
+                                        self._old_tempo, self._old_lyrics)
+
+
 class ProjectDocument(QObject):
     projectReset = Signal()  # 프로젝트 전체가 바뀜 (새로 만들기·열기·분석 적용)
+    analysisChanged = Signal()  # 원본 분석이 바뀜 (재분석 적용·되돌리기) — 피아노 롤 전체 다시 그림
     notesReplaced = Signal(list, list)  # 지운 id 목록, 추가/교체된 Note 목록
     tempoChanged = Signal()
     selectionRequested = Signal(list)  # 선택할 음표 id 목록
@@ -232,6 +257,29 @@ class ProjectDocument(QObject):
         if self.score.tempo != self.project.analysis.tempo:
             self.undo_stack.push(SetTempoCommand(self, self.score.tempo, self.project.analysis.tempo))
         self.undo_stack.endMacro()
+
+    def _apply_analysis_state(self, analysis, removed_ids, added, tempo, lyrics) -> None:
+        self.project.analysis = analysis
+        self.score.replace_notes(removed_ids, added)
+        self.score.tempo = tempo
+        self.score.lyrics = lyrics
+        self._touch()
+        self.analysisChanged.emit()
+        self.tempoChanged.emit()
+
+    def apply_analysis(self, result: AnalysisResult, mode: str = "keep_edits", text: str = "분석 결과 적용"):
+        """재분석 결과 반영. keep_edits면 사용자가 고친 음표·템포를 지킨다. 반영 계획을 돌려준다."""
+        from amp.engine.merge import plan_reanalysis
+
+        plan = plan_reanalysis(self.project, result, mode)
+        self.undo_stack.push(ApplyAnalysisCommand(self, result, plan, text))
+        return plan
+
+    def set_tempo(self, tempo: TempoMap) -> None:
+        """BPM·첫 박 위치 등 템포 전체를 바꾼다 (실행 취소 가능, 연속 변경은 하나로 합침)."""
+        if tempo == self.score.tempo:
+            return
+        self.undo_stack.push(SetTempoCommand(self, self.score.tempo, tempo))
 
     def set_bpm(self, bpm: float) -> None:
         old = self.score.tempo

@@ -124,3 +124,24 @@ def test_without_miniaudio_fallback(tmp_path, monkeypatch):
     broken.write_bytes(b"RIFF0000WAVEjunk")
     with pytest.raises(AudioLoadError, match="손상"):
         load_audio(str(broken))
+
+
+def test_pcm_mixer_mute_solo_gain():
+    from amp.audio.pcm import PcmMixer
+
+    a = np.full((10, 1), 0.25, np.float32)
+    b = np.full((10, 1), 0.5, np.float32)
+    m = PcmMixer({"original": a, "vocals": b}, 100, 100, 1, SampleFormat.FLOAT32)
+    read = lambda: np.frombuffer(m.read(0, 1), dtype="<f4")[0]
+    assert read() == pytest.approx(0.75)
+    m.set_state("vocals", mute=True)
+    assert read() == pytest.approx(0.25)
+    m.set_state("vocals", solo=True)  # 솔로는 음소거보다 우선
+    assert read() == pytest.approx(0.5)
+    m.set_state("vocals", gain=0.5)
+    assert read() == pytest.approx(0.25)
+    m.set_state("vocals", solo=False, mute=False, gain=1.0)
+    m.set_state("original", gain=0.0)
+    assert read() == pytest.approx(0.5)
+    with pytest.raises(ValueError):
+        PcmMixer({"a": a, "b": np.zeros((5, 1), np.float32)}, 100, 100, 1)
