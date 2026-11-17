@@ -1,0 +1,186 @@
+"""피아노 롤 장면에 올라가는 그래픽 항목."""
+
+from __future__ import annotations
+
+import numpy as np
+from PySide6.QtCore import QPointF, QRectF, Qt
+from PySide6.QtGui import QBrush, QColor, QPainter, QPainterPath, QPen
+from PySide6.QtWidgets import QGraphicsItem, QGraphicsRectItem, QStyle, QStyleOptionGraphicsItem
+
+from amp.app import theme
+from amp.app.pianoroll.mapping import PITCH_MAX, PianoRollMapper
+from amp.core.model import Note, PitchCurve
+
+Z_NOTE = 10
+Z_CURVE = 20
+Z_PLAYHEAD = 30
+
+
+class NoteItem(QGraphicsRectItem):
+    """음표 하나. 모델을 직접 바꾸지 않고, 드래그 중에는 미리보기 위치만 바꾼다.
+
+    가사 글자(label)는 피치 곡선에 가리지 않도록 장면의 drawForeground에서 그린다.
+    """
+
+    def __init__(self, note: Note, status: str, mapper: PianoRollMapper) -> None:
+        super().__init__()
+        self.note = note
+        self.status = status
+        self.label = ""
+        self._mapper = mapper
+        self.setFlag(QGraphicsItem.GraphicsItemFlag.ItemIsSelectable, True)
+        self.setZValue(Z_NOTE)
+        self.setAcceptHoverEvents(False)
+        self.sync(note, status)
+
+    def model_rect(self, note: Note | None = None) -> QRectF:
+        n = note or self.note
+        m = self._mapper
+        x0 = m.time_to_x(n.start)
+        x1 = m.time_to_x(n.end)
+        return QRectF(x0, m.pitch_to_y(n.pitch) + 1, max(x1 - x0, 2.0), m.row_height - 2)
+
+    def sync(self, note: Note | None = None, status: str | None = None) -> None:
+        if note is not None:
+            self.note = note
+        if status is not None:
+            self.status = status
+        self.setRect(self.model_rect())
+        self.setToolTip(self._tooltip())
+
+    def show_preview(self, note: Note) -> None:
+        self.setRect(self.model_rect(note))
+
+    def set_label(self, label: str) -> None:
+        if label != self.label:
+            self.label = label
+            if self.scene() is not None:
+                self.scene().update(self.sceneBoundingRect())
+
+    def _tooltip(self) -> str:
+        from amp.core.pitch import note_name
+
+        n = self.note
+        parts = [
+            f"{note_name(n.pitch)} (MIDI {n.pitch})",
+            f"{n.start:.3f}s ~ {n.end:.3f}s ({n.duration * 1000:.0f}ms)",
+            {"original": "분석 원본", "modified": "수정됨", "user": "사용자 추가"}.get(self.status, ""),
+        ]
+        if n.confidence is not None:
+            parts.append(f"신뢰도 {n.confidence:.2f}")
+        if n.vibrato is not None:
+            parts.append(f"비브라토 {n.vibrato.rate_hz:.1f}Hz ±{n.vibrato.extent_cents:.0f}c")
+        return "\n".join(parts)
+
+    def paint(self, painter: QPainter, option: QStyleOptionGraphicsItem, widget=None) -> None:
+        r = self.rect()
+        fill = QColor(theme.NOTE_FILL.get(self.status, theme.NOTE_FILL["user"]))
+        selected = bool(option.state & QStyle.StateFlag.State_Selected)
+        if selected:
+            fill = fill.lighter(140)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+        pen = QPen(theme.NOTE_SELECTED_BORDER if selected else theme.NOTE_BORDER, 1.5 if selected else 1.0)
+        pen.setCosmetic(True)
+        painter.setPen(pen)
+        painter.setBrush(QBrush(fill))
+        radius = min(3.0, r.height() / 3)
+        painter.drawRoundedRect(r, radius, radius)
+
+
+class PitchCurveItem(QGraphicsItem):
+    """분석된 f0 곡선. 화면에 드러난 구간만 골라 그린다."""
+
+    MIN_CONFIDENCE = 0.3
+
+    def __init__(self, mapper: PianoRollMapper) -> None:
+        super().__init__()
+        self._mapper = mapper
+        self._curve: PitchCurve | None = None
+        self._midi: np.ndarray | None = None
+        self._bounds = QRectF()
+        self.setZValue(Z_CURVE)
+        self.setAcceptedMouseButtons(Qt.MouseButton.NoButton)
+        self.setFlag(QGraphicsItem.GraphicsItemFlag.ItemUsesExtendedStyleOption, True)
+
+    def set_curve(self, curve: PitchCurve | None) -> None:
+        self._curve = curve
+        if curve is None:
+            self._midi = None
+        else:
+            midi = curve.midi().astype(np.float64)
+            midi[curve.confidence < self.MIN_CONFIDENCE] = np.nan
+            self._midi = midi
+        self.relayout()
+
+    def relayout(self) -> None:
+        self.prepareGeometryChange()
+        if self._curve is None:
+            self._bounds = QRectF()
+        else:
+            m = self._mapper
+            self._bounds = QRectF(
+                m.time_to_x(self._curve.start_time), 0, m.time_to_x(self._curve.end_time - self._curve.start_time), m.scene_height
+            )
+        self.update()
+
+    def boundingRect(self) -> QRectF:  # noqa: N802
+        return self._bounds
+
+    def paint(self, painter: QPainter, option: QStyleOptionGraphicsItem, widget=None) -> None:
+        if self._curve is None or self._midi is None:
+            return
+        m = self._mapper
+        exposed = option.exposedRect if option.exposedRect.isValid() else self._bounds
+        t0 = m.x_to_time(exposed.left()) - 0.05
+        t1 = m.x_to_time(exposed.right()) + 0.05
+        i0, i1 = self._curve.frame_range(t0, t1)
+        if i1 - i0 < 2:
+            return
+        midi = self._midi[i0:i1]
+        # 화면 1픽셀에 프레임이 여러 개 몰리면 간격을 두고 건너뛴다
+        frames_per_px = self._curve.frame_rate / m.px_per_sec
+        step = max(1, int(frames_per_px / 2))
+        idx = np.arange(0, midi.shape[0], step)
+        xs = m.time_to_x(self._curve.start_time) + (i0 + idx) / self._curve.frame_rate * m.px_per_sec
+        ys = (PITCH_MAX - midi[idx]) * m.row_height + m.row_height / 2
+        path = QPainterPath()
+        pen_down = False
+        for x, y in zip(xs.tolist(), ys.tolist()):
+            if y != y:  # NaN = 무성 구간
+                pen_down = False
+                continue
+            if pen_down:
+                path.lineTo(x, y)
+            else:
+                path.moveTo(x, y)
+                pen_down = True
+        pen = QPen(theme.PITCH_CURVE, 1.6)
+        pen.setCosmetic(True)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+        painter.setPen(pen)
+        painter.setBrush(Qt.BrushStyle.NoBrush)
+        painter.drawPath(path)
+
+
+class PlayheadItem(QGraphicsItem):
+    def __init__(self, mapper: PianoRollMapper) -> None:
+        super().__init__()
+        self._mapper = mapper
+        self.setZValue(Z_PLAYHEAD)
+        self.setAcceptedMouseButtons(Qt.MouseButton.NoButton)
+
+    def boundingRect(self) -> QRectF:  # noqa: N802
+        return QRectF(-1.5, 0, 3, self._mapper.scene_height)
+
+    def set_time(self, t: float) -> None:
+        self.setPos(QPointF(self._mapper.time_to_x(t), 0))
+
+    def relayout(self, t: float) -> None:
+        self.prepareGeometryChange()
+        self.set_time(t)
+
+    def paint(self, painter: QPainter, option, widget=None) -> None:
+        pen = QPen(theme.PLAYHEAD, 1.5)
+        pen.setCosmetic(True)
+        painter.setPen(pen)
+        painter.drawLine(QPointF(0, 0), QPointF(0, self._mapper.scene_height))

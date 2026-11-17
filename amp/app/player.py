@@ -1,0 +1,261 @@
+"""메모리에 올린 오디오를 QAudioSink로 재생한다.
+
+QMediaPlayer 대신 QAudioSink를 쓰는 이유: 이후 보컬/반주 분리 결과를 섞어 듣거나
+음표 안내음을 합성할 때 numpy 배열을 직접 흘려보내야 하기 때문이다.
+"""
+
+from __future__ import annotations
+
+import logging
+import threading
+from enum import Enum
+
+from PySide6 import QtMultimedia
+from PySide6.QtCore import QIODevice, QObject, QTimer, Signal
+from PySide6.QtMultimedia import QAudioFormat, QAudioSink, QMediaDevices
+
+from amp.audio.data import AudioData
+from amp.audio.pcm import PcmConverter, SampleFormat
+
+log = logging.getLogger(__name__)
+
+# PySide6 6.7 이후 QAudio 네임스페이스가 QtAudio로 바뀌었다
+_QtAudio = getattr(QtMultimedia, "QtAudio", None) or QtMultimedia.QAudio
+
+_FORMAT_MAP = {
+    QAudioFormat.SampleFormat.Int16: SampleFormat.INT16,
+    QAudioFormat.SampleFormat.Int32: SampleFormat.INT32,
+    QAudioFormat.SampleFormat.Float: SampleFormat.FLOAT32,
+}
+BUFFER_USEC = 200_000  # 장치 버퍼 길이. UI가 잠깐 바빠도 소리가 끊기지 않을 만큼 둔다.
+
+
+class PlaybackState(Enum):
+    STOPPED = "stopped"
+    PLAYING = "playing"
+    PAUSED = "paused"
+
+
+class PcmDevice(QIODevice):
+    """PcmConverter를 QIODevice로 감싼다. 오디오 스레드에서 읽힐 수 있어 잠금을 쓴다."""
+
+    def __init__(self, converter: PcmConverter, start_frame: int = 0) -> None:
+        super().__init__()
+        self._conv = converter
+        self._frame = start_frame
+        self._lock = threading.Lock()
+        self.at_end = False
+
+    def readData(self, maxlen: int) -> bytes:  # noqa: N802 - Qt API
+        bpf = self._conv.bytes_per_frame
+        with self._lock:
+            data = self._conv.read(self._frame, maxlen // bpf)
+            self._frame += len(data) // bpf
+            if self._frame >= self._conv.total_out_frames:
+                self.at_end = True
+        return data
+
+    def writeData(self, data) -> int:  # noqa: N802
+        return -1
+
+    def bytesAvailable(self) -> int:  # noqa: N802
+        with self._lock:
+            remaining = (self._conv.total_out_frames - self._frame) * self._conv.bytes_per_frame
+        return remaining + super().bytesAvailable()
+
+    def isSequential(self) -> bool:  # noqa: N802
+        return True
+
+
+class AudioPlayer(QObject):
+    positionChanged = Signal(float)
+    stateChanged = Signal(object)  # PlaybackState
+    errorOccurred = Signal(str)
+
+    def __init__(self, parent: QObject | None = None) -> None:
+        super().__init__(parent)
+        self._audio: AudioData | None = None
+        self._sink: QAudioSink | None = None
+        self._device: PcmDevice | None = None
+        self._state = PlaybackState.STOPPED
+        self._pos = 0.0  # 재생 중이 아닐 때의 위치
+        self._base = 0.0  # 장치를 시작한 시점의 위치
+        self._play_from = 0.0  # 정지하면 돌아갈 위치
+        self._timer = QTimer(self)
+        self._timer.setInterval(30)
+        self._timer.timeout.connect(self._tick)
+
+    # --- 조회 --------------------------------------------------------------
+
+    @property
+    def state(self) -> PlaybackState:
+        return self._state
+
+    @property
+    def duration(self) -> float:
+        return self._audio.duration if self._audio else 0.0
+
+    @property
+    def has_audio(self) -> bool:
+        return self._audio is not None
+
+    def position(self) -> float:
+        if self._state is PlaybackState.PLAYING and self._sink is not None:
+            pos = self._base + self._sink.processedUSecs() / 1e6
+            return min(pos, self.duration)
+        return self._pos
+
+    @staticmethod
+    def output_available() -> bool:
+        return not QMediaDevices.defaultAudioOutput().isNull()
+
+    # --- 제어 --------------------------------------------------------------
+
+    def set_audio(self, audio: AudioData | None) -> None:
+        self._teardown()
+        self._audio = audio
+        self._pos = self._play_from = 0.0
+        self._set_state(PlaybackState.STOPPED)
+        self.positionChanged.emit(0.0)
+
+    def toggle(self) -> None:
+        if self._state is PlaybackState.PLAYING:
+            self.pause()
+        else:
+            self.play()
+
+    def play(self) -> None:
+        if self._audio is None:
+            return
+        if self._state is PlaybackState.PAUSED and self._sink is not None:
+            self._sink.resume()
+            self._set_state(PlaybackState.PLAYING)
+            self._timer.start()
+            return
+        if self._pos >= self.duration - 0.01:
+            self._pos = 0.0
+        self._play_from = self._pos
+        if self._start_sink(self._pos):
+            self._set_state(PlaybackState.PLAYING)
+            self._timer.start()
+
+    def pause(self) -> None:
+        if self._state is not PlaybackState.PLAYING or self._sink is None:
+            return
+        self._pos = self.position()
+        self._sink.suspend()
+        self._timer.stop()
+        self._set_state(PlaybackState.PAUSED)
+        self.positionChanged.emit(self._pos)
+
+    def stop(self) -> None:
+        """정지하고 마지막으로 재생을 시작한 위치로 돌아간다."""
+        self._teardown()
+        self._pos = self._play_from
+        self._set_state(PlaybackState.STOPPED)
+        self.positionChanged.emit(self._pos)
+
+    def seek(self, seconds: float) -> None:
+        seconds = min(max(seconds, 0.0), self.duration)
+        if self._state is PlaybackState.PLAYING:
+            self._teardown()
+            self._pos = seconds
+            if self._start_sink(seconds):
+                self._timer.start()  # _teardown이 멈춘 위치 갱신 타이머를 다시 켠다
+            else:
+                self._set_state(PlaybackState.STOPPED)
+        else:
+            if self._state is PlaybackState.PAUSED:
+                self._teardown()
+                self._set_state(PlaybackState.STOPPED)
+            self._pos = seconds
+            self._play_from = seconds
+        self.positionChanged.emit(seconds)
+
+    # --- 내부 --------------------------------------------------------------
+
+    def _choose_format(self, device) -> tuple[QAudioFormat, SampleFormat] | None:
+        assert self._audio is not None
+        fmt = QAudioFormat()
+        fmt.setSampleRate(self._audio.sample_rate)
+        fmt.setChannelCount(min(self._audio.channels, 2))
+        fmt.setSampleFormat(QAudioFormat.SampleFormat.Int16)
+        if device.isFormatSupported(fmt):
+            return fmt, SampleFormat.INT16
+        pref = device.preferredFormat()
+        if pref.sampleFormat() in _FORMAT_MAP:
+            return pref, _FORMAT_MAP[pref.sampleFormat()]
+        pref.setSampleFormat(QAudioFormat.SampleFormat.Int16)
+        if device.isFormatSupported(pref):
+            return pref, SampleFormat.INT16
+        return None
+
+    def _start_sink(self, position: float) -> bool:
+        assert self._audio is not None
+        device = QMediaDevices.defaultAudioOutput()
+        if device.isNull():
+            self.errorOccurred.emit("오디오 출력 장치를 찾을 수 없습니다. 스피커나 헤드폰 연결을 확인해 주세요.")
+            return False
+        chosen = self._choose_format(device)
+        if chosen is None:
+            self.errorOccurred.emit("출력 장치가 지원하는 오디오 형식을 찾지 못했습니다.")
+            return False
+        fmt, sample_format = chosen
+        conv = PcmConverter(
+            self._audio.samples, self._audio.sample_rate, fmt.sampleRate(), fmt.channelCount(), sample_format
+        )
+        pcm = PcmDevice(conv, conv.out_frame_at(position))
+        pcm.open(QIODevice.OpenModeFlag.ReadOnly)
+        sink = QAudioSink(device, fmt, self)
+        sink.setBufferSize(int(fmt.bytesForDuration(BUFFER_USEC)))
+        # stateChanged 시그널은 PySide6 6.12에서 QAudio::State 인자 변환에 실패한다.
+        # 대신 _tick 타이머(30ms)에서 sink.state()를 확인한다.
+        self._sink, self._device = sink, pcm
+        self._base = conv.seconds_at(conv.out_frame_at(position))
+        sink.start(pcm)
+        if sink.error() != _QtAudio.Error.NoError:
+            self._teardown()
+            self.errorOccurred.emit("오디오 장치를 열지 못했습니다.")
+            return False
+        return True
+
+    def _teardown(self) -> None:
+        self._timer.stop()
+        sink, pcm = self._sink, self._device
+        self._sink = self._device = None
+        if sink is not None:
+            sink.stop()
+            sink.deleteLater()
+        if pcm is not None:
+            pcm.close()
+
+    def _check_sink(self) -> None:
+        if self._sink is None:
+            return
+        state = self._sink.state()
+        drained = self._device is not None and self._device.at_end
+        # 장치에 따라 데이터가 끝나도 IdleState로 바로 바뀌지 않을 수 있어 처리 시간도 함께 본다
+        if drained and (state == _QtAudio.State.IdleState or self.position() >= self.duration - 0.005):
+            # 끝까지 재생함
+            self._teardown()
+            self._pos = self.duration
+            self._set_state(PlaybackState.STOPPED)
+            self.positionChanged.emit(self._pos)
+        elif state == _QtAudio.State.StoppedState and self._sink.error() != _QtAudio.Error.NoError:
+            err = self._sink.error()
+            self._pos = self.position()
+            self._teardown()
+            self._set_state(PlaybackState.STOPPED)
+            self.errorOccurred.emit(f"재생 중 오류가 발생했습니다 ({err.name}).")
+
+    def _tick(self) -> None:
+        self._check_sink()
+        self.positionChanged.emit(self.position())
+
+    def _set_state(self, state: PlaybackState) -> None:
+        if state is not self._state:
+            self._state = state
+            self.stateChanged.emit(state)
+
+    def shutdown(self) -> None:
+        self._teardown()
