@@ -124,7 +124,11 @@ class NoteItem(QGraphicsRectItem):
 
 
 class PitchCurveItem(QGraphicsItem):
-    """분석된 f0 곡선. 화면에 드러난 구간만 골라 그린다."""
+    """분석된 f0 곡선. 화면에 드러난 구간만 골라 그린다.
+
+    무성 프레임(NaN)에서는 선을 끊는다. 유성이지만 신뢰도가 MIN_CONFIDENCE 미만인 프레임은
+    숨기지 않고 흐린 점선으로 그린다(불확실 구간).
+    """
 
     MIN_CONFIDENCE = 0.3
 
@@ -133,6 +137,7 @@ class PitchCurveItem(QGraphicsItem):
         self._mapper = mapper
         self._curve: PitchCurve | None = None
         self._midi: np.ndarray | None = None
+        self._sure: np.ndarray | None = None
         self._bounds = QRectF()
         self.setZValue(Z_CURVE)
         self.setAcceptedMouseButtons(Qt.MouseButton.NoButton)
@@ -141,12 +146,18 @@ class PitchCurveItem(QGraphicsItem):
     def set_curve(self, curve: PitchCurve | None) -> None:
         self._curve = curve
         if curve is None:
-            self._midi = None
+            self._midi = self._sure = None
         else:
-            midi = curve.midi().astype(np.float64)
-            midi[curve.confidence < self.MIN_CONFIDENCE] = np.nan
-            self._midi = midi
+            self._midi = curve.midi().astype(np.float64)
+            self._sure = np.asarray(curve.confidence) >= self.MIN_CONFIDENCE
         self.relayout()
+
+    def uncertain_fraction(self) -> float:
+        """유성 프레임 중 불확실(흐리게 그리는) 프레임 비율. 테스트·상태 표시용."""
+        if self._midi is None or self._sure is None:
+            return 0.0
+        voiced = np.isfinite(self._midi)
+        return float((voiced & ~self._sure).sum() / max(1, voiced.sum()))
 
     def relayout(self) -> None:
         self.prepareGeometryChange()
@@ -173,29 +184,38 @@ class PitchCurveItem(QGraphicsItem):
         if i1 - i0 < 2:
             return
         midi = self._midi[i0:i1]
+        sure = self._sure[i0:i1]
         # 화면 1픽셀에 프레임이 여러 개 몰리면 간격을 두고 건너뛴다
         frames_per_px = self._curve.frame_rate / m.px_per_sec
         step = max(1, int(frames_per_px / 2))
         idx = np.arange(0, midi.shape[0], step)
         xs = m.time_to_x(self._curve.start_time) + (i0 + idx) / self._curve.frame_rate * m.px_per_sec
         ys = (PITCH_MAX - midi[idx]) * m.row_height + m.row_height / 2
-        path = QPainterPath()
-        pen_down = False
-        for x, y in zip(xs.tolist(), ys.tolist()):
+        paths = {True: QPainterPath(), False: QPainterPath()}
+        prev = None  # 직전 점 (x, y). 두 점 사이 선은 뒤 점의 신뢰도로 그린다
+        for x, y, ok in zip(xs.tolist(), ys.tolist(), sure[idx].tolist()):
             if y != y:  # NaN = 무성 구간
-                pen_down = False
+                prev = None
                 continue
-            if pen_down:
-                path.lineTo(x, y)
-            else:
+            path = paths[bool(ok)]
+            if prev is None:
                 path.moveTo(x, y)
-                pen_down = True
+            else:
+                path.moveTo(*prev)
+                path.lineTo(x, y)
+            prev = (x, y)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+        painter.setBrush(Qt.BrushStyle.NoBrush)
+        faint = QColor(theme.PITCH_CURVE)
+        faint.setAlphaF(0.45)
+        pen = QPen(faint, 1.4, Qt.PenStyle.DashLine)
+        pen.setCosmetic(True)
+        painter.setPen(pen)
+        painter.drawPath(paths[False])
         pen = QPen(theme.PITCH_CURVE, 1.8)
         pen.setCosmetic(True)
-        painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
         painter.setPen(pen)
-        painter.setBrush(Qt.BrushStyle.NoBrush)
-        painter.drawPath(path)
+        painter.drawPath(paths[True])
 
 
 class PlayheadItem(QGraphicsItem):

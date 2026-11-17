@@ -138,3 +138,29 @@ def test_zoom_keeps_anchor(setup):
     assert view.mapper.px_per_sec == pytest.approx(200)
     assert view.timeline.x_to_time(300) == pytest.approx(t_before, abs=0.01)
     assert view.roll.items_by_id["a"].rect().left() == pytest.approx(200.0)
+
+
+def test_low_confidence_pitch_drawn_faint_not_hidden(qtbot):
+    """신뢰도 낮은 유성 프레임은 숨기지 않고 흐린 점선으로 그린다 (STEP 2.5)."""
+    import numpy as np
+    from PySide6.QtGui import QImage, QPainter
+
+    from amp.app.pianoroll.items import PitchCurveItem
+    from amp.app.pianoroll.mapping import PianoRollMapper
+    from amp.core.model import PitchCurve
+
+    f0 = np.full(300, 261.63, np.float32)
+    f0[:20] = np.nan
+    conf = np.full(300, 0.9, np.float32)
+    conf[100:150] = 0.1  # 불확실
+    conf[:20] = 0.0
+    item = PitchCurveItem(PianoRollMapper())
+    item.set_curve(PitchCurve(0.0, 100.0, f0, conf))
+    assert item.uncertain_fraction() == pytest.approx(50 / 280)
+    img = QImage(400, 300, QImage.Format.Format_ARGB32)
+    img.fill(0)
+    painter = QPainter(img)
+    from PySide6.QtWidgets import QStyleOptionGraphicsItem
+
+    item.paint(painter, QStyleOptionGraphicsItem())
+    painter.end()

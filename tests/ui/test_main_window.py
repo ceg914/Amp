@@ -14,7 +14,7 @@ from amp.core.model import AudioRef, Project, Score
 from amp.engine.settings import AnalysisSettings
 from amp.engine.transcription import TranscriptionPipeline
 from amp.storage.project_file import save_project
-from tests.audio_synth import SR, sung
+from amp.devtools.synth import SR, sung
 from tests.conftest import note
 
 

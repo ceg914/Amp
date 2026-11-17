@@ -30,7 +30,7 @@ from scipy.ndimage import median_filter
 from amp.core.ids import new_id
 from amp.core.model import Note, PitchCurve, Vibrato
 from amp.engine.baselines.pitch_post_v1 import voiced_runs
-from amp.engine.settings import NoteDetectionParams
+from amp.engine.baselines.settings_v1 import NoteDetectionParamsV1 as NoteDetectionParams
 
 DETECT_TOLERANCE = 0.3  # 반음. 가수의 음정 오차를 감안해 기준보다 조금 작은 변화도 인정한다
 MIN_ISLAND_S = 0.03  # 이보다 짧은 유성 조각은 잡음으로 본다

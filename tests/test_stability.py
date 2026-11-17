@@ -16,7 +16,7 @@ from amp.engine import worker
 from amp.engine.dsp import separation as sep
 from amp.engine.transcription import TranscriptionPipeline
 from amp.engine.worker_client import WorkerError, run_worker
-from tests.audio_synth import SR, sung
+from amp.devtools.synth import SR, sung
 from tests.test_transcription import InProcessRunner, make_request
 
 

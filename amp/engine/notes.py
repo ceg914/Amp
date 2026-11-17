@@ -2,20 +2,25 @@
 
 순서
 1. 유성 판정: f0가 있고 유성 확률이 임계 이상이며 분석 음역 안에 있는 프레임.
-   짧은 무성 틈(자음·피치 놓침)은 같은 프레이즈로 잇는다.
+   짧은 무성 틈(자음·피치 놓침)은 같은 프레이즈로 잇는다. 단, 틈 끝에 뚜렷한 재발음이 있으면
+   (표준·정밀) 잇지 않는다. 음절 사이에서 잠깐 쉬고 다시 부른 것이다.
 2. 중심선: 약 비브라토 한 주기 길이의 중앙값 필터. 비브라토는 상쇄되고, 음 사이 경계는 날카롭게,
    포르타멘토는 경사로 남는다.
 3. 변화점: 중심선이 현재 음에서 기준(기본 1반음, 허용 오차 0.3) 이상 벗어나고, 새 높이가 hold 시간
    동안 안정적으로 유지될 때만 나눈다. 경계는 두 음의 중간을 지나는 지점이다.
    그래서 포르타멘토는 가운데에서 한 번만 나뉘고, 중간 음들이 따로 음표가 되지 않는다.
-4. 온셋: 음높이 경계 근처에 뚜렷한 온셋(발성 시작)이 있으면 경계를 그리로 옮기고,
-   같은 높이가 이어지는 구간 안의 뚜렷한 온셋에서는 재발음으로 보고 나눈다(정밀·표준 민감도).
+4. 재발음: 재발음 지표(온셋 × 음량 하락, pitch_post.articulation_envelope) 피크가 split_strength 이상이면
+   뚜렷한 발성 시작으로 본다. 음높이 경계 ±60ms 안에 있으면 경계를 그리로 옮기고, 같은 높이가 이어지는
+   구간 안에 있으면 나눈다(정밀·표준 민감도).
 5. 짧은 조각: 최소 길이보다 짧으면 가까운 높이의 이웃에 합치고, 이웃이 없으면 버린다.
-6. 틈이 아주 짧은 같은 높이의 이웃 음표를 합친다.
-7. 짧은 이탈(표준·정밀): 음표 안에서 중심선 창보다 짧게 기준 이상 벗어났다 돌아오는 구간을 떼어 낸다.
+6. 미끄러짐 흡수: 두 음 사이에 낀 짧은 조각들이 높이가 두 음 사이에 있고 안에서 한 방향으로 계속 움직이면
+   (포르타멘토가 계단처럼 잡힌 것) 따로 음표로 두지 않고 앞뒤 음에 나눠 붙인다.
+   경계는 조각 안의 재발음 지점, 없으면 두 음의 중간 높이를 지나는 지점이다.
+7. 틈이 아주 짧은 같은 높이의 이웃 음표를 합친다.
+8. 짧은 이탈(표준·정밀): 음표 안에서 중심선 창보다 짧게 기준 이상 벗어났다 돌아오는 구간을 떼어 낸다.
    최소 길이 미만이면서 신뢰도가 높으면 장식음(ornament), 최소 길이 이상이면 일반 음표가 된다.
    비브라토 폭이 기준에 가까운 음은 건너뛴다.
-8. 음표별 비브라토(3.5~9Hz, 20cent 이상)를 추정한다. 음의 앞뒤 가장자리는 빼고 본다.
+9. 음표별 비브라토(3.5~9Hz, 20cent 이상)를 추정한다. 음의 앞뒤 가장자리는 빼고 본다.
 """
 
 from __future__ import annotations
@@ -33,8 +38,11 @@ from amp.engine.settings import NoteDetectionParams
 DETECT_TOLERANCE = 0.3  # 반음. 가수의 음정 오차를 감안해 기준보다 조금 작은 변화도 인정한다
 MIN_ISLAND_S = 0.03  # 이보다 짧은 유성 조각은 잡음으로 본다
 MIN_VOICED_FRACTION = 0.6  # 음표 구간 중 실제 유성 프레임이 이 비율 미만이면 버린다
-SNAP_BEFORE_S, SNAP_AFTER_S = 0.04, 0.15  # 음높이 경계를 온셋으로 옮길 수 있는 범위
-EDGE_GUARD_FRAMES = 15  # 재발음 분할은 구간 끝에서 150ms(100fps 기준) 이상 떨어진 온셋에서만
+SNAP_BEFORE_S, SNAP_AFTER_S = 0.06, 0.06  # 음높이 경계를 온셋으로 옮길 수 있는 범위
+GAP_ONSET_BEFORE, GAP_ONSET_AFTER = 2, 4  # 틈 끝(프레임) 기준으로 재발음 피크를 찾는 범위
+GLIDE_PIECE_MAX_S = 0.25  # 미끄러짐 조각 하나의 최대 길이
+GLIDE_RUN_MAX_S = 0.4  # 미끄러짐 조각 묶음 전체의 최대 길이
+GLIDE_MIN_DRIFT = 0.4  # 반음. 조각 안에서 이만큼 이상 한 방향으로 움직여야 미끄러짐으로 본다
 REF_WINDOW_S = 0.5  # 현재 음 높이를 추정할 때 볼 최근 구간
 
 
@@ -47,12 +55,6 @@ class _Seg:
     est: float = 0.0
     conf: float = 0.0
     ornament: bool = False
-
-
-def _robust_z(x: np.ndarray) -> np.ndarray:
-    med = np.median(x)
-    mad = np.median(np.abs(x - med)) * 1.4826
-    return (x - med) / (mad + 1e-9)
 
 
 def _fill_gaps(midi: np.ndarray, voiced: np.ndarray, bridged: np.ndarray) -> np.ndarray:
@@ -161,24 +163,23 @@ def detect_notes(curve: PitchCurve, onset: np.ndarray | None, params: NoteDetect
         if b - a < island:
             voiced[a:b] = False
 
+    onset_ok = None
+    if onset is not None and params.split_strength is not None and len(onset) == n:
+        o = np.asarray(onset, dtype=np.float64)
+        peak = np.r_[False, (o[1:-1] >= o[:-2]) & (o[1:-1] >= o[2:]), False] if n >= 3 else np.zeros(n, bool)
+        onset_ok = peak & (o >= params.split_strength)
+
     bridged = voiced.copy()
     gap_max = int(round(params.bridge_gap_s * fr))
     runs = voiced_runs(voiced)
     for (a0, b0), (a1, _b1) in zip(runs, runs[1:]):
         if a1 - b0 <= gap_max:
+            if onset_ok is not None and onset_ok[max(0, a1 - GAP_ONSET_BEFORE):a1 + GAP_ONSET_AFTER].any():
+                continue  # 쉬었다가 다시 부름
             bridged[b0:a1] = True
     filled = _fill_gaps(midi, voiced, bridged)
 
     center = np.full(n, np.nan)
-    onset_ok = None
-    if onset is not None and params.onset_split_z is not None and len(onset) == n and bridged.any():
-        o = np.asarray(onset, dtype=np.float64)
-        ov = o[bridged]
-        z = _robust_z(o)
-        # 표준점수만 보면 무음이 대부분인 곡에서 지속음의 작은 흔들림도 커 보인다.
-        # 그래서 노래하는 구간의 강한 온셋(상위 1%)에 견줄 만한 피크만 재발음으로 본다.
-        strong = (params.onset_split_rel or 0.0) * float(np.percentile(ov, 99))
-        onset_ok = (z >= params.onset_split_z) & (o >= strong)
     min_len = max(1, int(round(params.min_note_s * fr)))
     win = max(1, int(round(params.center_window_s * fr)))
 
@@ -189,19 +190,27 @@ def detect_notes(curve: PitchCurve, onset: np.ndarray | None, params: NoteDetect
         c = median_filter(filled[a:b], size=size, mode="nearest")
         center[a:b] = c
         bounds = _segment_region(c, params, fr)
+        # 프레이즈가 뚜렷한 재발음으로 시작하면 앞 음과 같은 높이여도 합치지 않는다
+        region_onset = onset_ok is not None and bool(onset_ok[max(0, a - GAP_ONSET_BEFORE):a + GAP_ONSET_AFTER].any())
+        snapped = [False] * len(bounds)
         if onset_ok is not None:
-            bounds = _snap_to_onsets(bounds, a, np.asarray(onset, dtype=np.float64), onset_ok, fr)
-        for s, e in zip(bounds, bounds[1:]):
+            bounds, snapped = _snap_to_onsets(bounds, a, np.asarray(onset, dtype=np.float64), onset_ok, fr)
+        for i_b, (s, e) in enumerate(zip(bounds, bounds[1:])):
             pieces = [(a + s, a + e, False)]
             if onset_ok is not None:
                 pieces = _split_on_onsets(a + s, a + e, np.asarray(onset, dtype=np.float64), onset_ok, min_len)
             for ps, pe, onset_start in pieces:
-                segs.append(_Seg(ps, pe, onset_start))
+                first = ps == a + s
+                articulated = onset_start or (first and snapped[i_b]) or (ps == a and region_onset)
+                segs.append(_Seg(ps, pe, articulated))
                 region_of.append(r_idx)
 
     for seg in segs:
         _evaluate(seg, midi, filled, center, conf, voiced)
-    segs, region_of = _absorb_short(segs, region_of, min_len, midi, filled, center, conf, voiced)
+    orn_len = max(2, int(round(params.ornament_min_s * fr))) if params.ornament_min_s else None
+    detect = max(0.5, params.change_semitones - DETECT_TOLERANCE)
+    segs, region_of = _absorb_short(segs, region_of, min_len, midi, filled, center, conf, voiced, orn_len, detect)
+    segs, region_of = _absorb_glides(segs, region_of, fr, midi, filled, center, conf, voiced)
     segs = _merge_same_pitch(segs, region_of, int(round(params.merge_gap_s * fr)), midi, filled, center, conf, voiced)
     if params.ornament_min_s:
         segs = _carve_ornaments(segs, params, fr, min_len, midi, filled, center, conf, voiced)
@@ -224,13 +233,16 @@ def detect_notes(curve: PitchCurve, onset: np.ndarray | None, params: NoteDetect
     return notes
 
 
-def _snap_to_onsets(bounds: list[int], offset: int, onset: np.ndarray, ok: np.ndarray, fr: float) -> list[int]:
+def _snap_to_onsets(bounds: list[int], offset: int, onset: np.ndarray, ok: np.ndarray,
+                    fr: float) -> tuple[list[int], list[bool]]:
     """음높이 변화로 찾은 경계 근처에 뚜렷한 온셋(발성 시작)이 있으면 경계를 그리로 옮긴다.
 
     음높이 중간점은 앞 음에서 미끄러져 올라가는 도중이라 실제 발성보다 이를 수 있다.
+    두 번째 값은 경계마다 온셋으로 옮겼는지(= 발성이 확인된 경계인지)다.
     """
     before, after = int(SNAP_BEFORE_S * fr), int(SNAP_AFTER_S * fr)
     out = list(bounds)
+    snapped = [False] * len(out)
     for i in range(1, len(out) - 1):
         k = offset + out[i]
         lo = max(offset + out[i - 1] + 1, k - before)
@@ -240,7 +252,8 @@ def _snap_to_onsets(bounds: list[int], offset: int, onset: np.ndarray, ok: np.nd
         cand = [j for j in range(lo, hi) if ok[j]]
         if cand:
             out[i] = max(cand, key=lambda j: onset[j]) - offset
-    return out
+            snapped[i] = True
+    return out, snapped
 
 
 def _split_on_onsets(s: int, e: int, onset: np.ndarray, ok: np.ndarray, min_len: int) -> list[tuple[int, int, bool]]:
@@ -248,16 +261,13 @@ def _split_on_onsets(s: int, e: int, onset: np.ndarray, ok: np.ndarray, min_len:
 
     구간 양 끝 가까이의 온셋은 그 음 자신의 시작·끝이므로 나누지 않는다.
     """
-    edge = max(min_len, EDGE_GUARD_FRAMES)
+    edge = min_len
     if e - s < 2 * edge:
         return [(s, e, False)]
-    local_med = float(np.median(onset[s:e]))
     cuts = []
     last = s
-    for k in range(s + edge, e - edge):
-        if not ok[k] or onset[k] < 3.0 * local_med:
-            continue
-        if onset[k] >= onset[k - 1] and onset[k] >= onset[k + 1] and k - last >= min_len:
+    for k in range(s + edge, e - edge + 1):
+        if ok[k] and k - last >= min_len:
             cuts.append(k)
             last = k
     if not cuts:
@@ -266,12 +276,16 @@ def _split_on_onsets(s: int, e: int, onset: np.ndarray, ok: np.ndarray, min_len:
     return [(edges[i], edges[i + 1], i > 0) for i in range(len(edges) - 1)]
 
 
-def _absorb_short(segs, region_of, min_len, midi, filled, center, conf, voiced):
-    """최소 길이보다 짧은 조각을 가까운 높이의 이웃에 합치거나, 이웃이 없으면 버린다."""
+def _absorb_short(segs, region_of, min_len, midi, filled, center, conf, voiced, orn_len=None, detect=0.7):
+    """최소 길이보다 짧은 조각을 가까운 높이의 이웃에 합치거나, 이웃이 없으면 버린다.
+
+    orn_len이 있으면(표준·정밀) 합칠 이웃과의 경계가 뚜렷한 재발음이고, 길이가 orn_len 이상이며,
+    높이가 이웃과 기준 이상 다른 조각은 장식음으로 남긴다. 따로 발음한 꾸밈음을 지우지 않기 위해서다.
+    """
     segs = list(segs)
     region_of = list(region_of)
     while True:
-        short = [i for i, g in enumerate(segs) if (g.e - g.s) < min_len]
+        short = [i for i, g in enumerate(segs) if (g.e - g.s) < min_len and not g.ornament]
         if not short:
             break
         i = min(short, key=lambda j: segs[j].e - segs[j].s)
@@ -282,6 +296,14 @@ def _absorb_short(segs, region_of, min_len, midi, filled, center, conf, voiced):
             del segs[i], region_of[i]
             continue
         j = min(nbrs, key=lambda k: abs(segs[k].est - g.est))
+        # 두 이웃 사이 높이에 있는 짧은 조각은 꾸밈음보다 음과 음 사이를 미끄러지는 중간일 가능성이 크다
+        between = len(nbrs) == 2 and min(segs[k].est for k in nbrs) < g.est < max(segs[k].est for k in nbrs)
+        if (orn_len is not None and (g.e - g.s) >= orn_len and not between
+                and all(abs(segs[k].est - g.est) >= detect for k in nbrs)):
+            articulated = segs[j].onset_start if j > i else g.onset_start
+            if articulated:
+                g.ornament = True
+                continue
         tgt = segs[j]
         tgt.s, tgt.e = min(tgt.s, g.s), max(tgt.e, g.e)
         if j > i:
@@ -289,6 +311,55 @@ def _absorb_short(segs, region_of, min_len, midi, filled, center, conf, voiced):
         _evaluate(tgt, midi, filled, center, conf, voiced)
         del segs[i], region_of[i]
     return segs, region_of
+
+
+def _is_glide_piece(g: _Seg, direction: float, filled: np.ndarray, fr: float) -> bool:
+    if g.ornament or (g.e - g.s) > GLIDE_PIECE_MAX_S * fr or g.e - g.s < 2:
+        return False
+    trim = max(1, (g.e - g.s) // 5)  # 경계 프레임은 앞뒤 음으로 넘어가는 중이라 빼고 본다
+    seg = filled[g.s + trim:g.e - trim]
+    seg = seg[np.isfinite(seg)]
+    if seg.size < 3:
+        return False
+    seg = median_filter(seg, size=3, mode="nearest")
+    return (seg[-1] - seg[0]) * direction >= GLIDE_MIN_DRIFT
+
+
+def _absorb_glides(segs, region_of, fr, midi, filled, center, conf, voiced, max_pieces: int = 4):
+    segs, region_of = list(segs), list(region_of)
+    i = 0
+    while i < len(segs):
+        p = segs[i]
+        for size in range(max_pieces, 0, -1):  # 긴 묶음부터 본다
+            j = i + size + 1  # q = segs[j], 미끄러짐 조각 = segs[i+1:j]
+            if j >= len(segs) or any(region_of[k] != region_of[i] or segs[k].s != segs[k - 1].e for k in range(i + 1, j + 1)):
+                continue
+            q, run = segs[j], segs[i + 1:j]
+            lo, hi = sorted((p.est, q.est))
+            direction = float(np.sign(q.est - p.est))
+            # 첫 조각이 재발음으로 시작하면 미끄러짐이 아니라 따로 부른 음이다
+            if (q.pitch == p.pitch or run[0].onset_start or not all(lo < g.est < hi for g in run)
+                    or run[-1].e - run[0].s > GLIDE_RUN_MAX_S * fr
+                    or not all(_is_glide_piece(g, direction, filled, fr) for g in run)):
+                continue
+            cut = next((g.s for g in run if g.onset_start), None)
+            if cut is None:
+                mid = (p.est + q.est) / 2
+                cut = next((k for k in range(run[0].s, run[-1].e)
+                            if np.isfinite(filled[k]) and (filled[k] - mid) * direction >= 0), run[-1].e)
+            q.onset_start = q.onset_start or any(g.onset_start for g in run)
+            p.e, q.s = cut, cut
+            _evaluate(p, midi, filled, center, conf, voiced)
+            _evaluate(q, midi, filled, center, conf, voiced)
+            del segs[i + 1:j], region_of[i + 1:j]
+            break
+        i += 1
+    return segs, region_of
+
+
+def _toward(run_pitch: int, own: int, neighbor: int) -> bool:
+    """run_pitch가 이웃 음 높이이거나, 자기 음과 이웃 음 사이에 있다."""
+    return run_pitch == neighbor or min(own, neighbor) < run_pitch < max(own, neighbor)
 
 
 def _carve_ornaments(segs, params, fr, min_len, midi, filled, center, conf, voiced):
@@ -320,8 +391,11 @@ def _carve_ornaments(segs, params, fr, min_len, midi, filled, center, conf, voic
             run_pitch = round(float(np.median(run)))
             if run_pitch == g.pitch:
                 continue
-            # 가장자리 조각이 이웃 음과 같은 높이면 경계가 조금 어긋난 것이지 새 음이 아니다
-            if (a == 0 and run_pitch == prev_pitch) or (b == len(raw) and run_pitch == next_pitch):
+            # 가장자리 조각이 이웃 음과 같은 높이면 경계가 조금 어긋난 것이지 새 음이 아니다.
+            # 이웃 음 쪽으로 가는 중간 높이여도 마찬가지다(음과 음 사이를 미끄러지는 중).
+            if a == 0 and prev_pitch is not None and _toward(run_pitch, g.pitch, prev_pitch):
+                continue
+            if b == len(raw) and next_pitch is not None and _toward(run_pitch, g.pitch, next_pitch):
                 continue
             probe = _Seg(g.s + a, g.s + b)
             _evaluate(probe, midi, filled, center, conf, voiced)

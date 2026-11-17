@@ -17,8 +17,14 @@ from amp.engine import worker
 from amp.engine.cache import file_content_key
 from amp.engine.context import CancelToken
 from amp.engine.settings import AnalysisSettings
-from amp.engine.transcription import TranscriptionPipeline, TranscriptionRequest, redetect_notes
-from tests.audio_synth import SR, backing, sung
+from amp.engine.transcription import (
+    OLD_FEATURES_WARNING,
+    PITCH_VERSION,
+    TranscriptionPipeline,
+    TranscriptionRequest,
+    redetect_notes,
+)
+from amp.devtools.synth import SR, backing, sung
 
 MELODY = [(1.0, 1.8, 64), (1.9, 2.7, 67), (2.8, 4.0, 69), (4.1, 5.0, 62)]
 
@@ -113,6 +119,22 @@ def test_separation_none_and_redetect(song, tmp_path):
     assert simple.pitch_curve is out.result.pitch_curve  # 피치 결과는 재사용
     assert simple.settings["sensitivity"] == "simple"
     assert [n.pitch for n in simple.notes] == [64, 67, 69, 62]
+    assert out.result.models["pitch"].params["features_version"] == PITCH_VERSION
+    assert OLD_FEATURES_WARNING not in simple.warnings
+
+
+def test_redetect_on_step2_features_warns(song, tmp_path):
+    """STEP 2(피치 버전 1)로 만든 결과를 다시 검출하면 전체 재분석을 권한다."""
+    import dataclasses
+
+    out = TranscriptionPipeline(InProcessRunner(), separation_model="_identity").run(
+        make_request(song, tmp_path, settings=AnalysisSettings(separation="none")))
+    models = dict(out.result.models)
+    models["pitch"] = dataclasses.replace(models["pitch"], params={"fmin": 55.0})  # features_version 없음 = v1
+    old = dataclasses.replace(out.result, models=models)
+    again = redetect_notes(redetect_notes(old, AnalysisSettings()), AnalysisSettings())
+    assert again.warnings.count(OLD_FEATURES_WARNING) == 1
+    assert again.notes
 
 
 def test_real_worker_processes(tmp_path):

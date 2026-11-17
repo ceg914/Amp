@@ -44,9 +44,11 @@ from amp.engine.worker_client import run_worker
 
 log = logging.getLogger(__name__)
 
-PITCH_VERSION = 1
+PITCH_VERSION = 2  # 2: 온셋 32ms 창·비중심, 20ms RMS 추가 (STEP 2.5)
 TEMPO_VERSION = 1
-NOTES_VERSION = "1"
+OLD_FEATURES_WARNING = ("이전 버전(STEP 2)에서 추출한 피치·온셋 정보로 음표를 다시 검출했습니다. "
+                        "개선된 음표 시작·끝 판정을 모두 반영하려면 전체 분석을 다시 실행하세요.")
+NOTES_VERSION = "2"  # 2: 틈 게이트·재발음 절대 임계·미끄러짐 흡수·발음된 꾸밈음 (STEP 2.5)
 SEPARATION_MODEL = "htdemucs"
 
 Runner = Callable[..., dict]
@@ -151,9 +153,10 @@ class TranscriptionPipeline:
         token.raise_if_cancelled()
         notes_report = prog.stage("notes")
         notes_report(0.0, "음표 검출 중")
-        curve = build_curve(frames.f0_hz, frames.voiced_prob, frames.rms, frames.frame_rate, frames.start_time)
+        curve = build_curve(frames.f0_hz, frames.voiced_prob, frames.rms, frames.frame_rate, frames.start_time,
+                            rms_fine=frames.rms_fine)
         params = st.note_params()
-        artic = articulation_envelope(frames.onset, frames.rms, frames.frame_rate)
+        artic = articulation_envelope(frames.onset, frames.rms, frames.frame_rate, rms_fine=frames.rms_fine)
         notes = detect_notes(curve, artic, params)
         notes_report(1.0, f"음표 {len(notes)}개 검출")
         if tempo.get("reason"):
@@ -161,7 +164,8 @@ class TranscriptionPipeline:
 
         pv = pmeta.get("versions", {})
         models["pitch"] = ModelInfo("pyin", f"librosa {pv.get('librosa', '')}".strip(),
-                                    params={k: pmeta.get(k) for k in ("fmin", "fmax", "frame_rate")})
+                                    params={**{k: pmeta.get(k) for k in ("fmin", "fmax", "frame_rate")},
+                                            "features_version": PITCH_VERSION})
         models["tempo"] = ModelInfo("librosa-beat", str(tempo.get("versions", {}).get("librosa", "")),
                                     params={"reliable": tempo.get("reliable", False)})
         models["notes"] = ModelInfo("segment", NOTES_VERSION, params=dataclasses.asdict(params))
@@ -244,6 +248,8 @@ def _load_pitch(d: Path, expected_frames: int) -> tuple[PitchFrames, dict]:
         raise CacheEntryError("피치 배열 길이가 서로 다릅니다.")
     if abs(n - expected_frames) > 3:
         raise CacheEntryError(f"피치 프레임 수({n})가 오디오 길이({expected_frames})와 맞지 않습니다.")
+    if frames.rms_fine is None or len(frames.rms_fine) != n:
+        raise CacheEntryError("20ms RMS가 없거나 길이가 다릅니다.")
     f0 = frames.f0_hz
     if np.any(np.isfinite(f0) & (f0 <= 0)) or np.any(~np.isfinite(frames.voiced_prob)):
         raise CacheEntryError("피치 값이 올바르지 않습니다.")
@@ -280,5 +286,9 @@ def redetect_notes(result: AnalysisResult, settings: AnalysisSettings) -> Analys
     merged = dict(result.settings)
     merged.update({k: v for k, v in settings.to_dict().items()
                    if k in ("sensitivity", "min_note_ms", "pitch_change_semitones", "pitch_low", "pitch_high")})
-    return dataclasses.replace(result, notes=tuple(notes), models=models, settings=merged,
+    warnings = tuple(w for w in result.warnings if w != OLD_FEATURES_WARNING)
+    pitch_info = result.models.get("pitch")
+    if pitch_info is not None and int((pitch_info.params or {}).get("features_version", 1)) < PITCH_VERSION:
+        warnings += (OLD_FEATURES_WARNING,)
+    return dataclasses.replace(result, notes=tuple(notes), models=models, settings=merged, warnings=warnings,
                                created_at=datetime.now(timezone.utc).isoformat(timespec="seconds"))

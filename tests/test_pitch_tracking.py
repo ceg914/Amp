@@ -8,7 +8,7 @@ pytest.importorskip("librosa")
 from amp.core.pitch import hz_to_midi
 from amp.engine.dsp.pitch import FRAME_RATE, track_pitch
 from amp.engine.pitch_post import build_curve, clean_midi, energy_gate, voiced_runs
-from tests.audio_synth import SR, sung
+from amp.devtools.synth import SR, sung
 
 
 def _cents(a_hz, b_hz):

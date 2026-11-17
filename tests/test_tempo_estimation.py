@@ -6,7 +6,7 @@ import pytest
 pytest.importorskip("librosa")
 
 from amp.engine.dsp.tempo import estimate_tempo, refine_with_beats
-from tests.audio_synth import SR, clicks
+from amp.devtools.synth import SR, clicks
 
 
 @pytest.mark.parametrize("bpm", [96.0, 120.0])

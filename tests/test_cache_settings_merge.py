@@ -61,7 +61,7 @@ def test_settings_presets_and_validation():
     simple = AnalysisSettings.for_sensitivity("simple", s)
     precise = AnalysisSettings.for_sensitivity("precise", s)
     assert simple.min_note_ms > s.min_note_ms > precise.min_note_ms
-    assert simple.note_params().onset_split_z is None and precise.note_params().ornament_min_s
+    assert simple.note_params().split_strength is None and precise.note_params().ornament_min_s
     with pytest.raises(SettingsError):
         AnalysisSettings(pitch_low=80, pitch_high=60)
     assert AnalysisSettings.from_dict({"min_note_ms": 120, "unknown": 1}).min_note_ms == 120

@@ -25,14 +25,16 @@ _PRESET_USER = {
     "precise": (70.0, 0.8),
 }
 
-# 민감도별 내부 값
+# 민감도별 내부 값 (v2, STEP 2.5). v1 값은 amp/engine/baselines/settings_v1.py에 고정해 두었다.
+# split_strength: 재발음 지표(온셋 = 멜 대역 평균 dB 증가량 × 음량 하락 비율) 피크의 절대 임계.
+#   합성 음원에서 실제 재발음은 5.9 이상, 지속음 안의 흔들림은 4.3 이하였다 (amp.devtools.benchmark).
 _PRESET_INTERNAL = {
     "simple": dict(hold_s=0.12, center_window_s=0.22, voiced_threshold=0.05, bridge_gap_s=0.06,
-                   onset_split_z=None, onset_split_rel=None, ornament_min_s=None, ornament_conf=1.0, merge_gap_s=0.08),
+                   split_strength=None, ornament_min_s=None, ornament_conf=1.0, merge_gap_s=0.08),
     "standard": dict(hold_s=0.08, center_window_s=0.22, voiced_threshold=0.02, bridge_gap_s=0.04,
-                     onset_split_z=4.0, onset_split_rel=0.6, ornament_min_s=0.05, ornament_conf=0.8, merge_gap_s=0.05),
+                     split_strength=4.0, ornament_min_s=0.05, ornament_conf=0.8, merge_gap_s=0.05),
     "precise": dict(hold_s=0.05, center_window_s=0.22, voiced_threshold=0.01, bridge_gap_s=0.03,
-                    onset_split_z=3.0, onset_split_rel=0.45, ornament_min_s=0.035, ornament_conf=0.65, merge_gap_s=0.03),
+                    split_strength=3.0, ornament_min_s=0.035, ornament_conf=0.65, merge_gap_s=0.03),
 }
 
 
@@ -48,8 +50,7 @@ class NoteDetectionParams:
     center_window_s: float  # 비브라토를 상쇄하는 중심선 중앙값 창 (4.5Hz 이상 비브라토 한 주기 이상)
     voiced_threshold: float  # pYIN 유성 확률 하한. 유성 판정의 주체는 pYIN의 HMM이고, 이 값은 아주 낮은 잡음만 거른다
     bridge_gap_s: float  # 이보다 짧은 무성 틈은 같은 프레이즈로 잇는다
-    onset_split_z: float | None  # 같은 음 재발음 분할용 온셋 강도(표준점수) 임계. None이면 안 나눔
-    onset_split_rel: float | None  # 온셋 피크가 유성 구간 상위 1% 값의 이 비율 이상이어야 나눈다
+    split_strength: float | None  # 같은 음 재발음 분할 임계 (재발음 지표 피크). None이면 나누지 않는다
     ornament_min_s: float | None  # 최소 길이보다 짧아도 이 길이 이상·고신뢰면 장식음으로 남김
     ornament_conf: float
     merge_gap_s: float  # 같은 음 사이 틈이 이보다 짧으면 합친다
