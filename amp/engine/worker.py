@@ -155,9 +155,16 @@ def _peak_rss_mb() -> float | None:
             if not psapi.GetProcessMemoryInfo(k32.GetCurrentProcess(), ctypes.byref(pmc), pmc.cb):
                 return None
             return round(pmc.PeakWorkingSetSize / 2**20, 1)
+        if os.path.exists("/proc/self/status"):
+            # Linux: ru_maxrss는 exec 전 부모 프로세스의 최대치를 물려받는다(GUI·검증 도구의 메모리가 섞임).
+            # VmHWM은 지금 주소 공간만의 최대치다.
+            with open("/proc/self/status", encoding="ascii", errors="replace") as f:
+                for line in f:
+                    if line.startswith("VmHWM:"):
+                        return round(int(line.split()[1]) / 1024, 1)  # kB
         import resource
 
-        peak = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss  # Linux: KB, macOS: 바이트
+        peak = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss  # macOS: 바이트
         return round(peak / (2**20 if sys.platform == "darwin" else 1024), 1)
     except Exception:  # noqa: BLE001 - 측정 실패가 분석 실패가 되면 안 된다
         return None

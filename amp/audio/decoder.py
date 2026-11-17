@@ -104,7 +104,9 @@ def _load_with_soundfile(path: str, progress: ProgressFn | None, is_cancelled: C
         else:
             data = buf[: min(pos, expected)]
         if expected and pos < expected * 0.98:
-            log.warning("파일 끝이 잘린 것 같습니다: 헤더 %d 프레임, 실제 %d 프레임 (%s)", expected, pos, path)
+            # 길이 정보(Xing 헤더)가 없는 MP3는 libsndfile이 파일 크기로 길이를 어림하므로(앨범 아트 포함) 여기 걸릴 수 있다
+            log.warning("헤더 길이보다 짧게 읽혔습니다: 헤더 %d 프레임, 실제 %d 프레임 (%s). "
+                        "파일이 잘렸거나, 길이 정보가 없는 MP3라 헤더 값이 어림값일 수 있습니다.", expected, pos, path)
     return AudioData(data, sr)
 
 

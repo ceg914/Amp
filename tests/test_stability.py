@@ -178,3 +178,15 @@ def test_failed_analysis_does_not_change_project_files(song, tmp_path):
         TranscriptionPipeline(separation_model="_crash").run(req)
     # 강제 재분리가 실패하면 기존 목록은 무효화되지 않는다 (교체는 새 결과가 완성된 뒤에만 시작)
     assert (tmp_path / "proj" / "stems" / "stems.json").read_bytes() == manifest
+
+
+def test_worker_peak_memory_is_its_own(tmp_path):
+    """작업 프로세스 최대 메모리에 부모 프로세스(GUI) 메모리가 섞이지 않는다 (STEP 2.5에서 발견한 측정 오류)."""
+    big = np.ones(600 * 2**20 // 8)  # 부모가 600MB를 잡고 있는 상태
+    big[::4096] += 1  # 실제로 페이지를 쓴다
+    sr = 16000
+    p = tmp_path / "짧은.wav"
+    sf.write(p, np.zeros(sr, np.float32), sr)
+    out = run_worker("tempo", {"input": str(p), "out_dir": str(tmp_path)})
+    assert 0 < out["resources"]["peak_rss_mb"] < 500
+    del big
