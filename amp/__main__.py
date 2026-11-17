@@ -2,6 +2,9 @@
 
 필요한 패키지가 없으면 트레이스백 대신 해결 방법을 한국어로 알려 준다.
 이 파일은 표준 라이브러리만 import해야 한다 (패키지가 없어도 메시지를 띄워야 하므로).
+
+``python -m amp --check-python`` 은 이 Python으로 Amp를 설치·실행할 수 있는지만 검사한다.
+run.bat이 공식 Python을 고를 때 쓴다 (종료 코드 0 = 사용 가능).
 """
 
 from __future__ import annotations
@@ -61,14 +64,55 @@ def help_message(
     return "\n".join(lines)
 
 
-def run() -> int:
-    if sys.version_info < MIN_PYTHON:
+def interpreter_problem(
+    version_info=sys.version_info,
+    version: str = sys.version,
+    os_name: str = os.name,
+    platform: str = sys.platform,
+) -> str | None:
+    """이 Python으로 Amp를 설치할 수 없는 이유. 문제가 없으면 None."""
+    if tuple(version_info[:2]) < MIN_PYTHON:
         need = ".".join(map(str, MIN_PYTHON))
-        print(f"[Amp] Python {need} 이상이 필요합니다. 지금 버전: {sys.version.split()[0]}", file=sys.stderr)
+        return f"Python {need} 이상이 필요합니다 (지금 {version_info[0]}.{version_info[1]})."
+    # python.org·Microsoft Store Python은 MSVC로 빌드된다. MSYS2(GCC/Clang)·Cygwin 빌드에는
+    # PyPI의 PySide6 휠이 맞지 않아 pip으로 설치할 수 없다.
+    if platform == "cygwin" or (os_name == "nt" and "MSC v." not in version):
+        return "MSYS2·Cygwin용 Python이라 pip으로 PySide6를 설치할 수 없습니다 (PyPI에 이 Python용 설치 파일이 없음)."
+    return None
+
+
+def interpreter_help(problem: str, executable: str = sys.executable) -> str:
+    lines = [
+        "[Amp] 지금 실행한 Python으로는 Amp를 설치할 수 없습니다.",
+        f"    {executable}",
+        problem,
+        "",
+        "python.org에서 받은 Windows용 Python 3.10 이상이 필요합니다.",
+        "1) 이미 설치되어 있는지 확인:  py -0p",
+        "   목록에 경로가 나오면 설치된 것입니다. 'py'를 찾을 수 없다고 나오면 2)로 가세요.",
+        "2) https://www.python.org/downloads/windows/ 에서 설치 (설치 화면 기본값 그대로 두면 py 런처도 함께 설치됨)",
+        "3) 저장소 폴더에서 run.bat 실행. 공식 Python을 찾아 가상 환경을 만들고 패키지를 설치합니다.",
+        "",
+        "'python' 명령은 PATH 순서 때문에 계속 MSYS2 쪽을 가리킬 수 있습니다. 직접 설치할 때는 py를 쓰세요.",
+        "    py -3 -m venv .venv",
+    ]
+    return "\n".join(lines)
+
+
+def run(argv: list[str] | None = None) -> int:
+    argv = sys.argv[1:] if argv is None else argv
+    problem = interpreter_problem()
+    if argv[:1] == ["--check-python"]:
+        if problem:
+            print(f"{sys.executable}: {problem}", file=sys.stderr)
+        return 1 if problem else 0
+    if sys.version_info < MIN_PYTHON:
+        print(f"[Amp] {problem}", file=sys.stderr)
         return 1
     missing = missing_modules()
     if missing:
-        print(help_message(missing), file=sys.stderr)
+        # 패키지가 없을 때만 빌드 종류를 따진다 (다른 경로로 이미 설치했다면 막지 않는다)
+        print(interpreter_help(problem) if problem else help_message(missing), file=sys.stderr)
         return 1
     from amp.app.main import main
 

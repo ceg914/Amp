@@ -33,14 +33,21 @@ AI 분석은 아직 없습니다. 메뉴의 "샘플 분석"은 오디오 길이�
 | 원본/수정본 분리 저장 | 프로젝트 파일 안에 `analysis/`(원본)와 `score.json`(작업본)을 따로 둠 |
 | 저장·자동 복구 | `storage/project_file.py`, `app/autosave.py` |
 | 긴 오디오 대응 | 백그라운드 디코딩, 다중 해상도 파형 요약, 보이는 구간만 그리기 |
-| 테스트·오류 처리 | `tests/` 테스트 90개, 사용자용 예외 계층(`core/errors.py`) |
+| 테스트·오류 처리 | `tests/` 테스트 93개, 사용자용 예외 계층(`core/errors.py`) |
 
 구조와 모듈별 책임은 [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)에 정리했습니다.
 
 ## 설치와 실행 (Windows)
 
-[python.org](https://www.python.org/downloads/windows/)에서 Python 3.10 이상 64비트를 설치합니다(개발은 3.13에서 확인).
-설치 첫 화면에서 "Add python.exe to PATH"를 꼭 체크하세요.
+[python.org](https://www.python.org/downloads/windows/)에서 Windows용 Python 3.10 이상 64비트를 설치합니다(개발은 3.13에서 확인).
+설치 화면 기본값을 그대로 두면 `py` 런처가 함께 설치됩니다.
+
+MSYS2(`C:\msys64\...`)나 Cygwin에 들어 있는 Python은 쓸 수 없습니다. PyPI의 PySide6 설치 파일이 이 Python들과 맞지 않습니다.
+설치된 공식 Python 목록은 아래 명령으로 볼 수 있습니다.
+
+```bash
+py -0p
+```
 
 ### 방법 1: run.bat (권장)
 
@@ -50,15 +57,17 @@ AI 분석은 아직 없습니다. 메뉴의 "샘플 분석"은 오디오 길이�
 run.bat
 ```
 
-처음 실행하면 저장소 폴더에 가상 환경(`.venv`)을 만들고 필요한 패키지를 설치한 뒤 프로그램을 켭니다.
-PySide6 내려받기 때문에 몇 분 걸릴 수 있습니다. 두 번째부터는 설치 단계를 건너뛰고 바로 켜집니다.
+처음 실행하면 공식 Python을 찾아(`py -3` → `python` 순서, MSYS2·Cygwin Python은 건너뜀) 저장소 폴더에 가상 환경(`.venv`)을 만들고,
+필요한 패키지를 설치한 뒤 프로그램을 켭니다. PySide6 내려받기 때문에 몇 분 걸릴 수 있습니다.
+두 번째부터는 설치 단계를 건너뛰고 바로 켜집니다.
 
 ### 방법 2: 직접 설치
 
 명령 프롬프트에서 저장소 폴더로 이동한 뒤 가상 환경을 만듭니다.
+`python` 대신 `py -3`을 쓰는 이유는 PATH에 다른 Python(예: MSYS2)이 먼저 잡혀 있어도 공식 Python을 쓰기 위해서입니다.
 
 ```bash
-python -m venv .venv
+py -3 -m venv .venv
 ```
 
 가상 환경을 켭니다. PowerShell이라면 `.venv\Scripts\Activate.ps1`입니다.
@@ -147,6 +156,19 @@ python scripts/make_test_audio.py test_tone.mp3 30
 
 `run.bat`을 쓰면 두 경우 모두 자동으로 처리됩니다. 지금 버전은 패키지가 없을 때 트레이스백 대신
 어떤 Python으로 실행했는지와 설치 명령을 한국어로 보여 줍니다.
+
+**`C:\msys64\ucrt64\bin\python.exe: No module named pip`**
+
+`python` 명령이 MSYS2에 들어 있는 Python을 실행하고 있습니다. 이 Python에는 pip이 없고,
+pip을 설치해도 PySide6가 설치되지 않습니다. 공식 Python을 설치한 뒤 `run.bat`을 실행하거나,
+위 "방법 2"처럼 `py -3`으로 가상 환경을 만드세요. 가상 환경을 켠 창에서는 `python`이 가상 환경의 Python을 가리킵니다.
+지금 버전은 이런 Python으로 `python -m amp`를 실행하면 이 안내를 직접 보여 줍니다.
+
+어떤 `python`이 먼저 잡히는지는 아래 명령으로 확인할 수 있습니다. 맨 위 줄이 실행되는 Python입니다.
+
+```bash
+where python
+```
 
 **`python`을 입력하면 Microsoft Store가 열린다**
 
