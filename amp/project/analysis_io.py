@@ -138,7 +138,8 @@ def tempo_to_dict(project: Project) -> dict:
 class LoadReport:
     migrated: list[str] = field(default_factory=list)
     from_backup: list[str] = field(default_factory=list)
-    warnings: list[str] = field(default_factory=list)
+    warnings: list[str] = field(default_factory=list)  # 사용자가 꼭 알아야 할 문제 (손상 복구 등)
+    notes: list[str] = field(default_factory=list)  # 참고 안내 (폴더 이동·복사 감지 등)
 
 
 def save_analysis_files(paths: ProjectPaths, project: Project, *, write_pitch: bool = True) -> None:

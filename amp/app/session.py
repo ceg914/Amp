@@ -10,7 +10,7 @@ import logging
 import os
 from pathlib import Path
 
-from PySide6.QtCore import QLockFile, QObject, QSettings, QStandardPaths, Signal
+from PySide6.QtCore import QObject, QSettings, QStandardPaths, Signal
 
 from amp.app.document import ProjectDocument
 from amp.app.player import AudioPlayer
@@ -24,7 +24,8 @@ from amp.engine.settings import AnalysisSettings
 from amp.engine.transcription import TranscriptionPipeline, TranscriptionRequest, redetect_notes
 from amp.engine.worker_client import run_worker
 from amp.project.export import ExportOptions, export_audio
-from amp.project.layout import DEFAULT_ROOT_NAME, LOCK_FILE
+from amp.project.layout import DEFAULT_ROOT_NAME
+from amp.project.lock import ProjectLock, ProjectLockedError
 from amp.project.legacy import import_legacy
 from amp.project.workspace import (
     OriginalStatus,
@@ -81,7 +82,7 @@ class ProjectSession(QObject):
         self.stems_reason = "분리 전"
         self.original: OriginalStatus | None = None
         self.analysis_handle: TaskHandle | None = None
-        self._lock: QLockFile | None = None
+        self._lock: ProjectLock | None = None
         self._seq = 0
 
     # --- 설정 ---------------------------------------------------------------
@@ -148,18 +149,32 @@ class ProjectSession(QObject):
 
     def open_folder(self, root: str) -> bool:
         root_p = Path(root)
-        lock = QLockFile(str(root_p / LOCK_FILE))
-        lock.setStaleLockTime(0)
-        if root_p.is_dir() and not lock.tryLock(0):
-            self.error.emit("프로젝트를 열 수 없습니다", "이 프로젝트는 다른 SONATLAS 창에서 이미 열려 있습니다.", "")
+        if self.folder is not None and os.path.normcase(os.path.realpath(self.folder.root)) == os.path.normcase(os.path.realpath(root_p)):
+            self.message.emit("이미 열려 있는 프로젝트입니다.", 5000)
+            return True
+        if not root_p.is_dir():
+            self.error.emit("프로젝트를 열 수 없습니다", f"폴더가 없습니다: {root_p}", "")
+            return False
+        lock = ProjectLock(root_p)
+        try:
+            lock.acquire()
+        except ProjectLockedError as e:
+            log.info("잠긴 프로젝트 열기 거부: %s (%s)", root_p, e.owner)
+            self.error.emit("프로젝트를 열 수 없습니다", str(e), "")
+            return False
+        except OSError as e:
+            self.error.emit("프로젝트를 열 수 없습니다", f"잠금 파일을 만들 수 없습니다 (읽기 전용 위치일 수 있습니다): {e}", "")
             return False
         try:
             folder, rep = open_folder(root_p)
+            removed = folder.cleanup_temp()
             project, rep2 = folder.load_project()
         except (AmpError, OSError) as e:
-            lock.unlock()
+            lock.release()
             self.error.emit("프로젝트를 열 수 없습니다", str(e), "")
             return False
+        if removed:
+            log.info("비정상 종료로 남은 임시 파일 정리: %s", removed)
         self.close()
         self._lock = lock
         self.folder = folder
@@ -167,6 +182,9 @@ class ProjectSession(QObject):
         warnings = rep.warnings + rep2.warnings
         if warnings:
             self.notice.emit("프로젝트 복구 안내", "\n".join(warnings))
+        for note in rep.notes + rep2.notes:
+            log.info(note)
+            self.message.emit(note, 10000)
         self.original = folder.resolve_original()
         self.originalChanged.emit()
         if self.original.state == "changed":
@@ -200,7 +218,7 @@ class ProjectSession(QObject):
         self.manifest = None
         self.original = None
         if self._lock is not None:
-            self._lock.unlock()
+            self._lock.release()
             self._lock = None
         if self.folder is not None:
             self.folder = None
@@ -313,11 +331,14 @@ class ProjectSession(QObject):
             except (AmpError, OSError) as e:
                 self.error.emit("저장하지 못했습니다", str(e), "")
                 return
-            lock = QLockFile(str(new_folder.root / LOCK_FILE))
-            lock.setStaleLockTime(0)
-            lock.tryLock(0)
+            lock = ProjectLock(new_folder.root)
+            try:
+                lock.acquire(new_folder.meta.id)
+            except (ProjectLockedError, OSError) as e:
+                self.error.emit("새 프로젝트를 잠그지 못했습니다", str(e), "")
+                return
             if self._lock is not None:
-                self._lock.unlock()
+                self._lock.release()
             self._lock = lock
             self.folder = new_folder
             self._remember(new_folder.root)

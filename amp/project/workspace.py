@@ -19,7 +19,7 @@ from pathlib import Path
 from typing import Callable
 
 from amp import __version__
-from amp.core.errors import AnalysisCancelled, ProjectFormatError, StorageError
+from amp.core.errors import AmpError, AnalysisCancelled, ProjectFormatError, StorageError
 from amp.core.fileio import atomic_write_json, long_path, read_json_with_backup, storage_error
 from amp.core.model import AudioRef, Project
 from amp.engine import stems as stem_store
@@ -28,6 +28,7 @@ from amp.engine.merge import summarize
 from amp.project import schema
 from amp.project.analysis_io import LoadReport, load_analysis_files, save_analysis_files
 from amp.project.layout import BACKUP_DIR, CACHE_DIR, LOCK_FILE, ProjectPaths, unique_folder
+from amp.project.lock import OWNER_FILE
 
 COPY = "copy"
 LINK = "link"
@@ -70,6 +71,8 @@ class ProjectMeta:
     analysis_settings: dict = field(default_factory=dict)
     playback: dict = field(default_factory=lambda: {"position": 0.0, "tracks": {}})
     ui: dict = field(default_factory=dict)
+    last_path: str = ""  # 마지막으로 연 폴더 위치. 바뀌었으면 이동 또는 복사된 것이다
+    copied_from: dict = field(default_factory=dict)  # 복사본이면 원래 프로젝트의 ID·위치
 
     def to_dict(self) -> dict:
         d = asdict(self)
@@ -95,6 +98,7 @@ class ProjectMeta:
                 analysis=dict(d.get("analysis") or {"status": "none"}),
                 edit_state=dict(d.get("edit_state") or {}), analysis_settings=dict(d.get("analysis_settings") or {}),
                 playback=dict(d.get("playback") or {"position": 0.0, "tracks": {}}), ui=dict(d.get("ui") or {}),
+                last_path=str(d.get("last_path", "")), copied_from=dict(d.get("copied_from") or {}),
             )
         except (KeyError, TypeError, ValueError) as e:
             raise ProjectFormatError(f"project.json 내용이 올바르지 않습니다: {e}") from e
@@ -221,6 +225,27 @@ class ProjectFolder:
     def cache(self) -> AnalysisCache:
         return AnalysisCache(self.paths.cache)
 
+    def cleanup_temp(self) -> list[str]:
+        """비정상 종료로 남은 임시 파일·폴더를 지운다. 잠금을 잡은 뒤(다른 쓰기 주체가 없을 때)만 호출한다."""
+        removed: list[str] = []
+        for d in self.paths.stems.glob(".tmp-*") if self.paths.stems.exists() else []:
+            shutil.rmtree(d, ignore_errors=True)
+            removed.append(str(d.relative_to(self.root)))
+        if self.paths.cache.exists():
+            n = self.cache().remove_stale_temp(older_than_s=0)
+            removed += [f"cache 임시 폴더 {n}개"] if n else []
+        for d in (self.root, self.paths.analysis, self.paths.exports, self.paths.stems):
+            if not d.exists():
+                continue
+            for pattern in (".sonatlas-*.tmp", "*.part", ".*.part.*"):
+                for f in d.glob(pattern):
+                    try:
+                        f.unlink()
+                        removed.append(str(f.relative_to(self.root)))
+                    except OSError:
+                        pass
+        return removed
+
     def clear_cache(self) -> None:
         """cache/만 지운다. 원본·stems/·analysis/·exports/는 건드리지 않는다."""
         self.cache().clear()
@@ -230,6 +255,7 @@ class ProjectFolder:
 
     def write_meta(self) -> None:
         self.meta.modified = now_iso()
+        self.meta.last_path = str(self.root.resolve())
         self.meta.app_version = __version__
         atomic_write_json(self.paths.project_json, self.meta.to_dict(), backup=True)
 
@@ -291,7 +317,41 @@ def open_folder(root: str | os.PathLike) -> tuple[ProjectFolder, LoadReport]:
         report.warnings.append("project.json이 손상되어 직전 백업(.bak)에서 불러왔습니다.")
     if migrated:
         report.migrated.append("project.json")
-    return ProjectFolder(paths.root, ProjectMeta.from_dict(data)), report
+    folder = ProjectFolder(paths.root, ProjectMeta.from_dict(data))
+    _detect_relocation(folder, report)
+    return folder, report
+
+
+def _same_path(a: str | os.PathLike, b: str | os.PathLike) -> bool:
+    return os.path.normcase(os.path.realpath(a)) == os.path.normcase(os.path.realpath(b))
+
+
+def _detect_relocation(folder: ProjectFolder, report: LoadReport) -> None:
+    """마지막으로 연 위치와 지금 위치가 다르면 이동인지 복사인지 가린다.
+
+    원래 위치에 같은 ID의 프로젝트가 아직 있으면 복사본이다 → 새 ID를 주어 독립된 프로젝트로 만든다.
+    원래 위치가 비었으면 이동이다 → ID를 유지한다. 원본 연결·분리 결과·편집 내용은 그대로 둔다.
+    """
+    meta = folder.meta
+    if not meta.last_path or _same_path(meta.last_path, folder.root):
+        return
+    old = Path(meta.last_path)
+    is_copy = False
+    try:
+        data, _ = read_json_with_backup(old / "project.json")
+        is_copy = isinstance(data, dict) and data.get("id") == meta.id
+    except Exception:  # noqa: BLE001 - 원래 위치를 읽을 수 없으면 이동으로 본다
+        is_copy = False
+    if is_copy:
+        meta.copied_from = {"id": meta.id, "path": str(old), "detected": now_iso()}
+        meta.id = uuid.uuid4().hex
+        report.notes.append(f"복사된 프로젝트로 보고 새 프로젝트 ID를 만들었습니다 (원래 위치: {old}).")
+    else:
+        report.notes.append(f"프로젝트 폴더 위치가 바뀌었습니다 (이전: {old}).")
+    try:
+        folder.write_meta()
+    except (AmpError, OSError) as e:  # 읽기 전용 위치면 다음 저장 때 기록한다
+        report.warnings.append(f"새 위치 정보를 기록하지 못했습니다: {e}")
 
 
 def create_project(
@@ -367,7 +427,7 @@ def copy_project(folder: ProjectFolder, parent: str | os.PathLike, name: str,
                  progress: ProgressFn | None = None) -> ProjectFolder:
     """'다른 이름으로 저장': 프로젝트 폴더를 새 위치로 복사한다 (cache/ 제외). 원래 폴더는 그대로 둔다."""
     dst = unique_folder(parent, name)
-    ignore = shutil.ignore_patterns(CACHE_DIR, LOCK_FILE, "*.part", ".sonatlas-*.tmp")
+    ignore = shutil.ignore_patterns(CACHE_DIR, LOCK_FILE, OWNER_FILE, "*.part", ".sonatlas-*.tmp")
     try:
         shutil.copytree(folder.root, dst, ignore=ignore)
     except OSError as e:

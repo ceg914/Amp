@@ -106,7 +106,7 @@ def test_same_project_cannot_open_twice(qtbot, make_window, song):
     folder = create(qtbot, w, song)
     w2 = make_window("b")
     assert not w2.open_project(str(folder.root))  # 동시에 두 창에서 같은 프로젝트를 고치지 못하게 잠근다
-    assert any("다른 SONATLAS 창" in e for e in w2.errors)
+    assert any("이미 열려 있습니다" in e and "다른 창" in e for e in w2.errors)
 
 
 def test_split_at_playhead_merge_and_bpm(qtbot, window, song):
@@ -217,3 +217,21 @@ def test_timeline_sync_between_views(qtbot, window, song):
     assert window.view.roll.playhead.pos().x() == pytest.approx(window.view.mapper.time_to_x(t), abs=0.5)
     window._show_track_waveform("original")
     assert window.current_time() == pytest.approx(t, abs=0.01)  # 트랙 표시를 바꿔도 위치 유지
+
+
+def test_copied_open_project_opens_in_second_window(qtbot, make_window, song, tmp_path):
+    """열려 있는 프로젝트 폴더를 탐색기로 복사한 상황: 복사본은 다른 창에서 독립적으로 열린다."""
+    import shutil
+
+    w = make_window("a")
+    folder = create(qtbot, w, song)
+    w.doc.add_note(0.5, 1.0, 64)
+    assert w.save()
+    copy_root = tmp_path / "복사본" / folder.root.name
+    shutil.copytree(folder.root, copy_root)
+    w2 = make_window("b")
+    assert w2.open_project(str(copy_root / "project.json"))
+    assert w2.session.folder.meta.id != w.session.folder.meta.id
+    assert [n.pitch for n in w2.doc.score.notes()] == [64]
+    w3 = make_window("c")
+    assert not w3.open_project(str(folder.root))  # 원본은 여전히 보호된다
