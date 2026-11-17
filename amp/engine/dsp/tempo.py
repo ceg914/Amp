@@ -56,6 +56,7 @@ def estimate_tempo(mono: np.ndarray, sr: int) -> dict:
         "candidates": candidates,
         "reliable": len(beats) >= 8,
         "beats_found": int(len(beats)),
+        "beats": [round(float(b), 3) for b in beats],  # librosa가 찾은 박 위치(초)
         "reason": "",
     }
 
