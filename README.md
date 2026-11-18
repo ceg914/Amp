@@ -68,7 +68,7 @@ SONATLAS Projects/
 
 ## 설치 (Windows)
 
-[python.org](https://www.python.org/downloads/windows/)에서 Windows용 Python 3.10 이상 64비트를 설치합니다(개발은 3.13에서 확인).
+[python.org](https://www.python.org/downloads/windows/)에서 Windows용 Python 3.10 이상 64비트를 설치합니다(개발은 3.13, 사용자 Windows PC에서 3.14 + RTX 3070 Ti로 확인).
 MSYS2·Cygwin에 들어 있는 Python은 쓸 수 없습니다. 설치된 공식 Python 목록은 아래 명령으로 볼 수 있습니다.
 
 ```bash

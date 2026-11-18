@@ -462,7 +462,7 @@ python scripts/validate_audio.py "곡.mp3" --type B --device auto --ref 곡.csv
   오류가 있을 수 있음. Diamond Dust·Reminiscence Overture는 악보 없음
 - **BPM**: 05·02번은 악보 템포와 일치, 나머지 두 곡은 확인 안 됨
 - 곡별 유형 A·B·C 분류에 따른 검증 (유형을 받지 않음)
-- Windows 실행: **사용자 실행 기록으로 성공 확인 (2026-11-18)**, Windows 작업 프로세스 메모리 측정도 동작. 다만 그 실행은 PyTorch CPU판이라 **GPU를 쓰지 않았음** (조용히 CPU로 돈 문제는 경고하도록 고침). GPU 분리 시간·GPU 메모리, `msvcrt.locking` 잠금으로 같은 프로젝트 두 번 열기 막기, Windows 예외 종료 코드 분류는 확인 못 함
+- Windows 실행: **사용자 실행 기록으로 성공 확인 (2026-11-18)**, Windows 작업 프로세스 메모리 측정도 동작. 첫 실행은 PyTorch CPU판이라 GPU를 쓰지 않았고(조용히 CPU로 돈 문제는 경고하도록 고침), 설치 스크립트를 고쳐 다시 설치한 뒤 **RTX 3070 Ti 인식 확인** (PyTorch 2.14.1+cu126, Python 3.14). GPU로 분리한 처리 시간·GPU 메모리, `msvcrt.locking` 잠금으로 같은 프로젝트 두 번 열기 막기, Windows 예외 종료 코드 분류는 확인 못 함
 - 실제 GPU 메모리 부족 후 CPU 재시도 (가짜 demucs로만 흉내)
 - 네트워크 드라이브(SMB·NFS)에서의 잠금과 저장 충돌 검사
 - 실제로 디스크가 가득 찬 상태 (오류 분류만 시험)
@@ -507,6 +507,6 @@ python scripts/validate_audio.py "곡.mp3" --type B --device auto --ref 곡.csv
 1. 같은 높이로 이어 부른 음절이 합쳐지는 문제(여래아 10개)와 긴 음 과분할(조각 나비 28개)을 다음 개선 대상으로 삼기.
    두 곡만 보고 임계값을 바꾸면 과적합이 되므로, 악보가 있는 곡을 몇 개 더 모아 같은 방식으로 재기
 2. 6.8절 위치를 들어 보고 v2의 같은 높이 재발음 분할이 맞는지 확인
-3. Windows 실행은 성공했지만 GPU를 쓰지 못함. `install_separation.bat`을 다시 실행해 GPU판을 설치하고 실행 기록으로 GPU 시간·메모리 확인
+3. Windows·GPU 설치는 확인됨(RTX 3070 Ti). GPU로 분석한 실행 기록으로 처리 시간·GPU 메모리 확인
 
 결과에 따라 8절 9번의 임계값을 조정하면 됩니다. 저장 형식과 실행 기록은 그대로 이어서 쓸 수 있습니다.
