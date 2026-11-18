@@ -112,3 +112,9 @@ def test_record_with_nan_values_is_saved(tmp_path):
     d = json.loads(path.read_text(encoding="utf-8"))
     assert d["notes"][0]["confidence"] is None and d["timings_s"]["total"] is None
     assert d["models"]["separation"]["params"]["presence"]["ratio_db"] is None
+
+
+def test_record_has_audio_duration(tmp_path):
+    rec = runs.record_from_result(result([note("a", 1.0, 1.5, 64)]), "full")
+    assert rec.audio_duration_s == 5.0
+    assert "곡 길이 | 5.00s" in runs.markdown_report(runs.compare_runs(rec, rec))

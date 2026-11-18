@@ -1028,6 +1028,8 @@ class MainWindow(QMainWindow):
                 label.setText(f"⚠ {info['error']}  install_separation.bat 으로 설치할 수 있습니다.")
             elif info.get("cuda"):
                 label.setText(f"✓ GPU 사용 가능: {info.get('gpu')} (CUDA {info.get('cuda_version')}, PyTorch {info.get('torch')})")
+            elif info.get("hint"):
+                label.setText(f"⚠ {info['hint']}")
             else:
                 label.setText(f"CPU로 실행합니다. CUDA를 쓸 수 없습니다 (PyTorch {info.get('torch')}).")
 

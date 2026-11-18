@@ -44,15 +44,65 @@ def _fit_length(x: np.ndarray, n: int) -> np.ndarray:
     return np.concatenate([x, pad], axis=-1)
 
 
+def find_nvidia_smi() -> str | None:
+    """nvidia-smi 경로. PATH에 없어도 Windows 표준 위치(System32, NVSMI)를 본다."""
+    import os
+    import shutil
+
+    exe = shutil.which("nvidia-smi")
+    if exe:
+        return exe
+    if os.name == "nt":
+        for p in (os.path.join(os.environ.get("SystemRoot", r"C:\Windows"), "System32", "nvidia-smi.exe"),
+                  os.path.join(os.environ.get("ProgramFiles", r"C:\Program Files"), "NVIDIA Corporation", "NVSMI",
+                               "nvidia-smi.exe")):
+            if os.path.isfile(p):
+                return p
+    return None
+
+
+def nvidia_gpu() -> dict | None:
+    """NVIDIA GPU가 보이면 {"name", "driver"}. PyTorch와 상관없이 드라이버로 확인한다."""
+    import os
+    import subprocess
+
+    exe = find_nvidia_smi()
+    if not exe:
+        return None
+    try:
+        out = subprocess.run([exe, "--query-gpu=name,driver_version", "--format=csv,noheader"], capture_output=True,
+                             text=True, timeout=10, creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0) if os.name == "nt" else 0)
+    except (OSError, subprocess.SubprocessError):
+        return None
+    line = (out.stdout or "").strip().splitlines()[:1]
+    if out.returncode != 0 or not line:
+        return None
+    name, _, driver = line[0].partition(",")
+    return {"name": name.strip(), "driver": driver.strip()}
+
+
+def cpu_fallback_hint(torch_version: str, gpu: dict | None) -> str:
+    """GPU가 있는데 PyTorch가 GPU를 못 쓸 때 안내. 없으면 빈 문자열."""
+    if not gpu:
+        return ""
+    return (f"NVIDIA GPU({gpu.get('name') or '이름 모름'})가 있지만 설치된 PyTorch({torch_version})가 GPU를 쓸 수 없어 "
+            "CPU로 분리했습니다. 저장소 폴더의 install_separation.bat을 다시 실행하면 GPU용 PyTorch를 설치합니다 "
+            "(GPU 드라이버가 오래되었으면 드라이버를 먼저 업데이트하세요).")
+
+
 def choose_device(requested: str) -> tuple[str, str]:
     """(실제 장치, 안내 메시지)."""
     import torch
 
     has_cuda = torch.cuda.is_available()
-    if requested == "cuda" and not has_cuda:
-        return "cpu", "GPU(CUDA)를 쓸 수 없어 CPU로 실행합니다. CUDA판 PyTorch가 설치되어 있는지 확인하세요."
     if requested in ("auto", "cuda") and has_cuda:
         return "cuda", ""
+    if requested in ("auto", "cuda"):
+        hint = cpu_fallback_hint(torch.__version__, nvidia_gpu())
+        if hint:
+            return "cpu", hint
+        if requested == "cuda":
+            return "cpu", "GPU(CUDA)를 쓸 수 없어 CPU로 실행합니다. CUDA판 PyTorch가 설치되어 있는지 확인하세요."
     return "cpu", ""
 
 
@@ -69,6 +119,10 @@ def probe() -> dict:
     info["cuda_version"] = torch.version.cuda
     if info["cuda"]:
         info["gpu"] = torch.cuda.get_device_name(0)
+    else:
+        gpu = nvidia_gpu()
+        info["nvidia_gpu"] = gpu
+        info["hint"] = cpu_fallback_hint(torch.__version__, gpu)
     try:
         import demucs
 

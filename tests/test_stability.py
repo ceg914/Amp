@@ -217,3 +217,38 @@ def test_mp3_without_length_header_is_not_reported_as_truncated(tmp_path, caplog
         a = load_audio(str(p))
     assert 2.9 < a.duration < 3.1
     assert "잘렸을 수 있습니다" not in caplog.text
+
+
+def test_cpu_fallback_with_nvidia_gpu_is_reported(monkeypatch, song, tmp_path):
+    """GPU가 있는데 PyTorch가 GPU를 못 쓰면 이유와 해결법을 경고로 알린다 (사용자 Windows 실행에서 조용히 CPU로 돈 문제)."""
+    import types
+
+    from amp.engine.dsp import separation as sep
+
+    fake_torch = types.SimpleNamespace(__version__="2.15.0+cpu", cuda=types.SimpleNamespace(is_available=lambda: False))
+    monkeypatch.setitem(sys.modules, "torch", fake_torch)
+    monkeypatch.setattr(sep, "nvidia_gpu", lambda: {"name": "NVIDIA GeForce RTX 3060", "driver": "581.15"})
+    dev, note = sep.choose_device("auto")
+    assert dev == "cpu" and "RTX 3060" in note and "install_separation.bat" in note and "2.15.0+cpu" in note
+    monkeypatch.setattr(sep, "nvidia_gpu", lambda: None)
+    assert sep.choose_device("auto") == ("cpu", "")  # GPU가 없으면 조용히 CPU
+    assert sep.choose_device("cuda")[1]  # GPU를 고르고 못 쓰면 알린다
+
+    # 파이프라인: 새로 분리했을 때 분리 단계 안내가 분석 경고로 나온다
+    real = sep.separate
+
+    def separate_with_note(*a, **k):
+        v, i, info = real(*a, **k)
+        info["note"] = "NVIDIA GPU(RTX 3060)가 있지만 … CPU로 분리했습니다."
+        return v, i, info
+
+    monkeypatch.setattr(sep, "separate", separate_with_note)
+    from tests.test_transcription import InProcessRunner, make_request
+
+    from amp.engine.transcription import TranscriptionPipeline
+
+    req = make_request(song, tmp_path)
+    out = TranscriptionPipeline(InProcessRunner(), separation_model="_identity").run(req)
+    assert any("RTX 3060" in w for w in out.result.warnings)
+    again = TranscriptionPipeline(InProcessRunner(), separation_model="_identity").run(make_request(song, tmp_path))
+    assert not any("RTX 3060" in w for w in again.result.warnings)  # 기존 분리 결과를 재사용하면 다시 알리지 않는다

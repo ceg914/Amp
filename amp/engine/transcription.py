@@ -141,6 +141,9 @@ class TranscriptionPipeline:
                 for name, a in stems.items():
                     if a.frames != req.audio.frames or a.sample_rate != req.audio.sample_rate:
                         raise AnalysisError(f"분리된 {name}의 길이·샘플레이트가 원본과 다릅니다. 다시 분리해 주세요.")
+                note = str(manifest.model_info.get("note") or "")
+                if note and not reused["separation"]:  # GPU를 못 써 CPU로 분리, GPU 메모리 부족 → CPU 재실행 등
+                    warnings.append(note)
                 presence = vocal_presence(stems["vocals"].mono(), req.audio.mono(), req.audio.sample_rate)
                 if not presence["present"]:
                     warnings.append(

@@ -49,6 +49,7 @@ class RunRecord:
     warnings: list[str] = field(default_factory=list)
     score_summary: dict = field(default_factory=dict)  # 실행 시점의 사용자 편집 현황 (개수만)
     seq: int = 0  # 프로젝트 안 저장 순번 (save_run이 매긴다). 시각이 같아도 순서가 정해진다
+    audio_duration_s: float | None = None  # 곡 길이 (처리 시간을 실시간 대비로 보기 위해)
     version: int = RECORD_VERSION
 
     @property
@@ -100,6 +101,7 @@ def record_from_result(result, kind: str, *, timings: dict | None = None, reused
         models=models, timings_s={k: round(float(v), 3) for k, v in (timings or {}).items()},
         reused=dict(reused or {}), resources=dict(resources or {}), tempo=tempo, notes=notes,
         warnings=list(result.warnings or ()), score_summary=dict(score_summary or {}),
+        audio_duration_s=_finite(getattr(result, "duration", None), 3),
     )
 
 
@@ -250,6 +252,7 @@ def markdown_report(cmp: RunComparison, max_rows: int = 200) -> str:
     lines.append(f"| 민감도 | {a.settings.get('sensitivity', '-')} | {b.settings.get('sensitivity', '-')} |")
     lines.append(f"| 음표 수 | {len(a.notes)} | {len(b.notes)} |")
     lines.append(f"| BPM | {a.tempo.get('bpm', '-')} | {b.tempo.get('bpm', '-')} |")
+    lines.append(f"| 곡 길이 | {_sec(a.audio_duration_s)} | {_sec(b.audio_duration_s)} |")
     for stage in ("separation", "pitch", "tempo", "notes", "total"):
         if stage in a.timings_s or stage in b.timings_s:
             ra = " (재사용)" if a.reused.get(stage) else ""
