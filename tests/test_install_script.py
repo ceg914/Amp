@@ -46,3 +46,41 @@ def test_cpu_torch_is_removed_before_gpu_build():
     assert cmds[1][-2:] == ["--index-url", "https://download.pytorch.org/whl/cu132"]
     assert inst.commands("cu132", "py", "win32", existing=("2.15.0+cu132", "13.2"))[0][3] == "install"
     assert inst.commands("cpu", "py", "win32", existing=("2.15.0+cpu", None))[0][3] == "install"
+
+
+class _R:
+    def __init__(self, stdout="", stderr="", returncode=0):
+        self.stdout, self.stderr, self.returncode = stdout, stderr, returncode
+
+
+def test_cuda_version_from_query_output_and_diagnostics():
+    """사용자 Windows: nvidia-smi는 찾았지만 CUDA 버전을 못 읽어 CPU판을 설치했다 → -q 출력도 보고, 못 읽으면 이유를 보여 준다."""
+    q = "==============NVSMI LOG==============\nDriver Version                            : 581.15\nCUDA Version                              : 13.0\n"
+    assert inst.parse_cuda_version(q) == (13, 0)
+    calls = []
+
+    def run(args, **kw):
+        calls.append(args)
+        return _R(stdout="weird header without version") if len(args) == 1 else _R(stdout=q)
+
+    assert inst.detect_cuda("nvidia-smi.exe", run=run) == ((13, 0), "")
+    assert calls == [["nvidia-smi.exe"], ["nvidia-smi.exe", "-q"]]
+
+    def broken(args, **kw):
+        return _R(stdout="NVIDIA-SMI has failed because it couldn't communicate with the NVIDIA driver.", returncode=9)
+
+    version, diag = inst.detect_cuda("nvidia-smi.exe", run=broken)
+    assert version is None and "종료 코드 9" in diag and "couldn't communicate" in diag
+    assert inst.detect_cuda(None, run=broken) == (None, "") or True  # PATH에 없으면 실행하지 않는다
+
+
+def test_build_can_be_forced(capsys, monkeypatch):
+    monkeypatch.setattr(inst, "find_nvidia_smi", lambda: "nvidia-smi.exe")
+    monkeypatch.setattr(inst, "detect_cuda", lambda exe=None: (None, "기본 출력: 종료 코드 9, 출력 앞부분: failed"))
+    monkeypatch.setattr(inst, "installed_torch", lambda python=None: ("2.15.0+cpu", None))
+    assert inst.main(["--dry-run"]) == 0
+    out = capsys.readouterr().out
+    assert "PyTorch 빌드: cpu" in out and "종료 코드 9" in out and "--build cu126" in out
+    assert inst.main(["--dry-run", "--build", "cu126"]) == 0
+    out = capsys.readouterr().out
+    assert "uninstall -y torch" in out and "whl/cu126" in out

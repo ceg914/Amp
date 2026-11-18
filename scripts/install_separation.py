@@ -7,7 +7,8 @@
 - 설치 뒤 PyTorch가 실제로 GPU를 인식하는지 확인해 알려 준다.
 - 지금 실행한 Python(가상 환경이라면 그 안)에 설치한다.
 
-사용법: python scripts/install_separation.py [--cpu] [--dry-run]
+사용법: python scripts/install_separation.py [--cpu | --build cu126|cu130|cu132] [--dry-run]
+       자동 감지가 안 되면 --build로 GPU판을 직접 고른다 (드라이버가 그 CUDA 버전을 지원해야 한다)
 PyTorch가 제공하는 CUDA 빌드 목록은 바뀐다. 이 표는 2026-11 기준(cu132/cu130/cu126)이다.
 """
 
@@ -27,7 +28,8 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 
 def parse_cuda_version(nvidia_smi_output: str) -> tuple[int, int] | None:
-    m = re.search(r"CUDA Version:\s*(\d+)\.(\d+)", nvidia_smi_output)
+    """기본 출력('CUDA Version: 13.0')과 -q 출력('CUDA Version   : 13.0') 모두 읽는다."""
+    m = re.search(r"CUDA\s+Version\s*:\s*(\d+)\.(\d+)", nvidia_smi_output or "")
     return (int(m.group(1)), int(m.group(2))) if m else None
 
 
@@ -57,15 +59,24 @@ def installed_torch(python: str = sys.executable) -> tuple[str, str | None] | No
     return lines[0].strip(), (lines[1].strip() or None) if len(lines) > 1 else None
 
 
-def detect_cuda() -> tuple[int, int] | None:
-    exe = find_nvidia_smi()
+def detect_cuda(exe: str | None = None, run=subprocess.run) -> tuple[tuple[int, int] | None, str]:
+    """(드라이버가 지원하는 CUDA 버전, 못 읽었을 때의 진단 문구)."""
+    exe = exe or find_nvidia_smi()
     if not exe:
-        return None
-    try:
-        out = subprocess.run([exe], capture_output=True, text=True, timeout=20).stdout
-    except (OSError, subprocess.SubprocessError):
-        return None
-    return parse_cuda_version(out)
+        return None, ""
+    notes = []
+    for args in ([exe], [exe, "-q"]):
+        try:
+            r = run(args, capture_output=True, text=True, errors="replace", timeout=60)
+        except (OSError, subprocess.SubprocessError, ValueError) as e:
+            notes.append(f"{' '.join(args[1:]) or '기본 출력'}: 실행 실패 ({e})")
+            continue
+        version = parse_cuda_version(r.stdout)
+        if version:
+            return version, ""
+        text = [ln.strip() for ln in ((r.stdout or "") + "\n" + (r.stderr or "")).splitlines() if ln.strip()]
+        notes.append(f"{' '.join(args[1:]) or '기본 출력'}: 종료 코드 {r.returncode}, 출력 앞부분: " + " / ".join(text[:4]))
+    return None, "\n".join(notes)
 
 
 def choose_build(cuda: tuple[int, int] | None, force_cpu: bool = False) -> str:
@@ -110,17 +121,26 @@ def verify(python: str = sys.executable) -> tuple[bool, str]:
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument("--cpu", action="store_true", help="GPU가 있어도 CPU판을 설치")
+    ap.add_argument("--build", choices=[name for _v, name in CUDA_BUILDS] + ["cpu"],
+                    help="자동 감지 대신 이 PyTorch 빌드를 설치 (예: cu126)")
     ap.add_argument("--dry-run", action="store_true", help="실행할 명령만 보여 줌")
     args = ap.parse_args(argv)
     smi = find_nvidia_smi()
-    cuda = detect_cuda()
-    build = choose_build(cuda, args.cpu)
+    cuda, diag = detect_cuda(smi)
+    build = args.build or choose_build(cuda, args.cpu)
     print(f"[SONATLAS] nvidia-smi: {smi or '찾지 못함'}")
-    print(f"[SONATLAS] NVIDIA 드라이버 CUDA: {'.'.join(map(str, cuda)) if cuda else '없음'} → PyTorch 빌드: {build}")
-    if cuda and build == "cpu" and not args.cpu:
+    print(f"[SONATLAS] NVIDIA 드라이버 CUDA: {'.'.join(map(str, cuda)) if cuda else '없음'} → PyTorch 빌드: {build}"
+          + (" (--build로 지정)" if args.build else ""))
+    if cuda and build == "cpu" and not (args.cpu or args.build):
         print("[SONATLAS] 드라이버가 오래되어 맞는 CUDA 빌드가 없습니다. GPU 드라이버를 업데이트하면 GPU를 쓸 수 있습니다.")
     if smi and cuda is None:
-        print("[SONATLAS] nvidia-smi는 있지만 CUDA 버전을 읽지 못했습니다. GPU 드라이버를 다시 설치하거나 업데이트하세요.")
+        print("[SONATLAS] nvidia-smi는 있지만 CUDA 버전을 읽지 못했습니다. nvidia-smi가 보여 준 내용:")
+        for line in diag.splitlines():
+            print("    " + line)
+        if not args.build:
+            print("[SONATLAS] 'couldn't communicate with the NVIDIA driver' 같은 문구가 있으면 GPU 드라이버를 다시 설치하세요.")
+            print("[SONATLAS] 명령 프롬프트에서 nvidia-smi를 실행해 'CUDA Version'이 보이면, 그 버전에 맞춰 직접 고를 수 있습니다:")
+            print("[SONATLAS]   install_separation.bat --build cu126   (CUDA 12.6 이상)  /  --build cu130 (13.0 이상)  /  --build cu132 (13.2 이상)")
     existing = installed_torch()
     if existing:
         print(f"[SONATLAS] 지금 설치된 PyTorch: {existing[0]} ({'CUDA ' + existing[1] if existing[1] else 'CPU판'})")

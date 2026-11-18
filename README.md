@@ -226,6 +226,14 @@ python scripts/compare_runs.py "SONATLAS Projects\노래 이름" --list
 **NVIDIA GPU가 있는데 분리가 느리다 / "GPU를 쓸 수 없어 CPU로 분리했습니다" 경고** — 설치된 PyTorch가 CPU판입니다.
 `install_separation.bat`을 다시 실행하세요. CPU판을 지우고 드라이버에 맞는 GPU판을 설치한 뒤, GPU를 인식하는지 마지막에 알려 줍니다.
 "드라이버가 오래되어"라는 안내가 나오면 NVIDIA 드라이버를 먼저 업데이트하세요. 설치 뒤 분석 설정의 [GPU 확인]이 GPU 이름을 보여 주면 됩니다.
+"nvidia-smi는 있지만 CUDA 버전을 읽지 못했습니다"가 나오면 그 아래 줄에 nvidia-smi가 보여 준 내용이 있습니다. 드라이버와 통신하지 못한다는
+문구면 드라이버를 다시 설치하세요. 명령 프롬프트에서 `nvidia-smi`를 실행해 오른쪽 위 `CUDA Version`이 보이면 그 버전에 맞춰 직접 고를 수 있습니다.
+
+```bash
+install_separation.bat --build cu126
+```
+
+(`cu126`은 CUDA 12.6 이상, `cu130`은 13.0 이상, `cu132`는 13.2 이상인 드라이버에서 씁니다.)
 
 **`보컬 분리에는 PyTorch와 Demucs가 필요합니다`** — `install_separation.bat`을 실행하세요.
 반주 없는 음원이라면 분석 설정의 보컬 분리를 '분리 안 함'으로 바꿔도 됩니다.
