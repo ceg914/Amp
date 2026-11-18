@@ -136,6 +136,26 @@ def test_gpu_oom_falls_back_to_cpu(monkeypatch):
     assert set(sources) == {"drums", "bass", "other", "vocals"}
 
 
+def test_separation_is_repeatable(monkeypatch):
+    """demucs의 임의 이동(shifts) 때문에 같은 곡을 다시 분리하면 결과가 달라지던 문제 (Windows 실행 기록에서 발견)."""
+    torch = pytest.importorskip("torch")
+    import random
+
+    def apply_model(model, x, device=None, shifts=0, **kw):
+        offset = random.randint(0, 22050) if shifts else 0  # demucs와 같은 방식으로 이동량을 고른다
+        return torch.full((1, 4) + tuple(x.shape[1:]), float(offset))
+
+    _install_fake_demucs(monkeypatch, apply_model)
+    monkeypatch.setattr(sep, "choose_device", lambda requested: ("cpu", ""))
+    x = np.zeros((2, 4410), np.float32)
+    runs = []
+    for _ in range(3):
+        random.random()  # 앞선 작업이 난수를 얼마나 썼는지와 상관없어야 한다
+        sources, info = sep._run_demucs("htdemucs", x, "cpu", lambda f, m: None)
+        runs.append(float(sources["vocals"].flat[0]))
+    assert len(set(runs)) == 1 and info["shift_seed"] == sep.SHIFT_SEED
+
+
 def test_cpu_oom_reports_clear_error(monkeypatch):
     pytest.importorskip("torch")
 

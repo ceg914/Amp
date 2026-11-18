@@ -12,6 +12,7 @@
 from __future__ import annotations
 
 import math
+import random
 from typing import Callable
 
 import numpy as np
@@ -19,6 +20,8 @@ import numpy as np
 DEMUCS_MODELS = ("htdemucs",)
 TEST_MODELS = ("_identity", "_sleep", "_crash")
 MODEL_RATE = 44100
+# demucs는 shifts마다 0~0.5초 임의 이동을 쓴다. 같은 곡을 다시 분리해도 같은 결과가 나오도록 시드를 고정한다.
+SHIFT_SEED = 0
 
 
 class SeparationError(Exception):
@@ -230,7 +233,7 @@ def _run_demucs(model_name: str, norm: np.ndarray, device: str, report) -> tuple
         report(0.05 + 0.95 * frac, f"보컬 분리 중 ({actual.upper()})")
 
     x = torch.from_numpy(np.ascontiguousarray(norm))[None]
-    info = {"device": actual, "torch": torch.__version__, "note": note}
+    info = {"device": actual, "torch": torch.__version__, "note": note, "shift_seed": SHIFT_SEED}
     try:
         import demucs
 
@@ -239,6 +242,7 @@ def _run_demucs(model_name: str, norm: np.ndarray, device: str, report) -> tuple
         pass
 
     def run(dev: str):
+        random.seed(SHIFT_SEED)  # GPU 메모리 부족으로 CPU에서 다시 돌릴 때도 같은 이동을 쓴다
         with torch.no_grad():
             return apply_model(model, x, device=dev, shifts=1, split=True, overlap=0.25, progress=False,
                                callback=callback)[0]
