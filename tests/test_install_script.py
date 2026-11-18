@@ -84,3 +84,20 @@ def test_build_can_be_forced(capsys, monkeypatch):
     assert inst.main(["--dry-run", "--build", "cu126"]) == 0
     out = capsys.readouterr().out
     assert "uninstall -y torch" in out and "whl/cu126" in out
+
+
+def test_batch_files_are_ascii_and_messages_exist():
+    """cmd.exe가 UTF-8 배치 파일 안의 한글을 잘못 읽어 주석 일부를 명령으로 실행했다 (사용자 Windows, run.bat).
+    배치 파일은 ASCII만 쓰고, 한글 안내는 scripts/messages/*.txt를 type으로 보여 준다."""
+    import re
+
+    for name in ("run.bat", "install_separation.bat"):
+        data = open(os.path.join(ROOT, name), "rb").read()
+        data.decode("ascii")  # 한글 등 여러 바이트 문자가 있으면 실패
+        assert b"\r\n" in data and b"\n" not in data.replace(b"\r\n", b"")  # CRLF만
+        assert not re.search(rb"(?im)^\s*rem\b.*[|&<>]", data)  # rem 줄에 파이프·리디렉션 기호 금지
+        for msg in re.findall(rb'type "(?:%MSG%|scripts\\messages)\\([^"]+)"', data):
+            path = os.path.join(ROOT, "scripts", "messages", msg.decode())
+            raw = open(path, "rb").read()
+            assert not raw.startswith(b"\xef\xbb\xbf")  # BOM이 있으면 type이 그대로 찍는다
+            raw.decode("utf-8")

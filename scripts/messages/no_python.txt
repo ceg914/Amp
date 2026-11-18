@@ -1,0 +1,8 @@
+[Amp] 사용할 수 있는 Python을 찾지 못했습니다.
+python.org 에서 받은 Windows용 Python 3.10 이상이 필요합니다.
+MSYS2(C:\msys64\...)나 Cygwin에 들어 있는 Python으로는 PySide6를 설치할 수 없습니다.
+
+  1. https://www.python.org/downloads/windows/ 에서 Python을 설치합니다.
+  2. 이 창을 닫고 run.bat 을 다시 실행합니다.
+
+아래는 찾은 Python 목록입니다 (py 런처가 없으면 오류가 나옵니다).

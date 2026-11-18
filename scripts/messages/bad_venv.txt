@@ -1,0 +1,3 @@
+[Amp] 기존 .venv 폴더를 쓸 수 없습니다. 지원하지 않는 Python으로 만들어졌거나 손상되었습니다.
+아래 명령으로 .venv 폴더를 지운 뒤 run.bat 을 다시 실행하세요.
+  rmdir /s /q .venv
