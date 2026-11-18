@@ -54,7 +54,8 @@ class LyricsController(QObject):
         self._connect()
         self.panel.set_settings({k: self.settings.value(f"lyrics/{k}", d) for k, d in
                                  (("language", "auto"), ("model", "auto"))}
-                                | {"link_after": str(self.settings.value("lyrics/link_after", "true")) != "false"})
+                                | {k: str(self.settings.value(f"lyrics/{k}", "true")) != "false"
+                                   for k in ("link_after", "align_after")})
         self.refresh_install_status()
         self.panel.set_state(self.doc.lyrics, force_editor=True)
 
@@ -100,6 +101,7 @@ class LyricsController(QObject):
         p.openModelFolderRequested.connect(self.open_models)
         p.settingsChanged.connect(self._save_settings)
         p.link_after.toggled.connect(lambda _v: self._save_settings())
+        p.align_after.toggled.connect(lambda _v: self._save_settings())
         lane.syllablesSelected.connect(self.on_syllables_selected)
         lane.seekRequested.connect(self.w.seek)
         lane.playFromRequested.connect(self.play_from)
@@ -208,9 +210,10 @@ class LyricsController(QObject):
         flagged = sum(1 for s in rec.segments if s.review)
         summary = (f"인식 구간 {len(rec.segments)}개, 검토 필요 {flagged}개 · 모델 {rec.model} · 언어 {rec.language}"
                    f" · 장치 {rec.device.upper()}" + (" · 캐시 재사용" if reused else ""))
+        replaced = False
         if state.text.is_empty:
             new = lyr_engine.text_from_recognition(state, rec, replace_text=True)
-            self.doc.push_lyrics(new, "자동 인식 결과로 가사 만들기")
+            replaced = self.doc.push_lyrics(new, "자동 인식 결과로 가사 만들기")
         else:
             box = QMessageBox(self.w)
             box.setWindowTitle("가사 인식 완료")
@@ -222,8 +225,8 @@ class LyricsController(QObject):
             box.setDefaultButton(keep)
             box.exec()
             if box.clickedButton() is rep:
-                self.doc.push_lyrics(lyr_engine.text_from_recognition(state, rec, replace_text=True),
-                                     "자동 인식 결과로 가사 바꾸기")
+                replaced = self.doc.push_lyrics(lyr_engine.text_from_recognition(state, rec, replace_text=True),
+                                                "자동 인식 결과로 가사 바꾸기")
             elif box.clickedButton() is keep:
                 self.doc.push_lyrics(lyr_engine.text_from_recognition(state, rec, replace_text=False), "인식 원본 보관")
             else:
@@ -231,9 +234,30 @@ class LyricsController(QObject):
         msg = summary
         if rec.warnings:
             msg += " · " + " ".join(rec.warnings)
+        if replaced and not self.panel.align_after.isChecked():
+            msg += " · 음절 시간은 단어 시각을 나눈 추정값입니다. [전체 정렬](F7)로 맞추세요."
         self.w.statusBar().showMessage(msg, 15000)
         if flagged:
             self.panel.filter.setCurrentIndex(self.panel.filter.findData("review"))
+        if replaced:
+            self._align_after_recognition()
+
+    def _align_after_recognition(self) -> None:
+        """인식 결과로 가사를 만든 뒤 정렬까지 잇는다. 인식 작업이 끝났다고 알려진 뒤(busy 해제)에 시작한다."""
+        if not self.panel.align_after.isChecked() or self.doc.lyrics.text.is_empty:
+            return
+        if not self.session.busy:
+            self.align("all")
+            return
+
+        def go(busy: bool) -> None:
+            if busy:
+                return
+            self.session.busyChanged.disconnect(go)
+            if not self.doc.lyrics.text.is_empty:
+                self.align("all")
+
+        self.session.busyChanged.connect(go)
 
     def apply_recognition(self) -> None:
         rec = self.doc.lyrics.recognition
@@ -244,8 +268,9 @@ class LyricsController(QObject):
                                        "지금 가사를 인식 결과로 바꿉니다. '실행 취소'로 되돌릴 수 있습니다. 계속할까요?")
             if ans != QMessageBox.StandardButton.Yes:
                 return
-        self.doc.push_lyrics(lyr_engine.text_from_recognition(self.doc.lyrics, rec, replace_text=True),
-                             "자동 인식 결과로 가사 만들기")
+        if self.doc.push_lyrics(lyr_engine.text_from_recognition(self.doc.lyrics, rec, replace_text=True),
+                                "자동 인식 결과로 가사 만들기"):
+            self._align_after_recognition()
 
     # --- 텍스트 ---------------------------------------------------------------
 

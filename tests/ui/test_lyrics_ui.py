@@ -140,6 +140,7 @@ def test_window_alignment_and_recognition_results_are_applied_once(qtbot, window
     w.doc.set_analysis(AnalysisResult(10.0, TempoMap.constant(120), (note("x", 1.0, 1.5), note("y", 2.0, 2.5))))
     rec = Recognition("turbo", "", "ko", 0.9, "cpu", "t", {}, "s", (
         AsrSegment("seg0", 1.0, 2.5, "가나", -0.2, 0.9, 1.0, (), (AsrWord("가나", 1.0, 2.5, 0.9),)),))
+    w.lyrics_panel.align_after.setChecked(False)  # 이 시험은 정렬 결과를 직접 넣는다
     w.session.recognitionReady.emit(rec, False)  # 가사가 비어 있으면 인식 결과로 가사를 만든다
     assert [s.text for s in w.doc.lyrics.text.syllables] == ["가", "나"] and w.doc.lyrics.recognition == rec
     a, b = [s.id for s in w.doc.lyrics.text.syllables]
@@ -202,3 +203,51 @@ def test_full_flow_with_test_models_save_and_reopen(qtbot, make_window, song, mo
     assert all(lk.confirmed for i in ids for lk in ly.alignment.links[i])
     assert w2.lyrics_panel.editor.toPlainText() == "미 솔 라"
     assert len(w2.lyric_lane._rows) == 3
+
+
+def test_recognition_runs_alignment_and_links_notes_by_default(qtbot, make_window, song, monkeypatch):
+    """인식만으로 끝나면 음절 시간이 단어 시각을 나눈 추정값이다. 기본 설정은 정렬·음표 연결까지 잇는다."""
+    from amp.lyrics.model import LyricsState
+
+    monkeypatch.setattr("amp.app.session.TranscriptionPipeline", IdentityPipeline)
+    w = make_window("a")
+    create(qtbot, w, song)
+    w.run_analysis()
+    qtbot.waitUntil(lambda: w.doc.project.analysis is not None and not w.session.busy, timeout=120_000)
+    notes = w.doc.score.notes()
+    starts = [n.start for n in notes]
+    # 인식 모델은 세 음절을 한 단어로, 실제보다 넓게 들었다고 하자 (단어 시각만 쓰면 음절 경계가 어긋난다)
+    seg = {"start": 0.0, "end": notes[-1].end, "text": "미솔라", "avg_logprob": -0.2, "no_speech_prob": 0.1,
+           "compression_ratio": 1.0, "activity": 0.9,
+           "words": [{"text": "미솔라", "start": 0.0, "end": notes[-1].end, "probability": 0.9}]}
+    readings = [s.reading for s in ops.apply_text(LyricsState(), "미솔라").text.syllables]
+    fake = FakeRunner(readings, starts, 5.0, segments=[seg])
+    monkeypatch.setattr(engine, "run_worker", fake)
+    from amp.app.widgets.lyrics_panel import LyricsPanel
+
+    fresh = LyricsPanel()
+    qtbot.addWidget(fresh)
+    assert fresh.align_after.isChecked() and fresh.settings()["align_after"] is True  # 기본값: 켜짐
+    w.lyrics_panel.align_after.setChecked(True)  # 다른 시험이 저장한 설정과 무관하게
+    w.lyrics.recognize()
+    qtbot.waitUntil(lambda: "ctc_align" in fake.calls and not w.session.busy
+                    and all(w.doc.lyrics.alignment.links.get(s.id) for s in w.doc.lyrics.text.syllables), timeout=60_000)
+    assert fake.calls[0] == "asr" and "emissions" in fake.calls
+    ly = w.doc.lyrics
+    ids = [s.id for s in ly.text.syllables]
+    assert [ly.alignment.timing(i).start for i in ids] == pytest.approx(starts, abs=0.05)
+    assert all(ly.alignment.timing(i).start_source == "model" for i in ids)
+    assert [ly.alignment.linked_notes(i) for i in ids] == [(n.id,) for n in notes]
+    # 실행 취소 한 번이면 정렬 전(인식 직후) 상태로 돌아간다
+    w.doc.undo_stack.undo()
+    assert w.doc.lyrics.alignment.timing(ids[1]).start_source == "estimated" and not w.doc.lyrics.alignment.links
+
+
+def test_recognition_without_align_after_keeps_estimates_and_says_so(qtbot, window):
+    w = window
+    w.lyrics_panel.align_after.setChecked(False)
+    rec = Recognition("turbo", "", "ko", 0.9, "cpu", "t", {}, "s", (
+        AsrSegment("seg0", 1.0, 2.5, "가나", -0.2, 0.9, 1.0, (), (AsrWord("가나", 1.0, 2.5, 0.9),)),))
+    w.session.recognitionReady.emit(rec, False)
+    assert not w.session.busy  # 정렬을 시작하지 않았다
+    assert "F7" in w.statusBar().currentMessage()

@@ -94,8 +94,13 @@ class LyricsPanel(QScrollArea):
         row.addWidget(self.recognize)
         row.addWidget(self.apply_rec)
         f.addRow(row)
+        self.align_after = QCheckBox("인식한 뒤 바로 시간 정렬 (권장)")
+        self.align_after.setChecked(True)
+        self.align_after.setToolTip("인식 모델의 단어 시각만 쓰면 음절 시작이 악보보다 중앙값 0.24초 어긋났습니다"
+                                    "(한국어 실제 곡 2개). 정렬 모델로 음절마다 다시 맞추고, 아래 설정에 따라 음표와 잇습니다.")
+        f.addRow(self.align_after)
         hint = QLabel("노래 인식은 틀리기 쉽습니다(한국어 실제 곡 2개에서 글자 10~18% 틀림). 정확한 가사가 있으면 "
-                      "아래 편집기에 붙여넣고 [전체 정렬]을 쓰세요. 음절 시간은 그쪽이 더 정확합니다.")
+                      "아래 편집기에 붙여넣고 [전체 정렬]을 쓰세요.")
         hint.setWordWrap(True)
         hint.setProperty("role", "secondary")
         f.addRow(hint)
@@ -234,7 +239,7 @@ class LyricsPanel(QScrollArea):
 
     def settings(self) -> dict:
         return {"language": self.language.currentData(), "model": self.model.currentData(),
-                "link_after": self.link_after.isChecked()}
+                "link_after": self.link_after.isChecked(), "align_after": self.align_after.isChecked()}
 
     def set_settings(self, d: dict) -> None:
         for combo, key in ((self.language, "language"), (self.model, "model")):
@@ -242,6 +247,7 @@ class LyricsPanel(QScrollArea):
             if i >= 0:
                 combo.setCurrentIndex(i)
         self.link_after.setChecked(bool(d.get("link_after", True)))
+        self.align_after.setChecked(bool(d.get("align_after", True)))
 
     def set_install_status(self, text: str) -> None:
         self.install_label.setText(text)
