@@ -6,6 +6,7 @@
 
 from __future__ import annotations
 
+import math
 from typing import Any
 
 from amp.core.errors import ProjectFormatError
@@ -49,9 +50,9 @@ def tempo_from_dict(d: dict) -> TempoMap:
 
 def note_to_dict(n: Note) -> dict:
     d: dict[str, Any] = {"id": n.id, "start": n.start, "end": n.end, "pitch": n.pitch, "velocity": n.velocity}
-    if n.confidence is not None:
+    if n.confidence is not None and math.isfinite(n.confidence):  # NaN이면 JSON 저장 자체가 실패한다
         d["confidence"] = n.confidence
-    if n.vibrato is not None:
+    if n.vibrato is not None and math.isfinite(n.vibrato.rate_hz) and math.isfinite(n.vibrato.extent_cents):
         d["vibrato"] = {"rate_hz": n.vibrato.rate_hz, "extent_cents": n.vibrato.extent_cents}
     if n.syllable_id is not None:
         d["syllable_id"] = n.syllable_id

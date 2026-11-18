@@ -7,7 +7,7 @@ import pytest
 
 from amp.audio.data import AudioData
 from amp.core.errors import ProjectFormatError
-from amp.core.model import AudioRef, Project, Score
+from amp.core.model import AudioRef, Note, Project, Score
 from amp.engine.pipeline import AnalysisPipeline
 from amp.engine.registry import default_registry
 from amp.storage.project_file import load_project, save_project
@@ -107,3 +107,15 @@ def test_invalid_files(tmp_path):
                                               "notes": [{"id": "a", "start": 1, "end": 0.5, "pitch": 60}]}))
     with pytest.raises(ProjectFormatError):
         load_project(str(broken_note))
+
+
+def test_non_finite_note_values_do_not_break_saving():
+    """NaN 신뢰도·비브라토가 섞여도 JSON으로 저장된다 (값은 비움)."""
+    from amp.core.model import Vibrato
+    from amp.storage.serialization import note_from_dict, note_to_dict
+
+    d = note_to_dict(Note(id="n", start=0.0, end=1.0, pitch=60, confidence=float("nan"),
+                          vibrato=Vibrato(float("nan"), 30.0)))
+    text = json.dumps(d, allow_nan=False)
+    back = note_from_dict(json.loads(text))
+    assert back.confidence is None and back.vibrato is None and back.pitch == 60

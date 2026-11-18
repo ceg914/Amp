@@ -80,3 +80,19 @@ def test_articulation_envelope_needs_energy_dip():
     art = articulation_envelope(onset, rms, 100.0)
     assert art[200] > 8.0
     assert art[100] < 1.0
+
+
+def test_octave_reference_does_not_cross_long_gaps():
+    """실제 곡에서 발견: 쉼 뒤 높은 프레이즈의 첫 프레임이 몇 초 전 낮은 프레이즈 높이에 끌려 한 옥타브 내려갔다."""
+    m = np.full(400, np.nan)
+    m[0:200] = 67.0  # 낮은 프레이즈 2초
+    m[215:229] = 80.8  # 150ms 쉼 뒤 짧은 높은 프레이즈 (115.41초 부근과 같은 모양)
+    m[215:217] = (80.0, 80.2)  # 첫 두 프레임은 조금 낮다 → 67과의 차이가 12±1.5 안
+    m[245:400] = 67.0
+    out = clean_midi(m, 100.0)
+    assert np.all(out[215:229] > 79)
+    d = np.diff(out)
+    assert not np.any(np.isfinite(d) & (np.abs(np.abs(d) - 12) < 1))
+    spike = m.copy()
+    spike[100:110] = 79.0  # 프레이즈 안의 짧은 옥타브 오류는 여전히 고친다
+    assert np.allclose(clean_midi(spike, 100.0)[100:110], 67.0)

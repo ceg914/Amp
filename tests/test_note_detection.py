@@ -126,3 +126,14 @@ def test_notes_have_required_fields():
     m[20:150] = 69
     n = detect_notes(curve(m), None, params())[0]
     assert n.id and n.name == "A4" and n.confidence is not None and n.origin_ids == ()
+
+
+def test_confidence_finite_when_merging_across_unvoiced_gap():
+    """실제 곡에서 발견: 짧은 무성 틈을 넘어 같은 음을 합치면 신뢰도가 NaN이 되어 프로젝트 저장이 실패했다."""
+    import math
+
+    m = np.full(300, np.nan)
+    m[50:120] = 62
+    m[125:200] = 62  # 50ms 틈: 표준의 틈 잇기(40ms)보다 길고 같은 음 병합(50ms) 이내
+    notes = detect_notes(curve(m), None, params("standard"))
+    assert len(notes) == 1 and math.isfinite(notes[0].confidence) and notes[0].confidence > 0.5

@@ -119,7 +119,11 @@ def _evaluate(seg: _Seg, midi: np.ndarray, filled: np.ndarray, center: np.ndarra
     seg.pitch = int(round(seg.est)) if np.isfinite(seg.est) else 0
     v = voiced[s:e]
     conf_mean = float(conf[s:e][v].mean()) if v.any() else 0.0
-    spread = float(np.std(center[core])) if (e - trim) > (s + trim) else 0.0
+    # 같은 음 병합은 짧은 무성 틈(중심선 NaN)을 넘어 합칠 수 있으므로 NaN은 빼고 잰다.
+    # (v1은 np.std가 NaN을 내어 신뢰도가 NaN이 되었고, 실제 곡에서 프로젝트 저장이 실패했다)
+    cc = center[core]
+    cc = cc[np.isfinite(cc)]
+    spread = float(np.std(cc)) if cc.size else 0.0
     stab = float(np.clip(1.0 - spread / 0.5, 0.0, 1.0))
     seg.conf = round(conf_mean * (0.5 + 0.5 * stab) * float(np.sqrt(v.mean())), 3)
 

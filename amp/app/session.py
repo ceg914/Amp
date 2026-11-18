@@ -327,6 +327,10 @@ class ProjectSession(QObject):
             log.warning("저장 충돌: %s", ", ".join(e.changed))
             self.last_conflict = e.changed
             return False
+        except (ValueError, TypeError) as e:  # 직렬화할 수 없는 값. 원자적 쓰기라 기존 파일은 그대로다
+            log.exception("저장 중 직렬화 오류")
+            self.error.emit("저장하지 못했습니다", f"저장할 수 없는 값이 있습니다 ({e}). 기존 파일은 바뀌지 않았습니다.", "")
+            return False
         except (AmpError, OSError) as e:
             self.error.emit("저장하지 못했습니다", str(e), "")
             return False
@@ -465,8 +469,8 @@ class ProjectSession(QObject):
             path = runs.save_run(self.folder.paths.analysis, record)
             log.info("분석 실행 기록 저장: %s (음표 %d개, %s)", path.name, len(record.notes),
                      ", ".join(f"{k} {v:.2f}s" for k, v in record.timings_s.items()))
-        except (AmpError, OSError) as e:
-            log.warning("분석 실행 기록을 저장하지 못했습니다: %s", e)
+        except Exception as e:  # noqa: BLE001 - 기록 실패가 분석 결과 반영을 막으면 안 된다
+            log.exception("분석 실행 기록을 저장하지 못했습니다: %s", e)
             self.message.emit("분석 실행 기록을 저장하지 못했습니다 (분석 결과에는 영향이 없습니다).", 8000)
 
     def compare_recent_runs(self) -> tuple[Path, runs.RunComparison]:

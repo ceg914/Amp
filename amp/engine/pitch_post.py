@@ -4,7 +4,7 @@
    20ms RMS가 있으면 주변 ±250ms 최대 음량보다 30dB 넘게 낮은 프레임도 무성으로 본다.
    pYIN의 HMM은 40ms 남짓한 음절 사이 틈을 유성으로 이어 버리는데, 이 게이트가 그 틈을 끊는다.
 2. 짧은 유성 조각 제거: 40ms 미만으로 튀어나온 유성 구간은 잡음으로 본다.
-3. 옥타브 오류 보정: 주변 유성 프레임의 이동 중앙값과 약 ±12반음 차이 나는 프레임을 되돌린다.
+3. 옥타브 오류 보정: 시간상 ±175ms 안 유성 프레임의 중앙값과 약 ±12반음 차이 나는 프레임을 되돌린다.
    구간 전체가 앞뒤 구간과 한 옥타브 어긋난 경우도 구간 단위로 보정한다.
 4. 튐 제거: 5프레임 중앙값에서 1.5반음 넘게 벗어난 프레임을 중앙값으로 바꾼다.
 5. 무성 경계를 넘지 않는 3프레임 중앙값 평활.
@@ -73,7 +73,13 @@ def _fix_octaves(midi: np.ndarray, frame_rate: float) -> np.ndarray:
     idx = np.flatnonzero(voiced)
     vals = midi[idx]
     win = max(3, int(OCTAVE_WINDOW_S * frame_rate) | 1)
-    ref = median_filter(vals, size=win, mode="nearest")
+    # 기준 = 시간상 ±창/2 안의 유성 프레임 중앙값. (v1은 유성 프레임만 이어 붙인 목록에서 창을 잡아,
+    # 쉼 뒤 새 프레이즈 첫 프레임이 몇 초 전 프레이즈 높이에 끌려 옥타브가 틀어졌다 — 실제 곡에서 발견)
+    from numpy.lib.stride_tricks import sliding_window_view
+
+    half = win // 2
+    padded = np.pad(midi, half, constant_values=np.nan)
+    ref = np.nanmedian(sliding_window_view(padded, win)[idx], axis=1)  # 자기 자신이 있어 빈 창은 없다
     d = vals - ref
     k = np.round(d / 12.0)
     fix = (k != 0) & (np.abs(d - 12.0 * k) < OCTAVE_TOL)

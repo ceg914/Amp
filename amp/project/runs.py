@@ -12,6 +12,7 @@
 from __future__ import annotations
 
 import logging
+import math
 import os
 import uuid
 from dataclasses import asdict, dataclass, field
@@ -82,9 +83,10 @@ def record_from_result(result, kind: str, *, timings: dict | None = None, reused
     for n in sorted(result.notes, key=lambda n: (n.start, n.pitch)):
         notes.append({
             "start": round(float(n.start), 4), "end": round(float(n.end), 4), "pitch": int(n.pitch),
-            "confidence": None if n.confidence is None else round(float(n.confidence), 3),
+            "confidence": _finite(n.confidence, 3),
             "ornament": bool(getattr(n, "ornament", False)),
-            "vibrato": None if n.vibrato is None else {"rate_hz": n.vibrato.rate_hz, "extent_cents": n.vibrato.extent_cents},
+            "vibrato": None if n.vibrato is None else {"rate_hz": _finite(n.vibrato.rate_hz, 2),
+                                                       "extent_cents": _finite(n.vibrato.extent_cents, 1)},
         })
     models = {k: {"name": m.name, "version": m.version, "placeholder": m.placeholder, "params": dict(m.params or {})}
               for k, m in (result.models or {}).items()}
@@ -107,10 +109,28 @@ def runs_dir(analysis_dir: str | os.PathLike) -> Path:
     return Path(analysis_dir) / RUNS_DIR
 
 
+def _finite(v, digits: int):
+    if v is None:
+        return None
+    v = float(v)
+    return round(v, digits) if math.isfinite(v) else None
+
+
+def _json_safe(o):
+    """NaN·무한대는 JSON에 쓸 수 없으므로 None으로 바꾼다 (모델 파라미터 등 어디서 섞여도 기록이 실패하지 않게)."""
+    if isinstance(o, float):
+        return o if math.isfinite(o) else None
+    if isinstance(o, dict):
+        return {k: _json_safe(v) for k, v in o.items()}
+    if isinstance(o, (list, tuple)):
+        return [_json_safe(v) for v in o]
+    return o
+
+
 def save_run(analysis_dir: str | os.PathLike, record: RunRecord) -> Path:
     record.seq = max((r.seq for r in list_runs(analysis_dir)), default=0) + 1
     path = runs_dir(analysis_dir) / f"{record.run_id}.json"
-    atomic_write_json(path, record.to_dict())
+    atomic_write_json(path, _json_safe(record.to_dict()))
     return path
 
 

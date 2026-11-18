@@ -88,8 +88,10 @@ def test_truncated_and_garbage_mp3(tmp_path, caplog):
     sf.write(p, np.stack([y, y], 1), SR, format="MP3")
     data = p.read_bytes()
     p.write_bytes(data[: len(data) // 2])  # 중간에서 잘림
-    a = load_audio(str(p))  # 예외 없이 앞부분만 읽는다
+    with caplog.at_level("INFO"):
+        a = load_audio(str(p))  # 예외 없이 앞부분만 읽는다
     assert 1.0 < a.duration < 3.5
+    assert "잘렸을 수 있습니다" in caplog.text  # 길이 헤더(Info)가 있는 MP3라 잘림을 알 수 있다
     with pytest.raises(WorkerError) as e:
         run_worker("pitch", {"input": str(tmp_path / "없는.ogg"), "out_dir": str(tmp_path)})
     assert e.value.code == "decode"
@@ -190,3 +192,28 @@ def test_worker_peak_memory_is_its_own(tmp_path):
     out = run_worker("tempo", {"input": str(p), "out_dir": str(tmp_path)})
     assert 0 < out["resources"]["peak_rss_mb"] < 500
     del big
+
+
+def test_mp3_without_length_header_is_not_reported_as_truncated(tmp_path, caplog):
+    """실제 곡에서 발견: Xing·Info 헤더 없는 MP3는 libsndfile이 파일 크기로 길이를 어림해 실제보다 길게 잡는다."""
+    from amp.audio.decoder import mp3_has_length_header
+
+    y = (0.3 * np.sin(2 * np.pi * 440 * np.arange(SR * 3) / SR)).astype(np.float32)
+    src = tmp_path / "src.mp3"
+    sf.write(src, np.stack([y, y], 1), SR, format="MP3")
+    data = src.read_bytes()
+    i = data.index(b"\xff\xfb") if b"\xff\xfb" in data else data.index(b"\xff\xfa")
+    h = int.from_bytes(data[i:i + 4], "big")
+    br = [0, 32, 40, 48, 56, 64, 80, 96, 112, 128, 160, 192, 224, 256, 320][(h >> 12) & 15] * 1000
+    first = 144 * br // 44100 + ((h >> 9) & 1)
+    assert b"Info" in data[i:i + first] or b"Xing" in data[i:i + first]
+    # 길이 헤더가 든 첫 프레임을 빼고, 앞에 큰 ID3v2 태그(앨범 아트 흉내 400KB)를 붙인다
+    art = 400_000
+    size = bytes([(art >> 21) & 0x7F, (art >> 14) & 0x7F, (art >> 7) & 0x7F, art & 0x7F])
+    p = tmp_path / "길이 헤더 없음.mp3"
+    p.write_bytes(b"ID3\x03\x00\x00" + size + b"\x00" * art + data[i + first:])
+    assert not mp3_has_length_header(str(p)) and mp3_has_length_header(str(src))
+    with caplog.at_level("INFO"):
+        a = load_audio(str(p))
+    assert 2.9 < a.duration < 3.1
+    assert "잘렸을 수 있습니다" not in caplog.text

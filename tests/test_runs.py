@@ -99,3 +99,16 @@ def test_compare_runs_cli(tmp_path, capsys):
     assert list((proj / "analysis" / "reports").glob("compare-*.md"))
     assert cli.main([str(proj), "--stdout"]) == 0
     assert "B에만 있는 음표" in capsys.readouterr().out
+
+
+def test_record_with_nan_values_is_saved(tmp_path):
+    from dataclasses import replace
+
+    n = replace(note("a", 1.0, 1.5, 64), confidence=float("nan"))
+    r = result([n])
+    r = replace(r, models={**r.models, "separation": ModelInfo("htdemucs", params={"presence": {"ratio_db": float("nan")}})})
+    rec = runs.record_from_result(r, "full", timings={"total": float("inf")})
+    path = runs.save_run(tmp_path / "analysis", rec)
+    d = json.loads(path.read_text(encoding="utf-8"))
+    assert d["notes"][0]["confidence"] is None and d["timings_s"]["total"] is None
+    assert d["models"]["separation"]["params"]["presence"]["ratio_db"] is None

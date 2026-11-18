@@ -303,3 +303,17 @@ def test_save_conflict_asks_before_overwriting(qtbot, window, song, monkeypatch)
     assert not window.errors
     monkeypatch.setattr(QMessageBox, "question", answer(QMessageBox.StandardButton.Yes))
     assert window.save() is True
+
+
+def test_run_record_failure_does_not_block_analysis(qtbot, window, song, monkeypatch):
+    """실제 곡에서 발견: 실행 기록 저장이 예외를 내자 분석 결과가 반영되지 않았다."""
+    def broken(*a, **k):
+        raise ValueError("Out of range float values are not JSON compliant: nan")
+
+    monkeypatch.setattr("amp.app.session.TranscriptionPipeline", IdentityPipeline)
+    monkeypatch.setattr("amp.project.runs.save_run", broken)
+    create(qtbot, window, song)
+    window.run_analysis()
+    qtbot.waitUntil(lambda: window.doc.project.analysis is not None and not window.session.busy, timeout=120_000)
+    assert [n.pitch for n in window.doc.score.notes()] == [64, 67, 69]
+    assert window.save()
