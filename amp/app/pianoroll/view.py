@@ -44,6 +44,7 @@ class PianoRollView(QGraphicsView):
     editFailed = Signal(str)
     selectionInfoChanged = Signal(str)
     hoverInfoChanged = Signal(str)  # 마우스 위치의 음높이·시간
+    noVocalRangeRequested = Signal(float, float)  # 선택 음표 구간 (시작초, 끝초)
 
     def __init__(self, doc: ProjectDocument, timeline: TimelineState, parent=None) -> None:
         super().__init__(parent)
@@ -361,6 +362,12 @@ class PianoRollView(QGraphicsView):
             merge.triggered.connect(lambda: self._guard(lambda: self.doc.merge_notes(self.selected_ids())))
             menu.addAction(merge)
             menu.addSeparator()
+            span = self._selected_span()
+            if span is not None:
+                nv = QAction("선택 구간을 보컬 없음으로 지정", menu)
+                nv.setToolTip("이 구간에서는 음표를 만들지 않고 음표를 다시 검출합니다. 직접 고친 음표는 남습니다.")
+                nv.triggered.connect(lambda: self.noVocalRangeRequested.emit(span[0], span[1]))
+                menu.addAction(nv)
             delete = QAction("삭제", menu)
             delete.triggered.connect(lambda: self._guard(lambda: self.doc.delete_notes(self.selected_ids())))
             menu.addAction(delete)
@@ -369,6 +376,12 @@ class PianoRollView(QGraphicsView):
             add.triggered.connect(lambda: self.add_note_at(scene_pos))
             menu.addAction(add)
         menu.exec(event.globalPos())
+
+    def _selected_span(self) -> tuple[float, float] | None:
+        notes = [self.roll.items_by_id[i].note for i in self.selected_ids() if i in self.roll.items_by_id]
+        if not notes:
+            return None
+        return min(n.start for n in notes), max(n.end for n in notes)
 
     def _guard(self, fn) -> None:
         try:

@@ -2,6 +2,7 @@
 
 순서
 1. 유성 판정: f0가 있고 유성 확률이 임계 이상이며 분석 음역 안에 있는 프레임.
+   사용자가 지정한 보컬 없는 구간(no_vocal_ranges)의 프레임은 무성으로 본다(분리 결과에 섞인 반주).
    짧은 무성 틈(자음·피치 놓침)은 같은 프레이즈로 잇는다. 단, 틈 끝에 뚜렷한 재발음이 있으면
    (표준·정밀) 잇지 않는다. 음절 사이에서 잠깐 쉬고 다시 부른 것이다.
 2. 중심선: 약 비브라토 한 주기 길이의 중앙값 필터. 비브라토는 상쇄되고, 음 사이 경계는 날카롭게,
@@ -55,6 +56,17 @@ class _Seg:
     est: float = 0.0
     conf: float = 0.0
     ornament: bool = False
+
+
+def _blocked_frames(ranges, start_time: float, fr: float, n: int) -> np.ndarray:
+    """보컬 없는 구간 [시작, 끝](초)에 드는 프레임이면 True. 프레임 i의 시각은 start_time + i/fr."""
+    blocked = np.zeros(n, dtype=bool)
+    for a, b in ranges or ():
+        i0 = max(0, int(np.ceil((a - start_time) * fr - 1e-6)))
+        i1 = min(n, int(np.floor((b - start_time) * fr + 1e-6)) + 1)
+        if i1 > i0:
+            blocked[i0:i1] = True
+    return blocked
 
 
 def _fill_gaps(midi: np.ndarray, voiced: np.ndarray, bridged: np.ndarray) -> np.ndarray:
@@ -162,6 +174,8 @@ def detect_notes(curve: PitchCurve, onset: np.ndarray | None, params: NoteDetect
         return []
     voiced = np.isfinite(midi) & (conf >= params.voiced_threshold)
     voiced &= (np.nan_to_num(midi, nan=-1e9) >= params.pitch_low - 0.5) & (np.nan_to_num(midi, nan=1e9) <= params.pitch_high + 0.5)
+    blocked = _blocked_frames(params.no_vocal_ranges, curve.start_time, fr, n)
+    voiced &= ~blocked
     island = max(2, int(round(MIN_ISLAND_S * fr)))
     for a, b in voiced_runs(voiced):  # 흩어진 잡음 프레임이 틈 잇기로 이어지지 않게
         if b - a < island:
@@ -181,6 +195,7 @@ def detect_notes(curve: PitchCurve, onset: np.ndarray | None, params: NoteDetect
             if onset_ok is not None and onset_ok[max(0, a1 - GAP_ONSET_BEFORE):a1 + GAP_ONSET_AFTER].any():
                 continue  # 쉬었다가 다시 부름
             bridged[b0:a1] = True
+    bridged &= ~blocked  # 짧은 보컬 없는 구간도 틈 잇기로 건너지 않는다
     filled = _fill_gaps(midi, voiced, bridged)
 
     center = np.full(n, np.nan)
@@ -215,7 +230,8 @@ def detect_notes(curve: PitchCurve, onset: np.ndarray | None, params: NoteDetect
     detect = max(0.5, params.change_semitones - DETECT_TOLERANCE)
     segs, region_of = _absorb_short(segs, region_of, min_len, midi, filled, center, conf, voiced, orn_len, detect)
     segs, region_of = _absorb_glides(segs, region_of, fr, midi, filled, center, conf, voiced)
-    segs = _merge_same_pitch(segs, region_of, int(round(params.merge_gap_s * fr)), midi, filled, center, conf, voiced)
+    segs = _merge_same_pitch(segs, region_of, int(round(params.merge_gap_s * fr)), midi, filled, center, conf, voiced,
+                             blocked)
     if params.ornament_min_s:
         segs = _carve_ornaments(segs, params, fr, min_len, midi, filled, center, conf, voiced)
 
@@ -430,12 +446,16 @@ def _carve_ornaments(segs, params, fr, min_len, midi, filled, center, conf, voic
     return out
 
 
-def _merge_same_pitch(segs, region_of, gap_max, midi, filled, center, conf, voiced):
+def _merge_same_pitch(segs, region_of, gap_max, midi, filled, center, conf, voiced, blocked=None):
     out: list[_Seg] = []
     out_region: list[int] = []
     for g, r in zip(segs, region_of):
         if out and not g.onset_start and g.pitch == out[-1].pitch:
             prev = out[-1]
+            if blocked is not None and blocked[prev.e:g.s].any():  # 보컬 없는 구간을 넘어 합치지 않는다
+                out.append(g)
+                out_region.append(r)
+                continue
             same_region = out_region[-1] == r and prev.e == g.s
             if same_region or g.s - prev.e <= gap_max:
                 prev.e = g.e

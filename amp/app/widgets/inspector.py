@@ -116,11 +116,13 @@ class AnalysisPanel(QGroupBox):
     reseparateRequested = Signal()
     clearCacheRequested = Signal()
     probeRequested = Signal()
+    noVocalEditRequested = Signal()
     settingsChanged = Signal(object)  # AnalysisSettings
 
     def __init__(self, parent=None) -> None:
         super().__init__("분석 설정", parent)
         self._updating = False
+        self._no_vocal: tuple = ()  # 보컬 없는 구간 (프로젝트별). 패널에는 개수만 보이고 편집은 대화상자에서
         self.sensitivity = QComboBox()
         for s in SENSITIVITIES:
             self.sensitivity.addItem(SENSITIVITY_LABELS[s], s)
@@ -148,6 +150,10 @@ class AnalysisPanel(QGroupBox):
         self.cache_info = QLabel("캐시 —")
         self.cache_info.setProperty("role", "secondary")
         self.clear_cache = QPushButton("캐시 비우기")
+        self.no_vocal_info = QLabel("없음")
+        self.no_vocal_info.setProperty("role", "secondary")
+        self.no_vocal_edit = QPushButton("편집…")
+        self.no_vocal_edit.setToolTip("보컬이 없는 구간(전주·간주 등)을 지정하면 그 구간에서는 음표를 만들지 않습니다.")
         self.run = QPushButton("보컬 분석 실행")
         self.run.setProperty("primary", True)
         self.redetect = QPushButton("음표만 다시 검출")
@@ -167,6 +173,10 @@ class AnalysisPanel(QGroupBox):
         form.addRow("분석 음역", rng)
         form.addRow("보컬 분리", self.separation)
         form.addRow("처리 장치", self.device)
+        nv = QHBoxLayout()
+        nv.addWidget(self.no_vocal_info, 1)
+        nv.addWidget(self.no_vocal_edit)
+        form.addRow("보컬 없는 구간", nv)
         lay = QVBoxLayout(self)
         lay.addLayout(form)
         lay.addWidget(self.use_cache)
@@ -195,6 +205,7 @@ class AnalysisPanel(QGroupBox):
         self.reseparate.clicked.connect(self.reseparateRequested)
         self.clear_cache.clicked.connect(self.clearCacheRequested)
         self.probe.clicked.connect(self.probeRequested)
+        self.no_vocal_edit.clicked.connect(self.noVocalEditRequested)
         for combo in (self.sensitivity, self.low, self.high, self.separation, self.device):
             combo.setSizeAdjustPolicy(QComboBox.SizeAdjustPolicy.AdjustToMinimumContentsLengthWithIcon)
             combo.setMinimumContentsLength(6)
@@ -229,7 +240,7 @@ class AnalysisPanel(QGroupBox):
             sensitivity=self.sensitivity.currentData(), min_note_ms=float(self.min_note.value()),
             pitch_change_semitones=float(self.change.value()), pitch_low=int(low), pitch_high=int(high),
             device=self.device.currentData(), use_cache=self.use_cache.isChecked(),
-            separation=self.separation.currentData(),
+            separation=self.separation.currentData(), no_vocal_ranges=self._no_vocal,
         )
 
     def set_settings(self, s: AnalysisSettings) -> None:
@@ -243,8 +254,19 @@ class AnalysisPanel(QGroupBox):
             self.separation.setCurrentIndex(max(0, self.separation.findData(s.separation)))
             self.device.setCurrentIndex(max(0, self.device.findData(s.device)))
             self.use_cache.setChecked(s.use_cache)
+            self._set_no_vocal(s.no_vocal_ranges)
         finally:
             self._updating = False
+
+    def _set_no_vocal(self, ranges) -> None:
+        self._no_vocal = tuple(ranges)
+        total = sum(b - a for a, b in self._no_vocal)
+        self.no_vocal_info.setText(f"{len(self._no_vocal)}개 · 합계 {total:.1f}초" if self._no_vocal else "없음")
+
+    def set_no_vocal_ranges(self, ranges) -> None:
+        """구간을 바꾸고 settingsChanged를 보낸다."""
+        self._set_no_vocal(ranges)
+        self._emit()
 
     def set_cache_size(self, nbytes: int | None) -> None:
         self.cache_info.setText("캐시 —" if nbytes is None else f"캐시 {nbytes / 1e6:.1f} MB")

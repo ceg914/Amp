@@ -9,6 +9,7 @@
 
 from __future__ import annotations
 
+import dataclasses
 import logging
 import os
 from pathlib import Path
@@ -33,7 +34,7 @@ from PySide6.QtWidgets import (
 from amp import APP_DISPLAY_NAME, __version__
 from amp.app import theme
 from amp.app.autosave import AutosaveManager, RecoveryEntry
-from amp.app.dialogs import ExportDialog, NewProjectDialog, ReanalysisDialog
+from amp.app.dialogs import ExportDialog, NewProjectDialog, NoVocalRangesDialog, ReanalysisDialog
 from amp.app.document import ProjectDocument
 from amp.app.pianoroll.view import PianoRollView
 from amp.app.player import AudioPlayer, PlaybackState
@@ -53,7 +54,7 @@ from amp.core.errors import AmpError, EditError, ProjectFormatError
 from amp.core.model import AnalysisResult
 from amp.core.tempo import MAX_BPM, MIN_BPM, TempoMap
 from amp.engine.merge import KEEP_EDITS, REPLACE_ALL, plan_reanalysis, summarize
-from amp.engine.settings import AnalysisSettings
+from amp.engine.settings import AnalysisSettings, normalize_ranges
 from amp.project.layout import PROJECT_FILE, is_project_folder
 from amp.storage.project_file import PROJECT_EXTENSION, load_project
 
@@ -208,6 +209,7 @@ class MainWindow(QMainWindow):
         self.act_cancel_analysis = A("분석 취소", self.session.cancel_analysis, icon_name="x")
         self.act_clear_cache = A("캐시 비우기", self.clear_cache)
         self.act_compare_runs = A("최근 두 실행 비교 보고서", self.compare_recent_runs)
+        self.act_no_vocal = A("보컬 없는 구간…", self.edit_no_vocal_ranges)
         self.act_probe = A("GPU 확인", self.probe_gpu, icon_name="cpu")
         self.act_sample = A("샘플 데이터 생성 (시험용, 실제 분석 아님)", self.run_sample_analysis)
 
@@ -248,7 +250,7 @@ class MainWindow(QMainWindow):
             m.addAction(a)
         m = mb.addMenu("분석(&A)")
         for a in (self.act_analyze, self.act_redetect, self.act_reseparate, self.act_cancel_analysis, None,
-                  self.act_compare_runs, self.act_probe, self.act_clear_cache, None, self.act_sample):
+                  self.act_no_vocal, self.act_compare_runs, self.act_probe, self.act_clear_cache, None, self.act_sample):
             m.addSeparator() if a is None else m.addAction(a)
         m = mb.addMenu("내보내기(&X)")
         m.addAction(self.act_export)
@@ -420,7 +422,9 @@ class MainWindow(QMainWindow):
         a.reseparateRequested.connect(self.reseparate)
         a.clearCacheRequested.connect(self.clear_cache)
         a.probeRequested.connect(self.probe_gpu)
-        a.settingsChanged.connect(lambda s_: self.settings.setValue(SETTINGS_KEY, s_.to_dict()))
+        a.noVocalEditRequested.connect(self.edit_no_vocal_ranges)
+        a.settingsChanged.connect(self._on_analysis_settings_changed)
+        self.view.noVocalRangeRequested.connect(self.mark_no_vocal)
 
     # --- 상태 갱신 ----------------------------------------------------------------
 
@@ -454,7 +458,7 @@ class MainWindow(QMainWindow):
         self.act_play.setEnabled(has_audio)
         self.act_stop.setEnabled(has_audio)
         for a in (self.act_save, self.act_save_as, self.act_open_folder, self.act_clear_cache, self.act_export,
-                  self.act_compare_runs):
+                  self.act_compare_runs, self.act_no_vocal):
             a.setEnabled(is_open)
         self.act_relink.setEnabled(is_open and self.session.folder.meta.original.mode == "link")
         panel = self.inspector.analysis
@@ -748,8 +752,12 @@ class MainWindow(QMainWindow):
         f = self.session.folder
         self._pending_ui = dict(f.meta.ui) if f else {}
         self._pending_playback = dict(f.meta.playback) if f else {}
+        panel = self.inspector.analysis
         if f and f.meta.analysis_settings:
-            self.inspector.analysis.set_settings(AnalysisSettings.from_dict(f.meta.analysis_settings))
+            panel.set_settings(AnalysisSettings.from_dict(f.meta.analysis_settings))
+        else:  # 보컬 없는 구간은 곡마다 다르므로 이전 프로젝트 것을 가져오지 않는다
+            panel.set_settings(dataclasses.replace(panel.settings(), no_vocal_ranges=()))
+        self.view.roll.set_no_vocal_ranges(panel.settings().no_vocal_ranges)
         self._apply_ui_state(self._pending_ui)
         self._refresh_project_panel()
         self._refresh_tracks()
@@ -937,6 +945,35 @@ class MainWindow(QMainWindow):
 
     def redetect_notes(self) -> None:
         self.session.redetect(self.inspector.analysis.settings())
+
+    # --- 보컬 없는 구간 ----------------------------------------------------------
+
+    def _on_analysis_settings_changed(self, s: AnalysisSettings) -> None:
+        # 프로그램 기본 설정에는 곡마다 다른 보컬 없는 구간을 넣지 않는다 (프로젝트 저장 때 project.json에 남는다)
+        self.settings.setValue(SETTINGS_KEY, {**s.to_dict(), "no_vocal_ranges": []})
+        self.view.roll.set_no_vocal_ranges(s.no_vocal_ranges)
+
+    def _apply_no_vocal(self, ranges) -> None:
+        panel = self.inspector.analysis
+        if tuple(ranges) == panel.settings().no_vocal_ranges:
+            return
+        panel.set_no_vocal_ranges(ranges)
+        analysis = self.doc.project.analysis
+        if analysis is not None and analysis.pitch_curve is not None and not self.session.busy:
+            self.redetect_notes()  # 직접 고친 음표는 재분석 반영 규칙(수정 유지)대로 남는다
+        else:
+            self.statusBar().showMessage("보컬 없는 구간을 바꿨습니다. 다음 분석부터 적용됩니다.", 8000)
+
+    def mark_no_vocal(self, start: float, end: float) -> None:
+        current = self.inspector.analysis.settings().no_vocal_ranges
+        self._apply_no_vocal(normalize_ranges([*current, (start, end)]))
+
+    def edit_no_vocal_ranges(self) -> None:
+        audio = self.session.audio
+        dlg = NoVocalRangesDialog(self.inspector.analysis.settings().no_vocal_ranges,
+                                  audio.duration if audio is not None else 0.0, self.player.position(), self)
+        if dlg.exec() == NoVocalRangesDialog.DialogCode.Accepted:
+            self._apply_no_vocal(dlg.ranges())
 
     def run_sample_analysis(self) -> None:
         self.session.run_sample()

@@ -1,4 +1,4 @@
-"""대화상자: 새 프로젝트, 오디오 내보내기, 재분석 결과 반영."""
+"""대화상자: 새 프로젝트, 오디오 내보내기, 재분석 결과 반영, 보컬 없는 구간."""
 
 from __future__ import annotations
 
@@ -15,16 +15,22 @@ from PySide6.QtWidgets import (
     QDialogButtonBox,
     QFileDialog,
     QFormLayout,
+    QAbstractItemView,
     QHBoxLayout,
+    QHeaderView,
     QLabel,
     QLineEdit,
+    QMessageBox,
     QPushButton,
     QRadioButton,
+    QTableWidget,
+    QTableWidgetItem,
     QVBoxLayout,
 )
 
 from amp.app.widgets.track_panel import TRACK_HINTS, TRACK_LABELS
 from amp.engine.merge import KEEP_EDITS, REPLACE_ALL, ScoreSummary
+from amp.engine.settings import SettingsError, normalize_ranges
 from amp.project.export import MP3_BITRATES, WAV_SUBTYPES, ExportOptions
 from amp.project.layout import sanitize_name
 from amp.project.workspace import COPY, LINK
@@ -258,3 +264,104 @@ class ReanalysisDialog(QDialog):
     def _done(self, mode: str) -> None:
         self.mode = mode
         self.accept()
+
+
+# --- 보컬 없는 구간 ----------------------------------------------------------------
+
+def format_time(seconds: float) -> str:
+    """75.25 → '1:15.25'"""
+    seconds = max(0.0, float(seconds))
+    m = int(seconds // 60)
+    return f"{m}:{seconds - 60 * m:05.2f}"
+
+
+def parse_time(text: str) -> float:
+    """'1:15.25', '75.25', '75' → 초. 잘못되면 ValueError."""
+    t = text.strip().replace("：", ":")
+    if not t:
+        raise ValueError("시간이 비어 있습니다.")
+    if ":" in t:
+        m, sec = t.split(":", 1)
+        value = int(m) * 60 + float(sec)
+        if float(sec) >= 60:
+            raise ValueError(f"초는 60 미만이어야 합니다: {text}")
+    else:
+        value = float(t)
+    if value < 0 or value != value:
+        raise ValueError(f"올바른 시간이 아닙니다: {text}")
+    return value
+
+
+class NoVocalRangesDialog(QDialog):
+    """보컬이 없는 구간 목록 편집. 이 구간에서는 음표를 만들지 않는다."""
+
+    def __init__(self, ranges, duration: float, playhead: float = 0.0, parent=None) -> None:
+        super().__init__(parent)
+        self.setWindowTitle("보컬 없는 구간")
+        self.duration = max(0.0, float(duration))
+        self.playhead = max(0.0, float(playhead))
+        self._ranges: tuple = tuple(ranges)
+        self.table = QTableWidget(0, 2)
+        self.table.setHorizontalHeaderLabels(["시작", "끝"])
+        self.table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
+        self.table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
+        for a, b in self._ranges:
+            self._append(a, b)
+        add = QPushButton("재생 위치에 추가")
+        add.setToolTip("재생 위치부터 5초 구간을 추가합니다. 시간은 표에서 고칠 수 있습니다.")
+        remove = QPushButton("선택 삭제")
+        add.clicked.connect(self._add)
+        remove.clicked.connect(self._remove)
+        buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
+        buttons.accepted.connect(self.accept)
+        buttons.rejected.connect(self.reject)
+        row = QHBoxLayout()
+        row.addWidget(add)
+        row.addWidget(remove)
+        row.addStretch(1)
+        lay = QVBoxLayout(self)
+        lay.addWidget(_hint("전주·간주처럼 보컬이 없는데 분리 결과에 반주가 섞여 음표가 생기는 구간을 적습니다. "
+                            "이 구간에서는 음표를 만들지 않습니다. 직접 고치거나 추가한 음표는 지우지 않습니다. "
+                            "시간은 '분:초' 또는 초로 적습니다 (예: 0:28.0)."))
+        lay.addWidget(self.table)
+        lay.addLayout(row)
+        lay.addWidget(buttons)
+        self.resize(420, 360)
+
+    def _append(self, a: float, b: float) -> None:
+        r = self.table.rowCount()
+        self.table.insertRow(r)
+        self.table.setItem(r, 0, QTableWidgetItem(format_time(a)))
+        self.table.setItem(r, 1, QTableWidgetItem(format_time(b)))
+
+    def _add(self) -> None:
+        a = self.playhead
+        b = a + 5.0 if not self.duration else min(self.duration, a + 5.0)
+        if b - a < 0.1:
+            a = max(0.0, b - 5.0)
+        self._append(a, b)
+
+    def _remove(self) -> None:
+        for r in sorted({i.row() for i in self.table.selectedIndexes()}, reverse=True):
+            self.table.removeRow(r)
+
+    def parsed(self) -> tuple:
+        out = []
+        for r in range(self.table.rowCount()):
+            cells = [self.table.item(r, c) for c in (0, 1)]
+            a, b = (parse_time(c.text() if c else "") for c in cells)
+            if b <= a:
+                raise ValueError(f"{r + 1}번째 줄: 끝({format_time(b)})이 시작({format_time(a)})보다 뒤여야 합니다.")
+            out.append((a, b))
+        return normalize_ranges(out)
+
+    def accept(self) -> None:
+        try:
+            self._ranges = self.parsed()
+        except (ValueError, SettingsError) as e:
+            QMessageBox.warning(self, "보컬 없는 구간", str(e))
+            return
+        super().accept()
+
+    def ranges(self) -> tuple:
+        return self._ranges

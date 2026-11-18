@@ -32,6 +32,7 @@
 | | `amp/engine/baselines/` (신규) | v1 고정본: `notes_v1`, `pitch_post_v1`, `features_v1`, `settings_v1` |
 | | `amp/app/pianoroll/items.py` | 신뢰도 낮은 피치를 숨기지 않고 흐린 점선으로 표시 |
 | 기록·비교 | `amp/project/runs.py` (신규), `scripts/compare_runs.py` (신규) | 실행 기록, 비교 보고서 |
+| 보컬 없는 구간 | `amp/engine/settings.py`, `amp/engine/notes.py`, `amp/app/dialogs.py`, `amp/app/widgets/inspector.py`, `amp/app/pianoroll/scene.py`·`view.py`, `amp/app/main_window.py` | 사용자 청취 결과에 따라 추가 (8절 12번) |
 | | `amp/app/main_window.py` | 분석 메뉴 "최근 두 실행 비교 보고서", 저장 충돌 확인 창 |
 | 검증 도구 | `amp/devtools/` (신규: `synth.py`는 `tests/audio_synth.py`에서 이동, `evaluation.py`, `benchmark.py`, `validate.py`) | 합성 음원, 평가 지표, v1↔v2 벤치마크, 실제 음원 검증 |
 | | `scripts/validate_audio.py` (신규) | 검증 도구 실행 파일 |
@@ -484,7 +485,9 @@ python scripts/validate_audio.py "곡.mp3" --type B --device auto --ref 곡.csv
     음표는 만들어지지만, 흐린 점선 구간이 넓게 보일 수 있습니다.
 12. **분리 보컬에 반주가 섞이면 그 반주로 음표가 생깁니다.** Reminiscence Overture의 보컬 없는 전주(0:00~0:28)에서 표준 설정
     음표 36개, 05번 트랙 1:43 쉬는 마디에서 4개가 생겼습니다. htdemucs_ft로 바꿔도 36 → 29개로 조금만 줄고, 섞인 음이 보컬 음역과
-    겹치면 음역·신뢰도로도 걸러지지 않습니다. 자동으로 가려내는 기능은 없고, 피아노 롤에서 그 구간 음표를 지워야 합니다.
+    겹치면 음역·신뢰도로도 걸러지지 않습니다. 자동으로 가려내지는 못합니다. 대신 **보컬 없는 구간 지정** 기능을 넣었습니다
+    (음표 선택 → 오른쪽 클릭 → "선택 구간을 보컬 없음으로 지정", 또는 분석 > 보컬 없는 구간…). Reminiscence Overture 전체 곡에
+    0:00~0:28을 지정하면 그 구간 음표가 34개 → 0개가 되고 0:28.5 이후 음표 576개는 그대로입니다. 경계를 넘어 걸친 음표는 경계에서 잘립니다.
 
 ## 9. STEP 3 진행 가능 여부
 

@@ -317,3 +317,69 @@ def test_run_record_failure_does_not_block_analysis(qtbot, window, song, monkeyp
     qtbot.waitUntil(lambda: window.doc.project.analysis is not None and not window.session.busy, timeout=120_000)
     assert [n.pitch for n in window.doc.score.notes()] == [64, 67, 69]
     assert window.save()
+
+
+def test_no_vocal_range_removes_auto_notes_keeps_edits_and_is_saved(qtbot, make_window, song, monkeypatch):
+    """보컬 없는 구간: 지정하면 음표를 다시 검출해 그 구간의 자동 음표를 없애고, 사용자가 고친 음표는 남긴다."""
+    monkeypatch.setattr("amp.app.session.TranscriptionPipeline", IdentityPipeline)
+    monkeypatch.setattr(dialogs.ReanalysisDialog, "exec", lambda self: (setattr(self, "mode", "keep_edits"), 1)[1])
+    w = make_window("a")
+    folder = create(qtbot, w, song)
+    w.run_analysis()
+    qtbot.waitUntil(lambda: w.doc.project.analysis is not None and not w.session.busy, timeout=120_000)
+    first, second, third = w.doc.score.notes()  # 64(1.0~1.8), 67(1.9~2.7), 69(2.8~4.0)
+    w.doc.move_notes([third.id], 0.0, 1)  # 사용자가 고친 음표 (70)
+    w.mark_no_vocal(first.start - 0.05, first.end + 0.05)
+    qtbot.waitUntil(lambda: not w.session.busy, timeout=20_000)
+    qtbot.wait(50)
+    assert w.inspector.analysis.settings().no_vocal_ranges and w.view.roll.no_vocal_ranges
+    assert w.inspector.analysis.no_vocal_info.text().startswith("1개")
+    w.mark_no_vocal(2.75, 4.1)  # 사용자가 고친 음표가 있는 곳도 지정
+    qtbot.waitUntil(lambda: not w.session.busy, timeout=20_000)
+    qtbot.wait(50)
+    pitches = [n.pitch for n in w.doc.score.notes()]
+    assert 64 not in pitches and 67 in pitches and 70 in pitches  # 자동 음표만 사라지고 고친 음표는 남는다
+    assert w.doc.project.analysis.settings["no_vocal_ranges"]
+    assert w.save()
+    stored = json.loads(folder.paths.project_json.read_text(encoding="utf-8"))["analysis_settings"]["no_vocal_ranges"]
+    assert len(stored) == 2
+    assert w.settings.value("analysis/settings", {}).get("no_vocal_ranges", []) in ([], None) or \
+        not AnalysisSettings.from_dict(w.settings.value("analysis/settings") or {}).no_vocal_ranges
+    root = str(folder.root)
+    w.doc.mark_saved(w.doc.file_path or "")
+    w.close()
+    w2 = make_window("b")
+    assert w2.open_project(root)
+    qtbot.waitUntil(lambda: w2.session.audio is not None, timeout=20_000)
+    assert len(w2.inspector.analysis.settings().no_vocal_ranges) == 2 and len(w2.view.roll.no_vocal_ranges) == 2
+
+
+def test_no_vocal_ranges_do_not_carry_over_to_another_project(qtbot, window, song, tmp_path):
+    folder = create(qtbot, window, song)
+    window.inspector.analysis.set_no_vocal_ranges([(0.0, 1.0)])
+    assert window.save()
+    other = tmp_path / "다른 곡.wav"
+    import shutil
+
+    shutil.copy(song, other)
+    window.doc.mark_saved(window.doc.file_path or "")
+    create(qtbot, window, str(other))
+    qtbot.waitUntil(lambda: window.session.folder is not None and window.session.folder.root != folder.root, timeout=20_000)
+    assert window.inspector.analysis.settings().no_vocal_ranges == ()
+    assert window.view.roll.no_vocal_ranges == ()
+
+
+def test_no_vocal_dialog_parses_and_rejects_bad_rows(qtbot, monkeypatch):
+    from PySide6.QtWidgets import QTableWidgetItem
+
+    shown = []
+    monkeypatch.setattr(QMessageBox, "warning", lambda *a, **k: shown.append(a[2]))
+    dlg = dialogs.NoVocalRangesDialog([(0.0, 28.0)], duration=60.0, playhead=40.0)
+    qtbot.addWidget(dlg)
+    dlg._add()
+    assert dlg.table.rowCount() == 2 and dlg.table.item(1, 0).text() == "0:40.00"
+    dlg.accept()
+    assert dlg.ranges() == ((0.0, 28.0), (40.0, 45.0))
+    dlg.table.setItem(1, 1, QTableWidgetItem("0:39"))  # 끝이 시작보다 앞
+    dlg.accept()
+    assert shown and "끝" in shown[0]

@@ -6,6 +6,7 @@
 
 from __future__ import annotations
 
+import math
 from dataclasses import asdict, dataclass, fields, replace
 
 from amp.core.errors import AmpError
@@ -38,8 +39,42 @@ _PRESET_INTERNAL = {
 }
 
 
+MAX_NO_VOCAL_RANGES = 500
+
+
 class SettingsError(AmpError):
     pass
+
+
+def normalize_ranges(ranges, strict: bool = True) -> tuple[tuple[float, float], ...]:
+    """[(시작초, 끝초)] → 정렬하고 겹치거나 맞닿은 구간은 합친 튜플.
+
+    strict면 잘못된 구간(숫자가 아님, 음수, 끝 ≤ 시작)에서 SettingsError, 아니면 그 구간만 버린다.
+    """
+    clean = []
+    for r in ranges or ():
+        try:
+            a, b = float(r[0]), float(r[1])
+            ok = math.isfinite(a) and math.isfinite(b) and a >= 0.0 and b - a >= 0.01
+        except (TypeError, ValueError, IndexError):
+            ok = False
+        if not ok:
+            if strict:
+                raise SettingsError(f"보컬 없는 구간이 올바르지 않습니다: {r!r} (시작 < 끝, 0초 이상)")
+            continue
+        clean.append((a, b))
+    clean.sort()
+    merged: list[list[float]] = []
+    for a, b in clean:
+        if merged and a <= merged[-1][1]:
+            merged[-1][1] = max(merged[-1][1], b)
+        else:
+            merged.append([a, b])
+    if len(merged) > MAX_NO_VOCAL_RANGES:
+        if strict:
+            raise SettingsError(f"보컬 없는 구간은 {MAX_NO_VOCAL_RANGES}개까지 지정할 수 있습니다.")
+        merged = merged[:MAX_NO_VOCAL_RANGES]
+    return tuple((round(a, 3), round(b, 3)) for a, b in merged)
 
 
 @dataclass(frozen=True)
@@ -56,6 +91,7 @@ class NoteDetectionParams:
     merge_gap_s: float  # 같은 음 사이 틈이 이보다 짧으면 합친다
     pitch_low: int
     pitch_high: int
+    no_vocal_ranges: tuple = ()  # 이 구간(초)의 프레임은 무성으로 보고 음표를 만들지 않는다
 
 
 @dataclass(frozen=True)
@@ -68,8 +104,12 @@ class AnalysisSettings:
     device: str = "auto"
     use_cache: bool = True
     separation: str = "htdemucs"
+    # 보컬이 없는 구간 [(시작초, 끝초)]. 분리 결과에 반주가 섞여 생기는 잘못된 음표를 막는다.
+    # 곡마다 다르므로 프로젝트에만 저장하고 프로그램 기본 설정에는 저장하지 않는다.
+    no_vocal_ranges: tuple = ()
 
     def __post_init__(self) -> None:
+        object.__setattr__(self, "no_vocal_ranges", normalize_ranges(self.no_vocal_ranges))
         if self.sensitivity not in SENSITIVITIES:
             raise SettingsError(f"알 수 없는 민감도: {self.sensitivity}")
         if self.device not in DEVICES:
@@ -102,6 +142,7 @@ class AnalysisSettings:
             change_semitones=self.pitch_change_semitones,
             pitch_low=self.pitch_low,
             pitch_high=self.pitch_high,
+            no_vocal_ranges=self.no_vocal_ranges,
             **internal,
         )
 
@@ -114,7 +155,10 @@ class AnalysisSettings:
         if not d:
             return cls()
         names = {f.name for f in fields(cls)}
+        values = {k: v for k, v in d.items() if k in names}
+        if "no_vocal_ranges" in values:  # 잘못된 구간 하나 때문에 다른 설정까지 기본값이 되지 않게
+            values["no_vocal_ranges"] = normalize_ranges(values["no_vocal_ranges"], strict=False)
         try:
-            return cls(**{k: v for k, v in d.items() if k in names})
+            return cls(**values)
         except (SettingsError, TypeError, ValueError):
             return cls()

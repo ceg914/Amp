@@ -6,7 +6,7 @@ import math
 from contextlib import contextmanager
 
 from PySide6.QtCore import QLineF, QRectF, Qt
-from PySide6.QtGui import QColor, QPainter, QPen
+from PySide6.QtGui import QBrush, QColor, QPainter, QPen
 from PySide6.QtWidgets import QGraphicsScene
 
 from amp.app import theme
@@ -34,6 +34,7 @@ class PianoRollScene(QGraphicsScene):
         self.playhead = PlayheadItem(mapper)
         self.addItem(self.playhead)
         self._playhead_time = 0.0
+        self.no_vocal_ranges: tuple = ()  # 보컬 없는 구간 (초). 배경에 빗금 띠로 그린다
         self.setItemIndexMethod(QGraphicsScene.ItemIndexMethod.BspTreeIndex)
 
         doc.projectReset.connect(self.rebuild)
@@ -124,6 +125,10 @@ class PianoRollScene(QGraphicsScene):
             else:
                 item.set_label("–")
 
+    def set_no_vocal_ranges(self, ranges) -> None:
+        self.no_vocal_ranges = tuple(ranges)
+        self.invalidate(self.sceneRect(), QGraphicsScene.SceneLayer.BackgroundLayer)
+
     def relayout(self) -> None:
         """확대 배율이 바뀌었을 때 모든 항목 위치를 다시 계산한다."""
         for item in self.items_by_id.values():
@@ -187,6 +192,12 @@ class PianoRollScene(QGraphicsScene):
                    for p in range(p_bot, p_top + 1) if p % 12 == 0]
         if c_lines:
             painter.drawLines(c_lines)
+        for a, b in self.no_vocal_ranges:  # 보컬 없는 구간: 어둡게 + 빗금
+            x0, x1 = max(left, m.time_to_x(a)), min(right, m.time_to_x(b))
+            if x1 > x0:
+                band = QRectF(x0, rect.top(), x1 - x0, rect.height())
+                painter.fillRect(band, theme.NO_VOCAL_SHADE)
+                painter.fillRect(band, QBrush(theme.NO_VOCAL_HATCH, Qt.BrushStyle.BDiagPattern))
 
         tempo = self.doc.score.tempo
         t0 = max(0.0, m.x_to_time(left))

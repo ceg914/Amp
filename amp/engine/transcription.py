@@ -312,7 +312,8 @@ def redetect_notes(result: AnalysisResult, settings: AnalysisSettings) -> Analys
     models["notes"] = ModelInfo("segment", NOTES_VERSION, params=dataclasses.asdict(params))
     merged = dict(result.settings)
     merged.update({k: v for k, v in settings.to_dict().items()
-                   if k in ("sensitivity", "min_note_ms", "pitch_change_semitones", "pitch_low", "pitch_high")})
+                   if k in ("sensitivity", "min_note_ms", "pitch_change_semitones", "pitch_low", "pitch_high",
+                            "no_vocal_ranges")})
     warnings = tuple(w for w in result.warnings if w != OLD_FEATURES_WARNING)
     pitch_info = result.models.get("pitch")
     if pitch_info is not None and int((pitch_info.params or {}).get("features_version", 1)) < PITCH_VERSION:
