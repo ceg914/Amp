@@ -35,7 +35,7 @@ from amp.lyrics.asr import LANGUAGES, MODELS
 from amp.lyrics.model import SOURCE_LABELS, LyricsState
 
 LANG_ITEMS = list(LANGUAGES.items())
-MODEL_ITEMS = [("auto", "자동 (turbo)")] + [(k, f"{k} — {v[0]}") for k, v in MODELS.items()]
+MODEL_ITEMS = [("auto", "자동 (GPU 여유 5.5GB 이상: large-v3, 아니면 turbo)")] + [(k, f"{k} — {v[0]}") for k, v in MODELS.items()]
 FILTERS = (("unaligned", "정렬 안 된 음절"), ("unlinked", "음표 연결 없는 음절"), ("lowconf", "정렬 신뢰도 낮음"),
            ("review", "검토 필요한 줄"), ("stale", "다시 정렬 필요"))
 LOW_CONF = 0.1  # 실제 두 곡: 0.1 미만 음절의 오차율 8~9% vs 나머지 1~2% (약한 지표)

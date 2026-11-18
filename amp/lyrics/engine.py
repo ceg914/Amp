@@ -35,7 +35,7 @@ from amp.lyrics.model import (
 
 log = logging.getLogger(__name__)
 ProgressFn = Callable[[float, str], None]
-ASR_VERSION = 2  # 2: 빔 탐색 + 빈 구간 다시 듣기 (이전 캐시는 쓰지 않음)
+ASR_VERSION = 3  # 2: 빔 탐색 + 빈 구간 다시 듣기, 3: 자동 = GPU 여유가 넉넉하면 large-v3 (이전 캐시는 쓰지 않음)
 MMS_VERSION = 1
 
 

@@ -27,7 +27,7 @@ MODELS = {
     "small": ("빠름, 노래에서 빠지는 구간이 많음", 465, 2),
     "medium": ("느림 (GPU 약 3GB)", 1460, 3),
     "turbo": ("기본값 (large-v3-turbo, GPU 약 3GB)", 1550, 3),
-    "large-v3": ("가장 느림 (GPU 약 5GB, CPU로는 수십 분)", 2950, 5),
+    "large-v3": ("가장 정확, 가장 느림 (GPU 약 5GB, CPU로는 수십 분)", 2950, 5),
 }
 LANGUAGES = {"auto": "자동 감지", "ko": "한국어", "en": "영어", "ja": "일본어"}
 
@@ -38,10 +38,17 @@ class AsrError(Exception):
         self.code = code
 
 
-def resolve_model(name: str, device: str) -> str:
-    """자동이면 turbo. 개발 중 실제 노래(05번 트랙, CPU)에서 small은 CER 0.47·30초 넘는 구간 누락,
-    turbo는 CER 0.24로 차이가 커서 CPU에서도 turbo를 쓴다(276초 곡 CPU 4코어 165초)."""
+AUTO_LARGE_FREE_GB = 5.5  # 자동일 때 GPU 여유 메모리가 이만큼 있으면 large-v3
+
+
+def resolve_model(name: str, device: str, gpu_free_bytes: int | None = None) -> str:
+    """자동: GPU 여유 메모리가 넉넉하면 large-v3, 아니면 turbo (CPU도 turbo).
+
+    실제 곡 60초 구간(분리 보컬, 빔 5)에서 글자 오류율 turbo 0.088→large-v3 0.044(02번), 0.098→0.081(05번).
+    CPU에서는 large-v3가 2배 넘게 느려 turbo를 쓴다. small은 CER 0.47에 30초 넘는 구간을 빠뜨려 기본으로 쓰지 않는다."""
     if name in ("", "auto"):
+        if device == "cuda" and gpu_free_bytes is not None and gpu_free_bytes >= AUTO_LARGE_FREE_GB * 2**30:
+            return "large-v3"
         return "turbo"
     if name not in MODELS:
         raise AsrError("internal", f"알 수 없는 인식 모델입니다: {name}")
@@ -298,10 +305,10 @@ def transcribe(y16: np.ndarray, *, model_name: str, language: str, device: str, 
 
 def _transcribe(y16, report, torch, whisper, choose_device, *, model_name, language, device, download_root, options):
     actual, note = choose_device(device)
-    name = resolve_model(model_name, actual)
+    free = _gpu_free_bytes() if actual == "cuda" else None
+    name = resolve_model(model_name, actual, free)
     os.makedirs(download_root, exist_ok=True)
     if actual == "cuda":
-        free = _gpu_free_bytes()
         if free is not None and free < GPU_NEED_GB.get(name, 0) * 2**30:
             if name in HEAVY_MODELS:
                 raise _oom_model_error(name, free)

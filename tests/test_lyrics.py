@@ -577,10 +577,13 @@ def test_review_flags_likely_hallucinations_without_deleting():
     assert len(rec.segments) == 1 and rec.segments[0].review  # 빈 구간은 빼고, 의심 구간은 표시만 한다
 
 
-def test_auto_model_is_turbo():
+def test_auto_model_choice():
     from amp.lyrics.asr import resolve_model
 
     assert resolve_model("auto", "cpu") == resolve_model("auto", "cuda") == "turbo"
+    assert resolve_model("auto", "cuda", 7 * 2**30) == "large-v3"  # GPU 여유가 넉넉하면 더 정확한 모델
+    assert resolve_model("auto", "cuda", 4 * 2**30) == "turbo"
+    assert resolve_model("auto", "cpu", 64 * 2**30) == "turbo"
     assert resolve_model("small", "cpu") == "small"
 
 
@@ -644,6 +647,9 @@ def test_light_model_falls_back_to_cpu_and_says_so(monkeypatch, tmp_path):
     asr, loads = _stub_asr(monkeypatch, free_gb=1.0)
     out, msgs = _run(asr, "small", tmp_path)  # 여유 메모리가 처음부터 모자라면 GPU를 시도하지 않는다
     assert out["device"] == "cpu" and loads == [("small", "cpu")]
+    asr, loads = _stub_asr(monkeypatch, free_gb=7.0)
+    out, _msgs = _run(asr, "auto", tmp_path)  # 자동 + GPU 여유 7GB → large-v3를 GPU로
+    assert loads == [("large-v3", "cuda")] and out["model"] == "large-v3"
 
 
 def test_progress_heartbeat_repeats_last_message_with_elapsed_time():

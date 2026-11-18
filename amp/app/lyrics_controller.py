@@ -119,7 +119,7 @@ class LyricsController(QObject):
         elif st["whisper_models"]:
             parts.append("내려받은 인식 모델: " + ", ".join(st["whisper_models"]))
         else:
-            parts.append("처음 인식할 때 모델을 내려받습니다 (기본 turbo 약 1.5GB).")
+            parts.append("처음 인식할 때 모델을 내려받습니다 (turbo 약 1.5GB, GPU에서 자동으로 고르는 large-v3 약 2.9GB).")
         if not st["torch"]:
             parts.append("PyTorch가 없어 인식·정렬을 쓸 수 없습니다 (install_separation.bat).")
         parts.append("정렬 모델: " + ("내려받음" if st["mms"] else "처음 정렬할 때 약 1.2GB를 내려받습니다")
