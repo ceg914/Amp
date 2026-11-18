@@ -210,20 +210,31 @@ def _infer_ends(results: list[UnitResult], active: np.ndarray | None, dt: float,
     return out
 
 
+RELEASE_STEP = 8  # 정렬에 실패하면 양옆의 '풀 수 있는' 고정점을 이만큼씩 풀고 다시 시도
+MAX_RELEASE_ROUNDS = 4
+
+
 def align(logp: np.ndarray, units: list[Unit], *, dt: float, star: int, blank: int = 0,
           anchors: dict[int, tuple[float, float]] | None = None, active: np.ndarray | None = None,
-          ) -> tuple[list[UnitResult], list[str]]:
+          soft: set[int] | None = None) -> tuple[list[UnitResult], list[str], list[int]]:
     """units 전체를 정렬한다. anchors: units 순번 → 고정할 (시작, 끝) — 이 음절은 정렬하지 않고 경계로만 쓴다.
 
-    결과에 없는 음절은 정렬하지 못한 것이다(경고 목록에 이유).
+    soft: 풀어도 되는 고정점(모델이 정한 시간). 그 사이에 새 음절이 들어갈 자리가 없어 실패하면
+    양옆의 soft 고정점을 풀어 함께 다시 정렬한다(가사를 고친 뒤 '바뀐 부분만' 정렬할 때).
+    사용자가 고친 음절은 soft에 넣지 않으므로 풀리지 않는다.
+
+    (결과, 경고, 풀어서 함께 정렬한 순번). 결과에 없는 음절은 정렬하지 못한 것이다.
     """
-    anchors = anchors or {}
+    anchors = dict(anchors or {})
+    soft = set(soft or ()) & set(anchors)
     T = logp.shape[0]
     lp = apply_activity(logp, active, blank, star)
     results: list[UnitResult] = []
+    done: dict[int, UnitResult] = {}
+    released: list[int] = []
     warnings: list[str] = []
-    i = 0
     n = len(units)
+    i = 0
     while i < n:
         if i in anchors:
             i += 1
@@ -231,19 +242,55 @@ def align(logp: np.ndarray, units: list[Unit], *, dt: float, star: int, blank: i
         j = i
         while j < n and j not in anchors:
             j += 1
-        prev_end = anchors[i - 1][1] if i - 1 in anchors else 0.0
-        next_start = anchors[j][0] if j in anchors else None
-        f0 = max(0, int(round(prev_end / dt)))
-        f1 = min(T, int(round(next_start / dt)) if next_start is not None else T)
-        seg = units[i:j]
-        try:
-            if f1 - f0 < 2:
-                raise AlignmentFailed("고정한 음절 사이에 공간이 없습니다.")
-            results.extend(_align_window(lp, seg, f0, f1, star, blank, dt, active, next_start))
-        except AlignmentFailed as e:
-            warnings.append(f"음절 {len(seg)}개 구간을 정렬하지 못했습니다: {e}")
+        rounds = 0
+        while True:
+            if i - 1 in anchors:
+                prev_end = anchors[i - 1][1]
+            elif i - 1 in done:
+                prev_end = done[i - 1].detected_end
+            else:
+                prev_end = 0.0
+            next_start = anchors[j][0] if j in anchors else None
+            f0 = max(0, int(round(prev_end / dt)))
+            f1 = min(T, int(round(next_start / dt)) if next_start is not None else T)
+            seg = units[i:j]
+            try:
+                if f1 - f0 < 2:
+                    raise AlignmentFailed("고정한 음절 사이에 공간이 없습니다.")
+                out = _align_window(lp, seg, f0, f1, star, blank, dt, active, next_start)
+                index = {u.syllable_id: i + k for k, u in enumerate(seg)}
+                for r in out:
+                    done[index[r.syllable_id]] = r
+                results.extend(out)
+                break
+            except AlignmentFailed as e:
+                grown = False
+                if rounds < MAX_RELEASE_ROUNDS:
+                    for _ in range(RELEASE_STEP):  # 왼쪽
+                        k = i - 1
+                        if k in anchors and k in soft:
+                            del anchors[k]
+                            released.append(k)
+                            i = k
+                            grown = True
+                        else:
+                            break
+                    for _ in range(RELEASE_STEP):  # 오른쪽
+                        if j in anchors and j in soft:
+                            del anchors[j]
+                            released.append(j)
+                            j += 1
+                            while j < n and j not in anchors:
+                                j += 1
+                            grown = True
+                        else:
+                            break
+                rounds += 1
+                if not grown:
+                    warnings.append(f"음절 {len(seg)}개 구간을 정렬하지 못했습니다: {e}")
+                    break
         i = j
-    return results, warnings
+    return results, warnings, sorted(released)
 
 
 def activity_mask(rms_db: np.ndarray, floor_db: float = 35.0, dilate_frames: int = 8) -> np.ndarray:

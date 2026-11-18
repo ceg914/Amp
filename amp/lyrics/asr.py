@@ -24,9 +24,9 @@ SAMPLE_RATE = 16000
 MODELS = {
     "tiny": ("가장 빠름, 정확도 낮음", 75, 1),
     "base": ("빠름", 145, 1),
-    "small": ("CPU 기본값", 465, 2),
+    "small": ("빠름, 노래에서 빠지는 구간이 많음", 465, 2),
     "medium": ("느림, 더 정확", 1460, 5),
-    "turbo": ("GPU 기본값 (large-v3-turbo)", 1550, 6),
+    "turbo": ("기본값 (large-v3-turbo)", 1550, 6),
     "large-v3": ("가장 정확, 가장 느림", 2950, 10),
 }
 LANGUAGES = {"auto": "자동 감지", "ko": "한국어", "en": "영어", "ja": "일본어"}
@@ -39,8 +39,10 @@ class AsrError(Exception):
 
 
 def resolve_model(name: str, device: str) -> str:
+    """자동이면 turbo. 개발 중 실제 노래(05번 트랙, CPU)에서 small은 CER 0.47·30초 넘는 구간 누락,
+    turbo는 CER 0.24로 차이가 커서 CPU에서도 turbo를 쓴다(276초 곡 CPU 4코어 165초)."""
     if name in ("", "auto"):
-        return "turbo" if device == "cuda" else "small"
+        return "turbo"
     if name not in MODELS:
         raise AsrError("internal", f"알 수 없는 인식 모델입니다: {name}")
     return name

@@ -155,10 +155,13 @@ def cmd_asr(args: dict) -> dict:
     result = asr.transcribe(y_in, model_name=args.get("model", "auto"), language=args.get("language", "auto"),
                             device=args.get("device", "auto"), download_root=args["download_root"], report=_progress,
                             options=args.get("options"))
-    act = activity_mask(_frame_rms_db(y))
-    for seg in result["segments"]:
+    db = _frame_rms_db(y)
+    act = activity_mask(db, floor_db=20.0)
+    ref = float(np.percentile(db, 95)) if len(db) else 0.0
+    for seg in result["segments"]:  # 환각 검사 근거: 그 구간에 실제로 보컬이 있는가
         a, b = int(seg["start"] / 0.02), max(int(seg["start"] / 0.02) + 1, int(seg["end"] / 0.02))
-        seg["activity"] = float(np.mean(act[a:b])) if b <= len(act) and a < len(act) else 0.0
+        seg["activity"] = float(np.mean(act[a:b])) if a < len(act) else 0.0
+        seg["level_db"] = float(np.median(db[a:b]) - ref) if a < len(db) else -120.0
         seg["in_no_vocal"] = float(np.mean(blocked[a:b])) if a < len(blocked) else 0.0
     result["versions"] = _versions()
     with open(os.path.join(args["out_dir"], "asr.json"), "w", encoding="utf-8") as f:
@@ -219,12 +222,15 @@ def cmd_ctc_align(args: dict) -> dict:
     units = [ctc.Unit(u["id"], tuple(mms.LABEL_INDEX[c] for c in u.get("reading", "") if c in mms.LABEL_INDEX),
                       int(u.get("line", 0))) for u in args["units"]]
     anchors = {int(i): (float(a), float(b)) for i, a, b in args.get("anchors") or ()}
+    soft = {int(i) for i in args.get("soft_anchors") or ()}
     _progress(0.1, f"음절 {len(units)}개 정렬 중")
-    results, warnings = ctc.align(logp, units, dt=dt, star=mms.STAR, blank=mms.BLANK, anchors=anchors, active=act)
+    results, warnings, released = ctc.align(logp, units, dt=dt, star=mms.STAR, blank=mms.BLANK, anchors=anchors,
+                                            active=act, soft=soft)
     _progress(1.0, "정렬 완료")
     return {"results": [{"id": r.syllable_id, "start": r.start, "end": r.end, "confidence": r.confidence,
                          "start_source": r.start_source, "end_source": r.end_source, "detected_end": r.detected_end}
-                        for r in results], "warnings": warnings}
+                        for r in results], "warnings": warnings,
+            "released": [units[i].syllable_id for i in released]}
 
 
 def cmd_probe(args: dict) -> dict:

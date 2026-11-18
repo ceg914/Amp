@@ -30,9 +30,12 @@ LYRICS_KIND = "sonatlas.lyrics"
 ALIGNMENT_KIND = "sonatlas.alignment"
 
 
-def _num(x, nd: int = 3):
+def _num(x, nd: int | None = None):
+    """유한한 수만 쓴다(NaN·무한대 → None). 다시 열었을 때 값이 그대로이도록 기본은 반올림하지 않는다."""
     v = finite_or_none(x)
-    return None if v is None else round(v, nd)
+    if v is None:
+        return None
+    return v if nd is None else round(v, nd)
 
 
 def _clean(d: dict) -> dict:

@@ -82,10 +82,19 @@ HELP_TEXT = """<h3>조작 방법</h3>
 <li><b>Ctrl+E</b>: 재생 위치에서 선택 음표 분할, <b>Ctrl+M</b>: 선택 음표 병합</li>
 <li>Ctrl+휠: 가로 확대, Ctrl+Shift+휠: 세로 확대, Shift+휠: 가로 스크롤</li>
 </ul>
+<h3>가사 (오른쪽 '가사' 탭, 피아노 롤 아래 가사 레인)</h3>
+<ul>
+<li>가사 인식 <b>F6</b> (Whisper), 시간 정렬 <b>F7</b>, 바뀐 부분만 다시 정렬 <b>Shift+F7</b>, 가사 표시 켜기·끄기 <b>Ctrl+L</b></li>
+<li>가사 탭 편집기에서 고치고 [적용]: 바뀐 줄만 다시 나누고, 그대로인 음절의 시간·음표 연결은 남깁니다</li>
+<li>가사 레인: 음절 클릭 = 그 위치로 이동, 막대 끌기 = 시간 이동, 양 끝 끌기 = 경계 조절(맞닿은 이웃도 함께),
+더블클릭 = 그 음절부터 재생, 오른쪽 클릭 = 음표 연결·나누기·합치기·구간 반복 재생(<b>Ctrl+R</b>)</li>
+<li>막대 테두리: 실선 = 모델 검출, 점선 = 추정, 굵은 선 = 직접 지정, 주황 ↻ = 다시 정렬 필요, ! = 정렬 신뢰도 낮음</li>
+<li>음표 아래 글자: 그 음표에서 시작하는 음절('사랑' = 한 음표에 두 음절), '–'와 민트 선 = 같은 음절이 이어지는 멜리스마</li>
+</ul>
 <p>음표 구분: 꽉 찬 바이올렛 = 분석 원본 그대로, 점선 테두리 + 삼각 표식 = 수정함,
 옅은 채움 + '+' = 직접 추가, 점 테두리 = 장식음. 민트 곡선 = 실제 피치.</p>
 <h3>아직 없는 기능</h3>
-<p>가사 인식·입력·정렬, 발음 기호, MIDI·JSON 내보내기는 아직 구현하지 않았습니다.
+<p>발음 기호, 자음·모음 단위 시간, 고급 멜리스마 분석(STEP 4), MIDI·JSON 내보내기는 아직 구현하지 않았습니다.
 '샘플 데이터 생성'은 오디오 길이만 보고 고정 패턴을 만드는 시험용 기능입니다.</p>"""
 
 
@@ -1099,7 +1108,8 @@ class MainWindow(QMainWindow):
         QMessageBox.about(self, "정보", f"<b>{APP_DISPLAY_NAME}</b> {__version__}<br>"
                           "Python + PySide6 보컬 분리·자동 채보 편집기 (개발 중)<br><br>"
                           "글꼴: Pretendard, JetBrains Mono (SIL OFL 1.1) · 아이콘: Lucide (ISC)<br>"
-                          "보컬 분리: Demucs htdemucs (MIT) · 피치·BPM: librosa (ISC)")
+                          "보컬 분리: Demucs htdemucs (MIT) · 피치·BPM: librosa (ISC)<br>"
+                          "가사 인식: OpenAI Whisper (MIT) · 가사 정렬: MMS_FA 가중치 (CC-BY-NC 4.0, 비상업적 이용)")
 
     def closeEvent(self, event: QCloseEvent) -> None:  # noqa: N802
         if not self.maybe_save():

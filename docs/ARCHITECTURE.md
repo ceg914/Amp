@@ -6,14 +6,14 @@
 amp/
 ├── __main__.py                 python -m amp 진입점 (Python·패키지 검사 후 앱 실행)
 ├── core/                       데이터 모델·편집 규칙·파일 입출력 기초 (Qt 없음)
-│   ├── model.py                Note, PitchCurve, Syllable, AnalysisResult(원본), Score(작업본), Project
+│   ├── model.py                Note, PitchCurve, AnalysisResult(원본), Score(작업본), Project(+lyrics). Syllable·LyricsTrack은 STEP 1 형식 읽기용
 │   ├── tempo.py                TempoMap: 초 ↔ 박, 스냅, 격자
 │   ├── editing.py              이동·길이·분할·병합 순수 함수
 │   ├── fileio.py               원자적 쓰기(+.bak), 긴 경로, 디스크 부족·권한 오류 메시지
 │   └── errors.py               사용자 메시지를 담는 예외 계층
 ├── audio/                      디코딩, 파형 요약, PCM 변환·믹서 (Qt 없음)
 ├── engine/                     분석 엔진 (Qt 없음)
-│   ├── worker.py               분석 작업 프로세스 (separate · pitch · tempo · probe)
+│   ├── worker.py               분석 작업 프로세스 (separate · pitch · tempo · probe · asr · emissions · ctc_align)
 │   ├── worker_client.py        작업 프로세스 실행·진행률·취소·오류 코드 → 한국어 메시지
 │   ├── dsp/separation.py       Demucs htdemucs 실행, 시간 정렬, GPU→CPU 재시도
 │   ├── dsp/pitch.py            librosa pYIN (16kHz, 100fps, 30초 청크) + 온셋(32ms 창)·RMS(64ms·20ms)
@@ -27,11 +27,20 @@ amp/
 │   ├── merge.py                재분석 반영 계획 (사용자 편집 보호)
 │   ├── settings.py             분석 설정·민감도 프리셋
 │   ├── interfaces.py, pipeline.py, registry.py, backends/sample.py   STEP 1 메모리 기반 단계와 샘플 백엔드
+├── lyrics/                     가사 (STEP 3, Qt 없음)
+│   ├── model.py                LyricsText(줄·단어·음절, 고유 id) · Alignment(음절 시간·출처·연결) · Recognition(인식 원본) · LyricsState
+│   ├── text.py                 음절 분리(한글·영어 규칙·가나 박·한자·숫자), 정규화, 정렬용 로마자(uroman 호환 자모 표)
+│   ├── ops.py                  텍스트 반영(바뀐 줄만, id 유지), 줄 교체·반복, 음절 나누기·합치기, 시간 수정·검사
+│   ├── linking.py              자동 연결(1:1·1:N·N:1, 신뢰도), 순서대로 연결, 사용자 연결, 음표 변경 뒤 재연결(reconcile)
+│   ├── asr.py · review.py      Whisper 인식(작업 프로세스 안), 환각 의심 '검토 필요' 규칙
+│   ├── mms.py · ctc.py         MMS_FA wav2vec2(PyTorch로 직접 구현) · numpy CTC 강제 정렬(고정점·보컬 활동·끝 추정)
+│   ├── engine.py               인식·정렬 실행, 캐시(asr·mms), 결과 반영(사용자 수정값 보호)
+│   └── io.py                   lyrics.json · alignment.json ↔ 객체, STEP 1 형식 옮기기
 ├── project/                    프로젝트 폴더 (Qt 없음)
 │   ├── layout.py               폴더 구조, Windows 이름 규칙, 중복 이름 처리
 │   ├── schema.py               파일 종류·스키마 버전·마이그레이션
 │   ├── workspace.py            생성(복사/연결)·열기·저장·재연결·다른 이름으로 저장
-│   ├── analysis_io.py          analysis/pitch·notes·tempo.json
+│   ├── analysis_io.py          analysis/pitch·notes·tempo·lyrics·alignment.json
 │   ├── lock.py                 운영체제 파일 잠금(.sonatlas.lock) + 같은 프로세스 안 등록부
 │   ├── runs.py                 분석 실행 기록(analysis/runs/)·실행 비교 보고서(analysis/reports/)
 │   ├── export.py               WAV/MP3 내보내기
@@ -45,21 +54,23 @@ amp/
 └── app/                        PySide6 UI
     ├── main_window.py          레이아웃·메뉴·도구막대, 세션 시그널 연결
     ├── session.py              ProjectSession: 프로젝트 수명 주기·잠금·분석·내보내기 (컨트롤러)
-    ├── document.py             편집 API, QUndoStack, ApplyAnalysisCommand
+    ├── document.py             편집 API, QUndoStack, ApplyAnalysisCommand, SetLyricsCommand (음표 교체 명령이 가사 연결도 함께 되돌림)
+    ├── lyrics_controller.py    가사 탭·가사 레인·피아노 롤 강조·재생 연동·가사 메뉴
     ├── player.py               QAudioSink 재생, 트랙 믹서(솔로·음소거·음량)
     ├── workers.py              TaskRunner (QThreadPool)
     ├── autosave.py             자동 저장·비정상 종료 복구
     ├── dialogs.py              새 프로젝트, 내보내기, 재분석 반영 대화상자
     ├── theme/                  Obsidian Violet 토큰·QSS·글꼴(OFL)·아이콘(Lucide, ISC)
     ├── pianoroll/              QGraphicsView 피아노 롤
-    └── widgets/                트랙 패널, 속성·분석 설정 패널, 파형, 눈금자, 건반, 로그
+    └── widgets/                트랙 패널, 속성·분석 설정 패널, 가사 패널, 가사 레인, 파형, 눈금자, 건반, 로그
 scripts/install_separation.py   GPU에 맞는 PyTorch + demucs 설치
+scripts/install_lyrics.py       openai-whisper 설치 (PyTorch 다음)
 scripts/validate_audio.py       실제 음원 검증 보고서
 scripts/compare_runs.py         프로젝트의 분석 실행 기록 나열·비교
-run.bat, install_separation.bat Windows 실행·설치
+run.bat, install_separation.bat, install_lyrics.bat   Windows 실행·설치
 ```
 
-의존 방향: `core ← audio ← engine ← project ← app`. `app`만 Qt를 씁니다. 분석 엔진과 저장 계층은 Qt 없이 테스트됩니다.
+의존 방향: `lyrics.model ← core ← audio ← engine ← lyrics ← project ← app`. `app`만 Qt를 씁니다. 분석 엔진과 저장 계층은 Qt 없이 테스트됩니다.
 
 ## 프로세스·스레드 모델
 
@@ -123,6 +134,23 @@ run.bat, install_separation.bat Windows 실행·설치
 - `project.json`: ID·이름·생성/수정 시각·스키마 버전·원본(방식, 상대/절대 경로, SHA-256, 크기, 길이)·분리 상태·분석 상태·
   편집 상태(원본/수정/추가 개수)·분석 설정·재생 위치·트랙 상태·작업 공간(확대·스크롤·레이어·스냅·패널 크기).
 - 자동 복구 스냅샷은 STEP 1 형식(zip)으로 앱 데이터 폴더에 쓰고, 복구할 때 프로젝트 폴더를 연 뒤 내용을 덮어 변경 상태로 둡니다.
+  STEP 3부터 스냅샷에 `lyrics.json`·`alignment.json`도 담습니다.
+
+## 가사 (STEP 3)
+
+- **책임 분리**: 가사 글자의 주인은 `lyrics.json`(줄·단어·음절과 고유 id, 언어, 자동 인식 원본, 편집 이력),
+  시간과 연결의 주인은 `alignment.json`(음절 id → 시작·끝·신뢰도·시각 출처·사용자 수정·다시 정렬 필요, 연결 음표 id·연결 신뢰도·출처·확정).
+  `notes.json` v2의 음표는 가사를 모릅니다. v1의 `syllable_id`·`edits.lyrics`는 열 때 옮기고 원본은 `backup/`에 남깁니다.
+- **불변 상태 + 스냅샷 실행 취소**: `LyricsState`는 불변 객체입니다. 모든 가사 편집은 새 상태를 만들고 `SetLyricsCommand`로 바꿉니다.
+  음표 교체 명령(`ReplaceNotesCommand`·`ApplyAnalysisCommand`)은 `linking.reconcile`로 연결을 다시 이은 상태를 함께 보관해,
+  실행 취소하면 음표와 연결이 같이 돌아갑니다. 음절 텍스트·시간은 음표 편집으로 바뀌지 않습니다.
+- **시각 출처**: model(정렬 모델이 검출한 음절 시작) / asr_word(Whisper 단어 시각) / estimated(단어·줄 안을 나눈 값) /
+  inferred(음절 끝: 다음 음절 시작·보컬 끊김) / notes / user / legacy. 화면은 실선·점선·굵은 선으로 구분합니다.
+- **정렬**: 보컬 → 16kHz → MMS_FA(작업 프로세스, 결과 `emissions.npz`를 캐시) → numpy CTC 정렬(별도 작업 프로세스).
+  사용자가 고친 음절은 고정점이 되고, 고정점 사이만 다시 정렬합니다. 가사를 고친 뒤 '바뀐 부분만'은 미정렬·stale·추정 음절만 정렬합니다.
+  정렬하는 동안 사용자가 가사를 고쳤을 수 있어, 결과는 끝난 시점의 가사에 다시 반영합니다(지운 음절·직접 고친 음절은 건너뜀).
+- **인식**: Whisper(작업 프로세스). 노래는 '말소리 아님' 판정이 높게 나와 창이 통째로 빠지므로 무음 판정으로 건너뛰지 않고,
+  분리 보컬의 구간 음량·활동 비율, '보컬 없는 구간', 흔한 환각 문구, 반복으로 '검토 필요'를 표시합니다. 아무것도 지우지 않습니다.
 
 ## 재분석과 사용자 편집 보호
 
@@ -153,5 +181,7 @@ run.bat, install_separation.bat Windows 실행·설치
 | `test_project_lock.py` | STEP 2.5: 같은 프로세스 이중 열기, 다른 프로세스 차단·해제, 강제 종료 뒤 잠금 회수, 열린 채 복사한 폴더 독립 열기, 다른 컴퓨터의 잠금 파일, 이동, 해제, 임시 파일 정리 |
 | `test_stability.py` | STEP 2.5: 캐시 손상 감지·재계산, 잘못된 새 결과 미확정, 강제 종료된 작업, 디스크 부족·권한 분류, 잘린·깨진 MP3, GPU 메모리 부족 → CPU, CPU 메모리 부족, 모델 다운로드 실패, torch·demucs 없음, 실패한 분석이 프로젝트 파일을 바꾸지 않음 |
 | `test_runs.py`, `test_validate_tool.py` | STEP 2.5: 실행 기록·비교 보고서·CLI, 검증 도구(음높이 표기, 정렬 지연 측정, 정답 CSV, 끝까지 실행) |
+| `test_lyrics.py` | STEP 3 요구 1~14: 한국어·영어·일본어 음절, 수동 입력 저장(파일 분리·NaN 없음), 인식 결과 수정(id 유지·stale), 줄 교체·반복, 시간 경계 수정·검사, 1:1·1:N·N:1 연결, 음표 나누기·합치기·지우기 뒤 연결, 바뀐 부분 재정렬(사용자 값 보호·캐시), notes.json v1 마이그레이션, 복구 파일, 캐시 재사용·무효화, 취소·실패 뒤 정리, 잘못된 시각, CTC 정렬기, MMS 구조와 공개 체크포인트 대조, 환각 검토 규칙 |
+| `ui/test_lyrics_ui.py` | STEP 3 화면: 가사 레인 끌기·경계 조절·실행 취소, 클릭 이동·재생 중 음절, 음표 아래 가사(N:1·멜리스마)·음표 나누기, 선택 연동·재생 강조·표시 끄기, 인식·정렬 결과 반영(한 단계 실행 취소), TXT 인코딩, 시험용 모델로 전체 흐름 → 저장 → 다시 열기 |
 | `ui/test_main_window.py` | 프로젝트 생성·샘플 분석, 손상 파일, 저장·재열기(재생 위치·트랙 상태), 이중 열기 잠금, 분할·병합·BPM·첫 박, 비정상 종료 복구, 분석→트랙→솔로·음소거→내보내기→편집 보호, .ampproj 변환, 시간축 동기화(요구 5), 열린 프로젝트 복사본을 두 번째 창에서 열기, 실행 기록·비교 보고서, 실패한 분석 미기록, 저장 충돌 확인 |
 | 나머지 | STEP 1 회귀: 모델, 편집, 템포, 오디오·PCM·믹서, 저장 형식, 문서·실행 취소, 피아노 롤 마우스 조작, 작업 실행기, 자동 저장, 재생기, 진입점, 설치 스크립트 |

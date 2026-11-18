@@ -119,7 +119,7 @@ class LyricsController(QObject):
         elif st["whisper_models"]:
             parts.append("내려받은 인식 모델: " + ", ".join(st["whisper_models"]))
         else:
-            parts.append("처음 인식할 때 모델을 내려받습니다 (small 약 465MB, turbo 약 1.5GB).")
+            parts.append("처음 인식할 때 모델을 내려받습니다 (기본 turbo 약 1.5GB).")
         if not st["torch"]:
             parts.append("PyTorch가 없어 인식·정렬을 쓸 수 없습니다 (install_separation.bat).")
         parts.append("정렬 모델: " + ("내려받음" if st["mms"] else "처음 정렬할 때 약 1.2GB를 내려받습니다")
@@ -318,7 +318,7 @@ class LyricsController(QObject):
         if self.panel.link_after.isChecked() and len(self.doc.score) and aligned:
             new = linking.auto_link(new, self.doc.score.notes(), only=aligned)
         self.doc.push_lyrics(new, "가사 시간 정렬")
-        low = sum(1 for sid in aligned if (new.alignment.timing(sid).confidence or 0) < 0.25)
+        low = sum(1 for sid in aligned if (new.alignment.timing(sid).confidence or 0) < 0.1)
         msg = f"정렬 {len(aligned)}음절 · 실패 {len(failed)}음절 · 신뢰도 낮음 {low}음절 · 장치 {out.info.get('device', '').upper()}"
         if out.reused:
             msg += " · 정렬 모델 출력 재사용"

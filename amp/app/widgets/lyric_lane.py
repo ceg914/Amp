@@ -33,7 +33,7 @@ from amp.lyrics.ops import MIN_SYLLABLE_S
 EDGE_PX = 5.0
 SNAP_PX = 6.0
 TOUCH_S = 0.015  # 이웃 음절과 이만큼 가까우면 맞닿은 것으로 본다
-LOW_CONF = 0.25
+LOW_CONF = 0.1  # 실제 두 곡: 0.1 미만 음절의 오차율 8~9% vs 나머지 1~2% (약한 지표)
 
 
 class _Drag(Enum):

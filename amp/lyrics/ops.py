@@ -78,6 +78,41 @@ def _estimate_block(times: list[tuple[float, float]], n: int) -> list[tuple[floa
     return [(a + i * step, a + (i + 1) * step) for i in range(n)]
 
 
+MAX_EDIT_CELLS = 400_000
+
+
+def _edit_pairs(old: list[str], new: list[str]) -> list[tuple[int, int]] | None:
+    """길이가 다른 바뀐 덩어리에서 편집 거리로 (이전 위치, 새 위치) 짝을 찾는다. 너무 크면 None.
+
+    끝에서 거꾸로 따라가며 지우기·넣기를 먼저 고르므로, 바꿔 쓴 글자는 덩어리 앞쪽에 짝지어진다
+    ('너를' + 지운 줄 → '너만': 를 → 만).
+    """
+    n, m = len(old), len(new)
+    if n * m > MAX_EDIT_CELLS:
+        return None
+    d = [[0] * (m + 1) for _ in range(n + 1)]
+    for i in range(n + 1):
+        d[i][0] = i
+    for j in range(m + 1):
+        d[0][j] = j
+    for i in range(1, n + 1):
+        oi = old[i - 1]
+        row, prev = d[i], d[i - 1]
+        for j in range(1, m + 1):
+            row[j] = min(prev[j] + 1, row[j - 1] + 1, prev[j - 1] + (oi != new[j - 1]))
+    pairs = []
+    i, j = n, m
+    while i > 0 and j > 0:
+        if d[i][j] == d[i - 1][j] + 1:
+            i -= 1
+        elif d[i][j] == d[i][j - 1] + 1:
+            j -= 1
+        else:
+            pairs.append((i - 1, j - 1))
+            i, j = i - 1, j - 1
+    return pairs[::-1]
+
+
 def apply_text(state: LyricsState, text: str, *, origin: str = "manual", language: str | None = None,
                action: str = "가사 수정") -> LyricsState:
     old_text = state.text
@@ -110,6 +145,12 @@ def apply_text(state: LyricsState, text: str, *, origin: str = "manual", languag
                 for a, b in zip(range(a1, a2), range(b1, b2)):  # 같은 자리 글자 수정: 시간은 남기고 다시 정렬 표시
                     carry_flat[b] = old_syls[a].id
                     stale.add(old_syls[a].id)
+            elif op2 == "replace" and (pairs := _edit_pairs([s.text for s in old_syls[a1:a2]],
+                                                            [t.text for _, t in new_tokens[b1:b2]])):
+                for a, b in pairs:  # 길이가 달라도 자리가 맞는 음절은 잇는다 (글자가 다르면 다시 정렬 표시)
+                    carry_flat[b1 + b] = old_syls[a1 + a].id
+                    if old_syls[a1 + a].text != new_tokens[b1 + b][1].text:
+                        stale.add(old_syls[a1 + a].id)
             elif op2 in ("replace", "insert"):
                 times = [(al.timing(s.id).start, al.timing(s.id).end) for s in old_syls[a1:a2] if al.timing(s.id).aligned]
                 slots = list(range(b1, b2))

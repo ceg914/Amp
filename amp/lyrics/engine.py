@@ -151,11 +151,11 @@ class LyricsEngine:
               token: CancelToken | None = None) -> AlignOutput:
         progress = progress or (lambda f, m: None)
         token = token or CancelToken()
-        units, anchors, targets = plan_units(state, mode, ids)
+        units, anchors, targets, soft = plan_units(state, mode, ids, with_soft=True)
         if not targets:
             return AlignOutput(state, warnings=["다시 정렬할 음절이 없습니다."])
         em, info, reused = self.emissions(req, lambda f, m: progress(0.9 * f, m), token)
-        out = self._call("ctc_align", {"emissions": str(em), "units": units, "anchors": anchors,
+        out = self._call("ctc_align", {"emissions": str(em), "units": units, "anchors": anchors, "soft_anchors": soft,
                                        "no_vocal_ranges": [list(r) for r in req.no_vocal_ranges]},
                          lambda f, m: progress(0.9 + 0.1 * f, m), token, req)
         model = {"name": info.get("model", "MMS_FA"), "license": info.get("license", ""),
@@ -163,6 +163,10 @@ class LyricsEngine:
                  "emissions_reused": reused}
         settings = {"mode": mode, "no_vocal_ranges": [list(r) for r in req.no_vocal_ranges]}
         results = out.get("results") or []
+        released = set(out.get("released") or ())
+        if released:  # 자리가 없어 함께 다시 정렬한 이웃 음절 (사용자가 고친 음절은 풀지 않는다)
+            targets = targets | released
+            settings["released"] = len(released)
         new, aligned, failed = apply_results(state, results, targets, model, settings, duration)
         warnings = list(out.get("warnings") or [])
         if info.get("note"):
@@ -183,7 +187,8 @@ def recognition_from_raw(raw: dict, req: LyricsRequest | None = None, params: di
         reasons = review.review_segment(text, float(s["start"]), float(s["end"]), avg_logprob=s.get("avg_logprob"),
                                         no_speech_prob=s.get("no_speech_prob"),
                                         compression_ratio=s.get("compression_ratio"), activity=s.get("activity"),
-                                        in_no_vocal=float(s.get("in_no_vocal", 0.0)), words=words)
+                                        in_no_vocal=float(s.get("in_no_vocal", 0.0)), words=words,
+                                        level_db=s.get("level_db"))
         segs.append(AsrSegment(f"seg{i}", float(s["start"]), float(s["end"]), text, s.get("avg_logprob"),
                                s.get("no_speech_prob"), s.get("compression_ratio"), tuple(reasons), words))
     segs = review.mark_repeats(segs)
@@ -259,8 +264,8 @@ def _word_timings(line: LyricLine, seg: AsrSegment) -> dict[str, SyllableTiming]
     return out
 
 
-def plan_units(state: LyricsState, mode: str, ids: Iterable[str] | None = None):
-    """정렬 입력: (units, anchors, 결과를 받을 음절 id 집합).
+def plan_units(state: LyricsState, mode: str, ids: Iterable[str] | None = None, with_soft: bool = False):
+    """정렬 입력: (units, anchors, 결과를 받을 음절 id 집합[, 풀어도 되는 고정점 순번]).
 
     all      : 사용자가 고친 시간만 고정하고 나머지를 모두 다시 정렬
     changed  : 시간이 없거나(미정렬), 텍스트가 바뀌었거나(stale), 추정값인 음절만 정렬. 나머지는 고정점
@@ -268,7 +273,7 @@ def plan_units(state: LyricsState, mode: str, ids: Iterable[str] | None = None):
     """
     al = state.alignment
     chosen = set(ids or ())
-    units, anchors, targets = [], [], set()
+    units, anchors, targets, soft = [], [], set(), []
     for i, s in enumerate(state.text.syllables):
         t = al.timing(s.id)
         if mode == "all":
@@ -282,10 +287,12 @@ def plan_units(state: LyricsState, mode: str, ids: Iterable[str] | None = None):
         units.append({"id": s.id, "reading": s.reading, "line": state.text.index[s.id][0]})
         if fixed:
             anchors.append([i, t.start, t.end])
+            if mode == "changed" and not t.user_edited:
+                soft.append(i)
         elif mode != "selected" or s.id in chosen or not t.aligned:
             if not (t.user_edited and t.aligned and not t.stale):
                 targets.add(s.id)
-    return units, anchors, targets
+    return (units, anchors, targets, soft) if with_soft else (units, anchors, targets)
 
 
 def apply_results(state: LyricsState, results: list[dict], targets: set[str], model: dict, settings: dict,

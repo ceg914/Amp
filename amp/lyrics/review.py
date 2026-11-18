@@ -14,6 +14,9 @@ LOW_LOGPROB = -1.0
 HIGH_NO_SPEECH = 0.6
 HIGH_COMPRESSION = 2.4
 LOW_ACTIVITY = 0.25  # 구간 안에서 보컬이 들리는 프레임 비율이 이보다 낮으면
+# 구간 보컬 음량(중앙값)이 곡 전체 보컬 상위 5%보다 이만큼 이상 작으면. 개발 중 실제 두 곡에서 가사 구간은
+# −2~−10dB, 환각 구간('감사합니다', '아멘')은 −30~−43dB였다
+LOW_LEVEL_DB = -20.0
 LOW_WORD_PROB = 0.3
 MAX_SYL_PER_S = 12.0
 
@@ -33,6 +36,9 @@ R_NO_VOCAL_RANGE = "'보컬 없는 구간'으로 지정한 곳과 겹침"
 R_PHRASE = "노래와 상관없이 자주 생기는 문구 (환각 의심)"
 R_REPEATED_LINE = "같은 문장이 연달아 3번 이상 나옴"
 R_RATE = "음절 속도가 비정상적임"
+# 구간 전체가 이것뿐이면 의심한다 (노래 끝·전주에서 자주 생김)
+STANDALONE_PHRASES = ("감사합니다", "고맙습니다", "아멘", "thank you", "thanks", "bye", "ありがとうございました",
+                      "おやすみなさい", "you")
 
 
 def _norm(s: str) -> str:
@@ -47,7 +53,7 @@ def _syllable_count(text: str) -> int:
 
 def review_segment(text: str, start: float, end: float, *, avg_logprob=None, no_speech_prob=None,
                    compression_ratio=None, activity: float | None = None, in_no_vocal: float = 0.0,
-                   words: tuple[AsrWord, ...] = ()) -> list[str]:
+                   words: tuple[AsrWord, ...] = (), level_db: float | None = None) -> list[str]:
     reasons: list[str] = []
     if avg_logprob is not None and avg_logprob < LOW_LOGPROB:
         reasons.append(R_LOW_CONF)
@@ -56,12 +62,12 @@ def review_segment(text: str, start: float, end: float, *, avg_logprob=None, no_
         reasons.append(R_NO_SPEECH)
     if compression_ratio is not None and compression_ratio > HIGH_COMPRESSION:
         reasons.append(R_REPETITIVE)
-    if activity is not None and activity < LOW_ACTIVITY:
+    if (activity is not None and activity < LOW_ACTIVITY) or (level_db is not None and level_db < LOW_LEVEL_DB):
         reasons.append(R_NO_VOCAL)
     if in_no_vocal > 0.5:
         reasons.append(R_NO_VOCAL_RANGE)
     n = _norm(text)
-    if n and any(_norm(p) in n for p in HALLUCINATION_PHRASES):
+    if n and (any(_norm(p) in n for p in HALLUCINATION_PHRASES) or n in {_norm(p) for p in STANDALONE_PHRASES}):
         reasons.append(R_PHRASE)
     dur = max(end - start, 1e-3)
     syl = _syllable_count(text)
