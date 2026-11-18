@@ -9,8 +9,10 @@
         │   └── stems.json          분리 결과 목록·검증 정보
         ├── analysis/               분석 결과 (정식 결과 + 사용자 편집)
         │   ├── pitch.json
-        │   ├── notes.json
-        │   └── tempo.json
+        │   ├── notes.json           음표 (자동 분석 원본 + 사용자 편집본). 가사를 모른다
+        │   ├── tempo.json
+        │   ├── lyrics.json          가사 텍스트·언어·자동 인식 원본 (STEP 3)
+        │   └── alignment.json       음절 시간·음절↔음표 연결 (STEP 3)
         ├── cache/                  다시 만들 수 있는 중간 결과 (지워도 안전)
         ├── exports/                사용자가 내보낸 파일
         ├── backup/                 마이그레이션 전 백업
@@ -65,6 +67,14 @@ class ProjectPaths:
     @property
     def tempo_json(self) -> Path:
         return self.analysis / "tempo.json"
+
+    @property
+    def lyrics_json(self) -> Path:
+        return self.analysis / "lyrics.json"
+
+    @property
+    def alignment_json(self) -> Path:
+        return self.analysis / "alignment.json"
 
     @property
     def cache(self) -> Path:

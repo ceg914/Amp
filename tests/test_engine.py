@@ -29,12 +29,13 @@ def test_sample_pipeline_end_to_end(mix):
     assert set(result.models) == {k.value for k in StageKind}
     assert len(result.pitch_curve) == 3000
     # 모든 음표가 음절에 연결되고, 일부 음절은 여러 음표(멜리스마)를 가진다
-    counts = Counter(n.syllable_id for n in result.notes)
+    links = dict(result.lyric_links)  # 음표 id → 음절 id (샘플 분석기 출력)
+    counts = Counter(links.get(n.id) for n in result.notes)
     assert None not in counts
     assert max(counts.values()) >= 2
     syl = {s.id: s for s in result.lyrics.syllables}
     for sid, cnt in counts.items():
-        linked = [n for n in result.notes if n.syllable_id == sid]
+        linked = [n for n in result.notes if links.get(n.id) == sid]
         assert syl[sid].start == min(n.start for n in linked)
 
 
@@ -58,7 +59,7 @@ def test_plan_is_deterministic():
 def test_skip_lyrics(mix):
     result = AnalysisPipeline(default_registry(), PipelineConfig(lyrics=None, aligner=None)).run(mix)
     assert result.lyrics is None
-    assert all(n.syllable_id is None for n in result.notes)
+    assert result.lyric_links == ()
 
 
 def test_cancel(mix):

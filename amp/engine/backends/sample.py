@@ -222,22 +222,20 @@ class SampleLyricsAligner(LyricsAligner):
             groups = [p.group for p in plan.notes]
         else:  # 계획과 다르면 음표 하나에 음절 하나씩
             groups = list(range(len(ordered)))
-        linked: list[Note] = []
+        links: list[tuple[str, str]] = []
         spans: dict[int, list[float]] = {}
         for note, g in zip(ordered, groups):
             if g < len(syls):
-                linked.append(note.with_(syllable_id=syls[g].id))
+                links.append((note.id, syls[g].id))
                 span = spans.setdefault(g, [note.start, note.end])
                 span[0] = min(span[0], note.start)
                 span[1] = max(span[1], note.end)
-            else:
-                linked.append(note)
         timed = tuple(
             Syllable(s.id, s.text, s.phonetic, s.line, *(spans.get(g) or (None, None)))
             for g, s in enumerate(syls)
         )
         ctx.progress(1.0, "샘플 가사 정렬 완료")
-        return AlignmentResult(LyricsTrack(lyrics.language, timed), tuple(linked))
+        return AlignmentResult(LyricsTrack(lyrics.language, timed), tuple(ordered), tuple(links))
 
 
 def register(registry) -> None:

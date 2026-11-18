@@ -84,13 +84,14 @@ class AnalysisPipeline:
             )
 
             lyrics: LyricsTrack | None = None
+            links: tuple[tuple[str, str], ...] = ()
             if cfg.lyrics:
                 lyrics = build(StageKind.LYRICS, cfg.lyrics).recognize(stems.vocals, ctx_for(StageKind.LYRICS))
                 if cfg.aligner:
                     aligned = build(StageKind.ALIGNER, cfg.aligner).align(
                         lyrics, notes, pitch, stems.vocals, ctx_for(StageKind.ALIGNER)
                     )
-                    lyrics, notes = aligned.lyrics, list(aligned.notes)
+                    lyrics, notes, links = aligned.lyrics, list(aligned.notes), aligned.links
             token.raise_if_cancelled()
         except (AnalysisCancelled, AnalysisError):
             raise
@@ -107,6 +108,7 @@ class AnalysisPipeline:
             notes=tuple(sorted(notes, key=lambda n: (n.start, n.pitch))),
             pitch_curve=pitch,
             lyrics=lyrics,
+            lyric_links=links,
             models=models,
             created_at=datetime.now(timezone.utc).isoformat(timespec="seconds"),
             audio_fingerprint=audio_fingerprint,

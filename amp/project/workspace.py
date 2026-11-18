@@ -26,7 +26,7 @@ from amp.engine import stems as stem_store
 from amp.engine.cache import AnalysisCache
 from amp.engine.merge import summarize
 from amp.project import schema
-from amp.project.analysis_io import LoadReport, load_analysis_files, save_analysis_files
+from amp.project.analysis_io import LoadReport, load_analysis_files, load_lyrics_files, save_analysis_files
 from amp.project.layout import BACKUP_DIR, CACHE_DIR, LOCK_FILE, ProjectPaths, unique_folder
 from amp.project.lock import OWNER_FILE
 
@@ -256,7 +256,8 @@ class ProjectFolder:
     def _disk_state(self) -> dict[str, tuple[int, int]]:
         """저장 충돌 확인용: 프로젝트 파일들의 (크기, 수정 시각 ns)."""
         out = {}
-        for p in (self.paths.project_json, self.paths.notes_json, self.paths.tempo_json, self.paths.pitch_json):
+        for p in (self.paths.project_json, self.paths.notes_json, self.paths.tempo_json, self.paths.pitch_json,
+                  self.paths.lyrics_json, self.paths.alignment_json):
             try:
                 st = p.stat()
                 out[p.name] = (st.st_size, st.st_mtime_ns)
@@ -301,6 +302,12 @@ class ProjectFolder:
         self.meta.edit_state = {"has_user_edits": s.has_edits, "notes_total": len(project.score),
                                 "original": s.original, "modified": s.modified, "user_added": s.user,
                                 "tempo_edited": s.tempo_edited, "saved": now_iso()}
+        ly = project.lyrics
+        if not ly.is_empty:
+            n = len(ly.text.syllables)
+            self.meta.edit_state["lyrics"] = {"lines": len(ly.text.lines), "syllables": n,
+                                              "aligned": n - len(ly.unaligned()), "linked": n - len(ly.unlinked()),
+                                              "recognized": ly.recognition is not None}
         a = project.analysis
         if a is None:
             self.meta.analysis = {"status": "none"}
@@ -327,9 +334,16 @@ class ProjectFolder:
     def load_project(self) -> tuple[Project, LoadReport]:
         report = LoadReport()
         analysis, score = load_analysis_files(self.paths, report)
+        if "notes.json" in report.migrated and self.paths.notes_json.exists():
+            try:  # 다음 저장이 새 형식으로 덮어쓰기 전에 원본을 남긴다
+                backup_file(self, self.paths.notes_json, "before-step3")
+            except OSError as e:
+                report.warnings.append(f"마이그레이션 전 notes.json 백업을 만들지 못했습니다: {e}")
+        duration = analysis.duration if analysis is not None else (self.meta.original.duration or None)
+        lyrics = load_lyrics_files(self.paths, report, [n.id for n in score.notes()], duration)
         self._analysis_written = analysis
         self._known_state = self._disk_state()
-        return Project(audio=self.audio_ref(), analysis=analysis, score=score), report
+        return Project(audio=self.audio_ref(), analysis=analysis, score=score, lyrics=lyrics), report
 
 
 def _relpath(target: Path, start: Path) -> str | None:

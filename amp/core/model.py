@@ -6,8 +6,8 @@
 - 작업본의 음표는 ``origin_ids`` 로 어떤 원본 음표에서 왔는지 기록한다.
   분할하면 두 조각이 같은 출처를 물려받고, 병합하면 출처를 합친다.
   사용자가 새로 그린 음표는 출처가 비어 있다.
-- 가사와 음표의 연결은 음표 쪽 ``syllable_id`` 로 표현한다.
-  한 음절에 음표가 여러 개 연결되면 멜리스마다.
+- 가사(텍스트·음절 시간·음절↔음표 연결)는 ``Project.lyrics`` (``amp.lyrics``)가 따로 가진다.
+  음표는 가사를 모르며, 연결은 alignment 쪽 한 곳에만 있다 (STEP 3에서 음표의 ``syllable_id`` 를 옮김).
 """
 
 from __future__ import annotations
@@ -22,6 +22,7 @@ import numpy as np
 from amp.core.errors import EditError
 from amp.core.pitch import MIDI_MAX, MIDI_MIN, hz_to_midi, note_name
 from amp.core.tempo import TempoMap
+from amp.lyrics.model import LyricsState
 
 DEFAULT_BPM = 120.0
 
@@ -43,7 +44,6 @@ class Note:
     velocity: int = 100
     confidence: float | None = None  # 분석기가 준 신뢰도 0~1
     vibrato: Vibrato | None = None
-    syllable_id: str | None = None
     origin_ids: tuple[str, ...] = ()
     ornament: bool = False  # 최소 길이보다 짧지만 신뢰도가 높아 남긴 장식음
 
@@ -127,6 +127,8 @@ class PitchCurve:
 
 @dataclass(frozen=True)
 class Syllable:
+    """STEP 1 형식의 음절 (샘플 분석기 출력·이전 파일 읽기 전용). 편집용 가사는 ``amp.lyrics`` 를 쓴다."""
+
     id: str
     text: str
     phonetic: str | None = None  # 발음 기호(IPA 또는 로마자 표기)
@@ -171,6 +173,8 @@ class AnalysisResult:
     tempo_info: dict = field(default_factory=dict)  # 알고리즘, 후보(2배·절반), 신뢰 여부, 첫 박
     warnings: tuple[str, ...] = ()
     settings: dict = field(default_factory=dict)  # 분석에 쓴 AnalysisSettings
+    # 샘플 분석기가 만든 (음표 id, 음절 id) 연결. 반영할 때 프로젝트 가사로 옮기고 파일에는 쓰지 않는다
+    lyric_links: tuple[tuple[str, str], ...] = field(default=(), compare=False)
 
     @property
     def tempo_candidates(self) -> tuple[float, ...]:
@@ -196,10 +200,8 @@ class Score:
         self,
         tempo: TempoMap | None = None,
         notes: Iterable[Note] = (),
-        lyrics: LyricsTrack | None = None,
     ) -> None:
         self.tempo = tempo or TempoMap.constant(DEFAULT_BPM)
-        self.lyrics = lyrics or LyricsTrack()
         self._notes: dict[str, Note] = {}
         for n in notes:
             if n.id in self._notes:
@@ -209,7 +211,7 @@ class Score:
     @classmethod
     def from_analysis(cls, result: AnalysisResult) -> "Score":
         notes = [n.with_(origin_ids=(n.id,)) for n in result.notes]
-        return cls(result.tempo, notes, result.lyrics or LyricsTrack())
+        return cls(result.tempo, notes)
 
     def __len__(self) -> int:
         return len(self._notes)
@@ -250,7 +252,7 @@ class Score:
         return max((n.end for n in self._notes.values()), default=0.0)
 
     def copy(self) -> "Score":
-        return Score(self.tempo, self._notes.values(), self.lyrics)
+        return Score(self.tempo, self._notes.values())
 
 
 @dataclass(frozen=True)
@@ -269,6 +271,7 @@ class Project:
     audio: AudioRef | None = None
     analysis: AnalysisResult | None = None
     score: Score = field(default_factory=Score)
+    lyrics: LyricsState = field(default_factory=LyricsState)
 
     def note_status(self, note: Note) -> str:
         """'original'(원본 그대로), 'modified'(수정됨), 'user'(사용자 추가) 중 하나."""

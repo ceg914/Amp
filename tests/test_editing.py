@@ -23,11 +23,11 @@ def test_resize_keeps_min_duration():
     assert out[0].start == 0.0
 
 
-def test_split_inherits_syllable_and_origin():
-    n = note("a", 0.0, 1.0, syllable_id="s1", origin_ids=("o1",))
+def test_split_inherits_origin():
+    # 가사 연결은 음표가 아니라 가사 쪽(alignment)에 있다 — tests/test_lyrics.py에서 나누기 뒤 연결을 확인한다
+    n = note("a", 0.0, 1.0, origin_ids=("o1",))
     left, right = editing.split_note(n, 0.4, ids=("l", "r"))
     assert (left.end, right.start) == (0.4, 0.4)
-    assert left.syllable_id == right.syllable_id == "s1"
     assert left.origin_ids == right.origin_ids == ("o1",)
     with pytest.raises(EditError):
         editing.split_note(n, 0.01)
@@ -36,12 +36,11 @@ def test_split_inherits_syllable_and_origin():
 
 
 def test_merge_rules():
-    a = note("a", 0.0, 0.3, 60, syllable_id=None, origin_ids=("o1",), confidence=0.9)
-    b = note("b", 0.3, 1.0, 62, syllable_id="s2", origin_ids=("o2",), confidence=0.5)
+    a = note("a", 0.0, 0.3, 60, origin_ids=("o1",), confidence=0.9)
+    b = note("b", 0.3, 1.0, 62, origin_ids=("o2",), confidence=0.5)
     m = editing.merge_notes([b, a], note_id="m")
     assert (m.start, m.end) == (0.0, 1.0)
     assert m.pitch == 62  # 더 길게 유지된 음
-    assert m.syllable_id == "s2"
     assert m.origin_ids == ("o1", "o2")
     assert m.confidence == 0.5
     with pytest.raises(EditError):

@@ -19,7 +19,11 @@ def analysed_project(tmp_path):
     audio_path = tmp_path / "song.wav"
     audio_path.write_bytes(b"x")
     result = AnalysisPipeline(default_registry()).run(AudioData(np.zeros((22050 * 20, 1), np.float32), 22050))
-    return Project(AudioRef(str(audio_path), "fp", 20.0, 22050, 1), result, Score.from_analysis(result))
+    from amp.lyrics.io import from_legacy
+    from amp.storage.serialization import lyrics_to_dict
+
+    lyrics = from_legacy(lyrics_to_dict(result.lyrics), dict(result.lyric_links))  # 샘플 가사를 프로젝트 가사로
+    return Project(AudioRef(str(audio_path), "fp", 20.0, 22050, 1), result, Score.from_analysis(result), lyrics)
 
 
 def test_roundtrip_keeps_original_and_edits_separate(tmp_path, analysed_project):
@@ -33,7 +37,8 @@ def test_roundtrip_keeps_original_and_edits_separate(tmp_path, analysed_project)
     loaded = load_project(path)
     assert loaded.analysis.notes == p.analysis.notes
     assert loaded.analysis.pitch_curve == p.analysis.pitch_curve
-    assert loaded.analysis.lyrics == p.analysis.lyrics
+    assert loaded.lyrics == p.lyrics  # 가사는 분석 원본이 아니라 프로젝트 가사(lyrics.json)에 있다
+    assert len(loaded.lyrics.text.syllables) > 0 and loaded.lyrics.alignment.links
     assert loaded.analysis.models == p.analysis.models
     assert loaded.score.notes() == p.score.notes()
     assert loaded.score.tempo == p.score.tempo

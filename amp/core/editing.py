@@ -67,8 +67,8 @@ def resize_notes(notes: Sequence[Note], edge: str, delta: float) -> list[Note]:
 def split_note(note: Note, at: float, *, ids: tuple[str, str] | None = None) -> tuple[Note, Note]:
     """``at`` 시점에서 음표를 둘로 나눈다.
 
-    두 조각은 같은 음절(syllable_id)과 출처(origin_ids)를 물려받는다.
-    같은 음절에 음표가 둘 이상이 되므로 멜리스마로 해석된다.
+    두 조각은 같은 출처(origin_ids)를 물려받는다. 가사 연결은 문서가 ``amp.lyrics.linking.reconcile`` 로
+    다시 잇는다(음절 시간과 겹치는 조각으로).
     """
     if not (note.start + MIN_NOTE_DURATION - 1e-9 <= at <= note.end - MIN_NOTE_DURATION + 1e-9):
         raise EditError("분할 위치가 음표 경계에 너무 가깝거나 음표 밖에 있습니다.")
@@ -83,7 +83,6 @@ def merge_notes(notes: Sequence[Note], *, note_id: str | None = None) -> Note:
 
     - 범위: 가장 이른 시작 ~ 가장 늦은 끝
     - 음높이: 합친 길이가 가장 긴 음높이 (같으면 먼저 나온 음)
-    - 음절: 시간 순으로 처음 연결된 음절. 다른 음절 연결은 끊긴다.
     - 출처: 모든 출처를 시간 순으로 합침
     """
     if len(notes) < 2:
@@ -110,6 +109,5 @@ def merge_notes(notes: Sequence[Note], *, note_id: str | None = None) -> Note:
         velocity=max(n.velocity for n in ordered),
         confidence=min(confs) if all(c is not None for c in confs) else None,
         vibrato=None,
-        syllable_id=next((n.syllable_id for n in ordered if n.syllable_id), None),
         origin_ids=tuple(origins),
     )

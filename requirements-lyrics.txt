@@ -1,0 +1,3 @@
+# 가사 인식(OpenAI Whisper). PyTorch는 install_separation.bat 이 GPU에 맞는 빌드로 먼저 설치한다.
+# 정렬 모델(MMS_FA)은 추가 패키지 없이 PyTorch만 쓰며, 처음 정렬할 때 가중치(약 1.2GB)를 내려받는다.
+openai-whisper==20250625

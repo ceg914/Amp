@@ -54,8 +54,6 @@ def note_to_dict(n: Note) -> dict:
         d["confidence"] = n.confidence
     if n.vibrato is not None and math.isfinite(n.vibrato.rate_hz) and math.isfinite(n.vibrato.extent_cents):
         d["vibrato"] = {"rate_hz": n.vibrato.rate_hz, "extent_cents": n.vibrato.extent_cents}
-    if n.syllable_id is not None:
-        d["syllable_id"] = n.syllable_id
     if n.origin_ids:
         d["origin_ids"] = list(n.origin_ids)
     if n.ornament:
@@ -73,7 +71,6 @@ def note_from_dict(d: dict) -> Note:
         velocity=int(d.get("velocity", 100)),
         confidence=None if d.get("confidence") is None else float(d["confidence"]),
         vibrato=Vibrato(float(vib["rate_hz"]), float(vib["extent_cents"])) if vib else None,
-        syllable_id=d.get("syllable_id"),
         origin_ids=tuple(d.get("origin_ids", ())),
         ornament=bool(d.get("ornament", False)),
     )
@@ -112,16 +109,20 @@ def score_to_dict(s: Score) -> dict:
     return {
         "tempo": tempo_to_dict(s.tempo),
         "notes": [note_to_dict(n) for n in s.notes()],
-        "lyrics": lyrics_to_dict(s.lyrics),
     }
 
 
 def score_from_dict(d: dict) -> Score:
+    """STEP 1 파일의 lyrics·음표 syllable_id는 여기서 읽지 않는다 (``legacy_lyrics_from_score`` 가 옮긴다)."""
     return Score(
         tempo_from_dict(_req(d, "tempo", "작업본")),
         [note_from_dict(n) for n in d.get("notes", ())],
-        lyrics_from_dict(d.get("lyrics", {})),
     )
+
+
+def legacy_note_links(notes: list) -> dict[str, str]:
+    """STEP 1 음표 dict 목록에서 음표 id → 음절 id."""
+    return {str(n["id"]): str(n["syllable_id"]) for n in notes or () if isinstance(n, dict) and n.get("syllable_id")}
 
 
 def analysis_to_dict(a: AnalysisResult) -> dict:

@@ -68,6 +68,8 @@ class ProjectSession(QObject):
     error = Signal(str, str, str)  # 제목, 메시지, 상세
     notice = Signal(str, str)  # 제목, 안내 (오류가 아닌 알림)
     analysisReady = Signal(object)  # AnalysisResult (반영 방식은 메인 창이 묻는다)
+    recognitionReady = Signal(object, bool)  # Recognition, 캐시 재사용 여부
+    alignmentReady = Signal(object)  # amp.lyrics.engine.AlignOutput
     busyChanged = Signal(bool)
     taskStarted = Signal(object, str)  # TaskHandle, 표시 문구
 
@@ -498,6 +500,85 @@ class ProjectSession(QObject):
         self._track_analysis(handle)
         handle.finished.connect(lambda r: self.audio is audio and self.analysisReady.emit(r))
         return handle
+
+    # --- 가사 ----------------------------------------------------------------
+
+    def lyrics_request(self, lyric_settings: dict, analysis: AnalysisSettings):
+        """가사 인식·정렬 입력. 분리한 보컬을 쓴다(분리 안 함 설정이면 원본)."""
+        from amp.lyrics.engine import LyricsRequest
+
+        if self.folder is None or self.audio is None:
+            raise AnalysisError("열린 프로젝트가 없습니다.")
+        if self.manifest is not None:
+            path = str(self.folder.paths.stems / self.manifest.files["vocals"]["path"])
+            input_id = "stems-" + self.manifest.stems_id
+        elif analysis.separation == "none" and self.original is not None and self.original.path is not None:
+            path = str(self.original.path)
+            input_id = "orig-" + self.folder.meta.original.sha256[:16]
+        else:
+            raise AnalysisError("분리된 보컬이 없습니다. 먼저 '보컬 분석 실행'으로 보컬을 분리하세요. "
+                                "(반주 없는 음원이면 분석 설정에서 '분리 안 함'을 고르면 원본으로 인식합니다.)")
+        return LyricsRequest(
+            vocals_path=path, input_id=input_id, cache_root=str(self.folder.paths.cache),
+            whisper_root=app_data_dir("models", "whisper"), mms_root=app_data_dir("models", "mms"),
+            device=analysis.device, model=str(lyric_settings.get("model", "auto")),
+            language=str(lyric_settings.get("language", "auto")),
+            no_vocal_ranges=tuple(tuple(r) for r in analysis.no_vocal_ranges), use_cache=analysis.use_cache,
+            numba_cache_dir=app_data_dir("numba"))
+
+    def run_recognition(self, lyric_settings: dict, analysis: AnalysisSettings) -> TaskHandle | None:
+        if self.busy:
+            return None
+        try:
+            req = self.lyrics_request(lyric_settings, analysis)
+        except AnalysisError as e:
+            self.error.emit("가사를 인식할 수 없습니다", str(e), "")
+            return None
+        from amp.lyrics.engine import LyricsEngine
+
+        seq = self._seq
+        handle = self._submit("가사 인식", lambda p, t: LyricsEngine().recognize(req, p, t))
+        self._track_analysis(handle)
+        handle.finished.connect(lambda out: seq == self._seq and self.recognitionReady.emit(out[0], out[1]))
+        return handle
+
+    def run_alignment(self, lyric_settings: dict, analysis: AnalysisSettings, mode: str = "all",
+                      ids: list[str] | None = None) -> TaskHandle | None:
+        if self.busy:
+            return None
+        state = self.doc.lyrics
+        if state.text.is_empty:
+            self.error.emit("정렬할 가사가 없습니다", "가사를 입력하거나 자동 인식한 뒤 정렬하세요.", "")
+            return None
+        try:
+            req = self.lyrics_request(lyric_settings, analysis)
+        except AnalysisError as e:
+            self.error.emit("가사를 정렬할 수 없습니다", str(e), "")
+            return None
+        from amp.lyrics.engine import LyricsEngine
+
+        seq = self._seq
+        duration = self.audio.duration if self.audio else None
+        handle = self._submit("가사 시간 정렬",
+                              lambda p, t: LyricsEngine().align(req, state, mode=mode, ids=ids, duration=duration,
+                                                                progress=p, token=t))
+        self._track_analysis(handle)
+        handle.finished.connect(lambda out: seq == self._seq and self.alignmentReady.emit(out))
+        return handle
+
+    def lyrics_install_status(self) -> dict:
+        """GUI 프로세스에서 무거운 라이브러리를 불러오지 않고 설치·내려받기 상태만 본다."""
+        import importlib.util
+
+        from amp.lyrics import mms
+
+        whisper_dir = Path(app_data_dir("models", "whisper"))
+        mms_dir = app_data_dir("models", "mms")
+        downloaded = sorted(p.stem for p in whisper_dir.glob("*.pt")) if whisper_dir.is_dir() else []
+        return {"whisper": importlib.util.find_spec("whisper") is not None,
+                "torch": importlib.util.find_spec("torch") is not None,
+                "whisper_models": downloaded, "mms": mms.is_downloaded(mms_dir),
+                "models_dir": str(Path(mms_dir).parent)}
 
     def _track_analysis(self, handle: TaskHandle) -> None:
         self.analysis_handle = handle

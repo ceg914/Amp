@@ -17,11 +17,12 @@ def setup(qtbot):
         10.0,
         TempoMap.constant(120),  # 1박 = 0.5초, 1/16 격자 = 0.125초
         (
-            note("a", 1.0, 2.0, 60, syllable_id="s1"),
-            note("b", 2.0, 2.5, 62, syllable_id="s1"),
-            note("c", 3.0, 4.0, 64, syllable_id="s2"),
+            note("a", 1.0, 2.0, 60),
+            note("b", 2.0, 2.5, 62),
+            note("c", 3.0, 4.0, 64),
         ),
         lyrics=LyricsTrack("ko", (Syllable("s1", "가"), Syllable("s2", "나"))),
+        lyric_links=(("a", "s1"), ("b", "s1"), ("c", "s2")),  # 샘플 분석기 형식 → 프로젝트 가사로 옮겨진다
     )
     doc.set_analysis(result)
     timeline = TimelineState()

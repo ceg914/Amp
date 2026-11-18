@@ -27,6 +27,7 @@ import numpy as np
 from amp import __version__
 from amp.core.errors import EditError, ProjectFormatError
 from amp.core.model import PitchCurve, Project
+from amp.lyrics import io as lyrics_io
 from amp.storage import serialization as ser
 
 PROJECT_EXTENSION = ".ampproj"
@@ -81,6 +82,9 @@ def project_to_members(project: Project, project_path: str | None = None) -> dic
         "project.json": _dump({"audio": audio}),
         "score.json": _dump(ser.score_to_dict(project.score)),
     }
+    if not project.lyrics.is_empty:  # 자동 저장·복구에도 가사 편집을 담는다
+        members["lyrics.json"] = _dump(lyrics_io.lyrics_to_dict(project.lyrics))
+        members["alignment.json"] = _dump(lyrics_io.alignment_to_dict(project.lyrics))
     if project.analysis is not None:
         members["analysis/result.json"] = _dump(ser.analysis_to_dict(project.analysis))
         if project.analysis.pitch_curve is not None:
@@ -130,7 +134,15 @@ def load_project(path: str) -> Project:
                     f"더 새로운 버전(형식 {version})에서 저장한 파일입니다. 프로그램을 업데이트해 주세요."
                 )
             meta = read_json("project.json")
-            score = ser.score_from_dict(read_json("score.json"))
+            score_d = read_json("score.json")
+            score = ser.score_from_dict(score_d)
+            warnings: list[str] = []
+            if "lyrics.json" in names:
+                lyrics = lyrics_io.state_from_dicts(read_json("lyrics.json"),
+                                                    read_json("alignment.json") if "alignment.json" in names else None,
+                                                    warnings)
+            else:  # STEP 1 형식: score.json 안의 lyrics + 음표 syllable_id
+                lyrics = lyrics_io.from_legacy(score_d.get("lyrics"), ser.legacy_note_links(score_d.get("notes")))
             analysis = None
             if "analysis/result.json" in names:
                 curve, onset = _pitch_from_bytes(z.read("analysis/pitch.npz")) if "analysis/pitch.npz" in names else (None, None)
@@ -153,4 +165,4 @@ def load_project(path: str) -> Project:
             candidate = os.path.normpath(os.path.join(os.path.dirname(os.path.abspath(path)), rel))
             if os.path.exists(candidate):
                 audio = dataclasses.replace(audio, path=candidate)
-    return Project(audio=audio, analysis=analysis, score=score)
+    return Project(audio=audio, analysis=analysis, score=score, lyrics=lyrics)

@@ -8,7 +8,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from amp.core.model import AnalysisResult, LyricsTrack, Note, Project, Score
+from amp.core.model import AnalysisResult, Note, Project, Score
 from amp.core.tempo import TempoMap
 
 KEEP_EDITS = "keep_edits"
@@ -35,7 +35,6 @@ class ReanalysisPlan:
     kept: tuple[Note, ...]  # 보존한 사용자 음표
     dropped: tuple[Note, ...]  # 보존 음표와 겹쳐 넣지 않은 새 음표
     tempo: TempoMap
-    lyrics: LyricsTrack
 
 
 def summarize(project: Project) -> ScoreSummary:
@@ -54,7 +53,7 @@ def plan_reanalysis(project: Project, new: AnalysisResult, mode: str = KEEP_EDIT
     current = project.score.notes()
     fresh = Score.from_analysis(new).notes()
     if mode == REPLACE_ALL:
-        return ReanalysisPlan(tuple(current), tuple(fresh), (), (), new.tempo, new.lyrics or LyricsTrack())
+        return ReanalysisPlan(tuple(current), tuple(fresh), (), (), new.tempo)
     if mode != KEEP_EDITS:
         raise ValueError(f"알 수 없는 반영 방식: {mode}")
 
@@ -68,4 +67,4 @@ def plan_reanalysis(project: Project, new: AnalysisResult, mode: str = KEEP_EDIT
             added.append(n)
     tempo_edited = project.analysis is not None and project.score.tempo != project.analysis.tempo
     tempo = project.score.tempo if (tempo_edited or project.analysis is None and protected) else new.tempo
-    return ReanalysisPlan(tuple(removable), tuple(added), tuple(protected), tuple(dropped), tempo, project.score.lyrics)
+    return ReanalysisPlan(tuple(removable), tuple(added), tuple(protected), tuple(dropped), tempo)

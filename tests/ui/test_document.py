@@ -13,8 +13,9 @@ def doc(qapp):
     result = AnalysisResult(
         4.0,
         TempoMap.constant(100),
-        (note("a", 0.0, 1.0, 60, syllable_id="s1"), note("b", 1.0, 2.0, 62, syllable_id="s2")),
+        (note("a", 0.0, 1.0, 60), note("b", 1.0, 2.0, 62)),
         lyrics=LyricsTrack("ko", (Syllable("s1", "가"), Syllable("s2", "나"))),
+        lyric_links=(("a", "s1"), ("b", "s2")),
     )
     d.set_analysis(result)
     d.mark_saved("/tmp/x.ampproj")
@@ -43,16 +44,19 @@ def test_noop_move_does_not_push(doc):
 def test_split_merge_delete_add(doc):
     left, right = doc.split_note("a", 0.4)
     assert len(doc.score) == 3
-    assert doc.score.get(left).syllable_id == doc.score.get(right).syllable_id == "s1"
+    assert set(doc.lyrics.alignment.linked_notes("s1")) == {left, right}  # 나눈 두 조각이 같은 음절에 이어진다 (멜리스마)
     merged = doc.merge_notes([left, right])
     assert doc.score.get(merged).end == 1.0
+    assert doc.lyrics.alignment.linked_notes("s1") == (merged,)
     doc.delete_notes([merged])
     assert "a" not in doc.score and len(doc.score) == 1
+    assert doc.lyrics.unlinked() == [doc.lyrics.text.syllables[0].id]  # 음절은 남고 '연결 없음'이 된다
     nid = doc.add_note(2.0, 2.5, 70)
     assert doc.note_status(doc.score.get(nid)) == "user"
     for _ in range(4):
         doc.undo_stack.undo()
     assert sorted(n.id for n in doc.score.notes()) == ["a", "b"]
+    assert doc.lyrics.alignment.linked_notes("s1") == ("a",)  # 실행 취소로 연결도 그대로 돌아온다
 
 
 def test_split_at_requires_inside(doc):

@@ -5,7 +5,7 @@ from __future__ import annotations
 import math
 from contextlib import contextmanager
 
-from PySide6.QtCore import QLineF, QRectF, Qt
+from PySide6.QtCore import QLineF, QPointF, QRectF, Qt
 from PySide6.QtGui import QBrush, QColor, QPainter, QPen
 from PySide6.QtWidgets import QGraphicsScene
 
@@ -35,6 +35,9 @@ class PianoRollScene(QGraphicsScene):
         self.addItem(self.playhead)
         self._playhead_time = 0.0
         self.no_vocal_ranges: tuple = ()  # 보컬 없는 구간 (초). 배경에 빗금 띠로 그린다
+        self.lyrics_visible = True
+        self.highlight_notes: set[str] = set()  # 선택한 음절에 연결된 음표 (민트 테두리)
+        self.current_notes: set[str] = set()  # 재생 중인 음절에 연결된 음표 (글자 강조)
         self.setItemIndexMethod(QGraphicsScene.ItemIndexMethod.BspTreeIndex)
 
         doc.projectReset.connect(self.rebuild)
@@ -42,6 +45,7 @@ class PianoRollScene(QGraphicsScene):
         doc.notesReplaced.connect(self._on_notes_replaced)
         doc.tempoChanged.connect(self._on_tempo_changed)
         doc.selectionRequested.connect(self.select_ids)
+        doc.lyricsChanged.connect(self._on_lyrics_changed)
         self.rebuild()
 
     # --- 크기 ---------------------------------------------------------------
@@ -106,24 +110,48 @@ class PianoRollScene(QGraphicsScene):
         self._refresh_labels()
         self.update_scene_rect()
 
+    def _on_lyrics_changed(self) -> None:
+        self._refresh_labels()
+        self.invalidate(self.sceneRect(), QGraphicsScene.SceneLayer.ForegroundLayer)
+
     def _refresh_labels(self) -> None:
-        """음절 첫 음표에는 글자를, 멜리스마로 이어지는 음표에는 '–'를 붙인다."""
-        syllables = self.doc.score.lyrics.by_id()
-        first_note: dict[str, tuple[float, str]] = {}
-        for item in self.items_by_id.values():
-            sid = item.note.syllable_id
-            if sid and sid in syllables:
-                key = (item.note.start, item.note.id)
-                if sid not in first_note or key < first_note[sid]:
-                    first_note[sid] = key
-        for item in self.items_by_id.values():
-            sid = item.note.syllable_id
-            if not sid or sid not in syllables:
-                item.set_label("")
-            elif first_note[sid][1] == item.note.id:
-                item.set_label(syllables[sid].text)
-            else:
+        """음절이 시작하는 음표에는 글자를(여러 음절이 한 음표면 이어 붙임: '사랑'),
+        멜리스마로 이어지는 음표에는 '–'를 붙인다. 연결은 가사 쪽(alignment)에서 읽는다."""
+        ly = self.doc.lyrics
+        text, al = ly.text, ly.alignment
+        first_of: dict[str, str] = {}
+        self.melisma_chains: list[list[str]] = []
+        for sid, links in al.links.items():
+            if sid not in text.index:
+                continue
+            notes = sorted((self.items_by_id[lk.note_id].note for lk in links if lk.note_id in self.items_by_id),
+                           key=lambda n: (n.start, n.id))
+            if notes:
+                first_of[sid] = notes[0].id
+                if len(notes) > 1:
+                    self.melisma_chains.append([n.id for n in notes])
+        for nid, item in self.items_by_id.items():
+            sids = sorted((x for x in al.note_to_syllables.get(nid, ()) if x in text.index), key=text.order.get)
+            firsts = [x for x in sids if first_of.get(x) == nid]
+            if firsts:
+                item.set_label("".join(text.syllable(x).text for x in firsts))
+            elif sids:
                 item.set_label("–")
+            else:
+                item.set_label("")
+
+    def set_lyrics_visible(self, visible: bool) -> None:
+        self.lyrics_visible = visible
+        self.invalidate(self.sceneRect(), QGraphicsScene.SceneLayer.ForegroundLayer)
+
+    def set_highlights(self, notes: set[str] | None = None, current: set[str] | None = None) -> None:
+        if notes is not None:
+            self.highlight_notes = set(notes)
+        if current is not None:
+            if set(current) == self.current_notes and notes is None:
+                return
+            self.current_notes = set(current)
+        self.invalidate(self.sceneRect(), QGraphicsScene.SceneLayer.ForegroundLayer)
 
     def set_no_vocal_ranges(self, ranges) -> None:
         self.no_vocal_ranges = tuple(ranges)
@@ -233,19 +261,43 @@ class PianoRollScene(QGraphicsScene):
     # --- 가사 글자 ---------------------------------------------------------------
 
     def drawForeground(self, painter: QPainter, rect: QRectF) -> None:  # noqa: N802
-        labelled = [i for i in self.items(rect) if isinstance(i, NoteItem) and i.label and i.isVisible()]
-        if not labelled:
+        """가사는 음표 아래에 쓴다 (명세: 음표 아래 가사 표시). 멜리스마는 민트 연결선으로 잇는다."""
+        if not self.lyrics_visible:
             return
-        font = painter.font()
-        font.setPixelSize(max(8, min(13, int(self.mapper.row_height - 4))))
+        grow = QRectF(rect).adjusted(-200, -40, 200, 40)
+        visible = [i for i in self.items(grow) if isinstance(i, NoteItem) and i.isVisible()]
+        if not visible:
+            return
+        pen = QPen(theme.LYRIC_CURRENT, 1.4)
+        pen.setCosmetic(True)
+        painter.setPen(pen)
+        on_screen = {i.note.id for i in visible}
+        for chain in getattr(self, "melisma_chains", ()):
+            if not on_screen.intersection(chain):
+                continue
+            pts = [self.items_by_id[n].rect() for n in chain if n in self.items_by_id]
+            for a, b in zip(pts, pts[1:]):
+                painter.drawLine(QPointF(a.right(), a.center().y()), QPointF(b.left(), b.center().y()))
+        for item in visible:
+            if item.note.id in self.highlight_notes:
+                hp = QPen(theme.LYRIC_CURRENT, 2.2)
+                hp.setCosmetic(True)
+                painter.setPen(hp)
+                painter.setBrush(Qt.BrushStyle.NoBrush)
+                painter.drawRoundedRect(item.rect().adjusted(-2, -2, 2, 2), 3, 3)
+        font = theme.ui_font()
+        font.setPixelSize(max(10, min(13, int(self.mapper.row_height - 2))))
         painter.setFont(font)
         fm = painter.fontMetrics()
-        for item in labelled:
-            r = item.rect()
-            w = fm.horizontalAdvance(item.label) + 6
-            if r.width() < 10 or r.height() < 8:
+        for item in visible:
+            if not item.label:
                 continue
-            box = QRectF(r.left() + 1, r.top() + 1, min(w, r.width() - 2), r.height() - 2)
-            painter.fillRect(box, QColor(0, 0, 0, 140))
-            painter.setPen(theme.TEXT)
+            r = item.rect()
+            w = max(fm.horizontalAdvance(item.label) + 6, 12)
+            box = QRectF(r.left(), r.bottom() + 1, w, fm.height() + 1)
+            current = item.note.id in self.current_notes
+            bg = QColor(theme.LYRIC_CURRENT if current else theme.SURFACE_RAISED)
+            bg.setAlpha(235 if current else 215)
+            painter.fillRect(box, bg)
+            painter.setPen(theme.BG if current else theme.TEXT)
             painter.drawText(box, Qt.AlignmentFlag.AlignCenter, item.label)

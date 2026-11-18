@@ -15,13 +15,51 @@ PROJECT = "sonatlas.project"
 PITCH = "sonatlas.pitch"
 NOTES = "sonatlas.notes"
 TEMPO = "sonatlas.tempo"
+LYRICS = "sonatlas.lyrics"
+ALIGNMENT = "sonatlas.alignment"
 
-CURRENT = {PROJECT: 1, PITCH: 1, NOTES: 1, TEMPO: 1}
+CURRENT = {PROJECT: 1, PITCH: 1, NOTES: 2, TEMPO: 1, LYRICS: 1, ALIGNMENT: 1}
 
-# 종류 → {이전 버전: (dict → dict)}. 버전 1이 첫 버전이라 아직 등록된 변환은 없다.
+LABELS = {PROJECT: "프로젝트 파일", PITCH: "피치 분석 파일", NOTES: "음표 파일", TEMPO: "템포 파일",
+          LYRICS: "가사 파일", ALIGNMENT: "가사 정렬 파일"}
+
+
+def _notes_v1_to_v2(d: dict) -> dict:
+    """STEP 3: 가사를 notes.json 밖(lyrics.json·alignment.json)으로 옮긴다.
+
+    v1의 edits.lyrics와 음표 syllable_id는 ``legacy_lyrics`` 로 모아 두고, 불러오는 쪽이 새 형식으로 바꾼다.
+    """
+    edits = dict(d.get("edits") or {})
+    legacy: dict = {}
+    lyr = edits.pop("lyrics", None)
+    if isinstance(lyr, dict) and lyr.get("syllables"):
+        legacy["lyrics"] = lyr
+    links = {}
+    notes = []
+    for n in edits.get("notes") or ():
+        n = dict(n)
+        sid = n.pop("syllable_id", None)
+        if sid:
+            links[str(n.get("id"))] = str(sid)
+        notes.append(n)
+    edits["notes"] = notes
+    if links:
+        legacy["note_links"] = links
+    d["edits"] = edits
+    an = d.get("analysis")
+    if isinstance(an, dict):
+        an = dict(an)
+        an.pop("lyrics", None)
+        an["notes"] = [{k: v for k, v in n.items() if k != "syllable_id"} for n in an.get("notes") or ()]
+        d["analysis"] = an
+    if legacy:
+        d["legacy_lyrics"] = legacy
+    return d
+
+
+# 종류 → {이전 버전: (dict → dict)}
 MIGRATIONS: dict[str, dict[int, Callable[[dict], dict]]] = {k: {} for k in CURRENT}
-
-LABELS = {PROJECT: "프로젝트 파일", PITCH: "피치 분석 파일", NOTES: "음표 파일", TEMPO: "템포 파일"}
+MIGRATIONS[NOTES][1] = _notes_v1_to_v2
 
 
 def stamp(kind: str, body: dict) -> dict:

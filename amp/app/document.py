@@ -16,24 +16,60 @@ from amp.core import editing
 from amp.core.errors import EditError
 from amp.core.model import AnalysisResult, AudioRef, Note, Project, Score
 from amp.core.tempo import TempoMap
+from amp.lyrics import linking
+from amp.lyrics.model import LyricsState
+
+
+def _adopt_sample_lyrics(current: LyricsState, result: AnalysisResult) -> LyricsState:
+    """샘플 분석기가 만든 가사는 프로젝트에 가사가 없을 때만 받아들인다 (사용자 가사를 덮지 않는다)."""
+    if result.lyrics is None or not current.is_empty:
+        return current
+    from amp.lyrics import io as lyrics_io
+    from amp.storage.serialization import lyrics_to_dict
+
+    return lyrics_io.from_legacy(lyrics_to_dict(result.lyrics), dict(result.lyric_links))
 
 
 class ReplaceNotesCommand(QUndoCommand):
-    """음표 집합 교체. 이동·길이 변경·분할·병합·추가·삭제를 모두 이 명령 하나로 표현한다."""
+    """음표 집합 교체. 이동·길이 변경·분할·병합·추가·삭제를 모두 이 명령 하나로 표현한다.
+
+    음표가 사라지면(나누기·합치기·지우기) 가사 연결을 다시 잇는다. 음절 텍스트·시간은 바꾸지 않는다.
+    실행 취소하면 연결도 명령 전 상태로 정확히 돌아간다.
+    """
 
     def __init__(self, doc: "ProjectDocument", removed: list[Note], added: list[Note], text: str) -> None:
         super().__init__(text)
         self._doc = doc
         self._removed = list(removed)
         self._added = list(added)
+        self._old_lyrics = doc.project.lyrics
+        self._new_lyrics = linking.reconcile(self._old_lyrics, self._removed, self._added)
 
     def redo(self) -> None:
         self._doc._apply_notes([n.id for n in self._removed], self._added)
+        self._doc._apply_lyrics(self._new_lyrics)
         self._doc.selectionRequested.emit([n.id for n in self._added])
 
     def undo(self) -> None:
         self._doc._apply_notes([n.id for n in self._added], self._removed)
+        self._doc._apply_lyrics(self._old_lyrics)
         self._doc.selectionRequested.emit([n.id for n in self._removed])
+
+
+class SetLyricsCommand(QUndoCommand):
+    """가사 상태 교체 (텍스트·음절 시간·연결 편집 모두). 상태가 불변 객체라 스냅샷 교체로 정확히 되돌린다."""
+
+    def __init__(self, doc: "ProjectDocument", old: LyricsState, new: LyricsState, text: str) -> None:
+        super().__init__(text)
+        self._doc = doc
+        self._old = old
+        self._new = new
+
+    def redo(self) -> None:
+        self._doc._apply_lyrics(self._new)
+
+    def undo(self) -> None:
+        self._doc._apply_lyrics(self._old)
 
 
 class SetTempoCommand(QUndoCommand):
@@ -73,8 +109,9 @@ class ApplyAnalysisCommand(QUndoCommand):
         self._added = list(plan.added)
         self._old_tempo = doc.score.tempo
         self._new_tempo = plan.tempo
-        self._old_lyrics = doc.score.lyrics
-        self._new_lyrics = plan.lyrics
+        self._old_lyrics = doc.project.lyrics
+        lyrics = linking.reconcile(self._old_lyrics, self._removed, self._added)
+        self._new_lyrics = _adopt_sample_lyrics(lyrics, new)
 
     def redo(self) -> None:
         self._doc._apply_analysis_state(self._new_analysis, [n.id for n in self._removed], self._added,
@@ -87,6 +124,7 @@ class ApplyAnalysisCommand(QUndoCommand):
 
 class ProjectDocument(QObject):
     projectReset = Signal()  # 프로젝트 전체가 바뀜 (새로 만들기·열기·분석 적용)
+    lyricsChanged = Signal()  # 가사 텍스트·음절 시간·음표 연결 중 무엇이든 바뀜
     analysisChanged = Signal()  # 원본 분석이 바뀜 (재분석 적용·되돌리기) — 피아노 롤 전체 다시 그림
     notesReplaced = Signal(list, list)  # 지운 id 목록, 추가/교체된 Note 목록
     tempoChanged = Signal()
@@ -109,6 +147,10 @@ class ProjectDocument(QObject):
     @property
     def score(self) -> Score:
         return self.project.score
+
+    @property
+    def lyrics(self) -> LyricsState:
+        return self.project.lyrics
 
     @property
     def is_dirty(self) -> bool:
@@ -151,6 +193,8 @@ class ProjectDocument(QObject):
         """분석 원본을 저장하고 작업본을 원본 복사본으로 새로 만든다. 실행 취소 기록은 지운다."""
         self.project.analysis = result
         self.project.score = Score.from_analysis(result)
+        lyrics, _ = linking.prune(self.project.lyrics, [n.id for n in self.project.score.notes()])
+        self.project.lyrics = _adopt_sample_lyrics(lyrics, result)
         self.undo_stack.clear()
         self._extra_dirty = True
         self._touch()
@@ -180,6 +224,21 @@ class ProjectDocument(QObject):
         self.score.replace_notes(removed_ids, added)
         self._touch()
         self.notesReplaced.emit(removed_ids, added)
+
+    def _apply_lyrics(self, state: LyricsState) -> None:
+        if state is self.project.lyrics:
+            return
+        self.project.lyrics = state
+        self._touch()
+        self.lyricsChanged.emit()
+
+    def push_lyrics(self, new: LyricsState, text: str) -> bool:
+        """가사 편집 결과를 실행 취소 기록에 넣는다. 바뀐 것이 없으면 넣지 않는다."""
+        old = self.project.lyrics
+        if new is old or (new.text == old.text and new.alignment == old.alignment and new.recognition == old.recognition):
+            return False
+        self.undo_stack.push(SetLyricsCommand(self, old, new, text))
+        return True
 
     def _apply_tempo(self, tempo: TempoMap) -> None:
         self.score.tempo = tempo
@@ -262,10 +321,13 @@ class ProjectDocument(QObject):
         self.project.analysis = analysis
         self.score.replace_notes(removed_ids, added)
         self.score.tempo = tempo
-        self.score.lyrics = lyrics
+        changed = lyrics is not self.project.lyrics
+        self.project.lyrics = lyrics
         self._touch()
         self.analysisChanged.emit()
         self.tempoChanged.emit()
+        if changed:
+            self.lyricsChanged.emit()
 
     def apply_analysis(self, result: AnalysisResult, mode: str = "keep_edits", text: str = "분석 결과 적용"):
         """재분석 결과 반영. keep_edits면 사용자가 고친 음표·템포를 지킨다. 반영 계획을 돌려준다."""

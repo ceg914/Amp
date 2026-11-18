@@ -14,6 +14,10 @@ GUI가 ``python -m amp.engine.worker <명령> --args-json <JSON>`` 으로 실행
     separate   {"input", "out_dir", "model", "device"} → out_dir/vocals.wav, instrumental.wav, info.json
     pitch      {"input", "out_dir", "fmin", "fmax"} → out_dir/pitch.npz, meta.json
     tempo      {"input", "out_dir"} → out_dir/tempo.json
+    asr        {"input", "out_dir", "model", "language", "device", "download_root", "no_vocal_ranges"}
+               → out_dir/asr.json (Whisper 가사 인식)
+    emissions  {"input", "out_dir", "device", "model_dir"} → out_dir/emissions.npz (MMS 정렬 모델 출력·보컬 크기)
+    ctc_align  {"emissions", "units", "anchors", "no_vocal_ranges"} → 음절별 시간 (numpy만 사용)
 """
 
 from __future__ import annotations
@@ -104,13 +108,133 @@ def cmd_tempo(args: dict) -> dict:
     return result
 
 
+def _vocals_16k(path: str):
+    import numpy as np
+    from scipy.signal import resample_poly
+
+    audio = _load(path)
+    y = audio.mono().astype(np.float32)
+    if audio.sample_rate != 16000:
+        from math import gcd
+
+        g = gcd(int(audio.sample_rate), 16000)
+        y = resample_poly(y, 16000 // g, int(audio.sample_rate) // g).astype(np.float32)
+    return y
+
+
+def _frame_rms_db(y, hop: int = 320):
+    import numpy as np
+
+    n = max(1, len(y) // hop)
+    seg = np.asarray(y[: n * hop], dtype=np.float64).reshape(n, hop)
+    return 20 * np.log10(np.sqrt(np.mean(seg ** 2, axis=1)) + 1e-9)
+
+
+def _ranges_mask(ranges, n: int, dt: float):
+    import numpy as np
+
+    m = np.zeros(n, dtype=bool)
+    for a, b in ranges or ():
+        m[max(0, int(float(a) / dt)): min(n, int(float(b) / dt) + 1)] = True
+    return m
+
+
+def cmd_asr(args: dict) -> dict:
+    import numpy as np
+
+    from amp.lyrics import asr
+    from amp.lyrics.ctc import activity_mask
+
+    y = _vocals_16k(args["input"])
+    _progress(0.01, "보컬 불러옴")
+    ranges = args.get("no_vocal_ranges") or ()
+    blocked = _ranges_mask(ranges, len(y) // 320, 0.02)
+    y_in = y.copy()
+    for a, b in ranges:  # 보컬 없는 구간은 소리를 지워 넣는다 (반주가 섞인 전주에서 가사를 지어내지 않게)
+        y_in[int(float(a) * 16000): int(float(b) * 16000)] = 0.0
+    result = asr.transcribe(y_in, model_name=args.get("model", "auto"), language=args.get("language", "auto"),
+                            device=args.get("device", "auto"), download_root=args["download_root"], report=_progress,
+                            options=args.get("options"))
+    act = activity_mask(_frame_rms_db(y))
+    for seg in result["segments"]:
+        a, b = int(seg["start"] / 0.02), max(int(seg["start"] / 0.02) + 1, int(seg["end"] / 0.02))
+        seg["activity"] = float(np.mean(act[a:b])) if b <= len(act) and a < len(act) else 0.0
+        seg["in_no_vocal"] = float(np.mean(blocked[a:b])) if a < len(blocked) else 0.0
+    result["versions"] = _versions()
+    with open(os.path.join(args["out_dir"], "asr.json"), "w", encoding="utf-8") as f:
+        json.dump(result, f, ensure_ascii=False)
+    return {"segments": len(result["segments"]), "language": result["language"], "device": result["device"],
+            "model": result["model"]}
+
+
+def cmd_emissions(args: dict) -> dict:
+    import numpy as np
+
+    from amp.lyrics import mms
+    from amp.engine.dsp.separation import choose_device
+
+    y = _vocals_16k(args["input"])
+    _progress(0.01, "보컬 불러옴")
+    model_dir = args["model_dir"]
+    actual, note = choose_device(args.get("device", "auto"))  # torch가 없으면 ImportError → 내려받기 전에 멈춘다
+    if not mms.is_downloaded(model_dir):
+        mms.download(model_dir, lambda f, m: _progress(0.02 + 0.3 * f, m))
+    model = mms.load(model_dir, actual)
+    try:
+        lp = mms.emissions(model, y, actual, lambda f, m: _progress(0.35 + 0.63 * f, m))
+    except Exception as e:  # noqa: BLE001
+        if actual == "cuda" and "out of memory" in str(e).lower():
+            import torch
+
+            torch.cuda.empty_cache()
+            model = model.to("cpu")
+            actual, note = "cpu", "GPU 메모리가 부족해 CPU로 다시 계산했습니다."
+            lp = mms.emissions(model, y, "cpu", lambda f, m: _progress(0.35 + 0.63 * f, m))
+        else:
+            raise
+    rms_db = _frame_rms_db(y)[: len(lp)]
+    if len(rms_db) < len(lp):
+        rms_db = np.pad(rms_db, (0, len(lp) - len(rms_db)), constant_values=-120.0)
+    np.savez_compressed(os.path.join(args["out_dir"], "emissions.npz"), logp=lp.astype(np.float16),
+                        rms_db=rms_db.astype(np.float32), frame_s=np.float64(mms.HOP / mms.SAMPLE_RATE))
+    info = {"model": mms.MODEL_NAME, "license": mms.LICENSE, "device": actual, "note": note or "",
+            "frames": int(len(lp)), "versions": _versions()}
+    with open(os.path.join(args["out_dir"], "info.json"), "w", encoding="utf-8") as f:
+        json.dump(info, f, ensure_ascii=False)
+    _progress(1.0, "정렬 모델 계산 완료")
+    return info
+
+
+def cmd_ctc_align(args: dict) -> dict:
+    import numpy as np
+
+    from amp.lyrics import ctc, mms
+
+    with np.load(args["emissions"], allow_pickle=False) as z:
+        logp = z["logp"].astype(np.float32)
+        rms_db = z["rms_db"].astype(np.float64)
+        dt = float(z["frame_s"])
+    act = ctc.activity_mask(rms_db)
+    act &= ~_ranges_mask(args.get("no_vocal_ranges"), len(act), dt)
+    units = [ctc.Unit(u["id"], tuple(mms.LABEL_INDEX[c] for c in u.get("reading", "") if c in mms.LABEL_INDEX),
+                      int(u.get("line", 0))) for u in args["units"]]
+    anchors = {int(i): (float(a), float(b)) for i, a, b in args.get("anchors") or ()}
+    _progress(0.1, f"음절 {len(units)}개 정렬 중")
+    results, warnings = ctc.align(logp, units, dt=dt, star=mms.STAR, blank=mms.BLANK, anchors=anchors, active=act)
+    _progress(1.0, "정렬 완료")
+    return {"results": [{"id": r.syllable_id, "start": r.start, "end": r.end, "confidence": r.confidence,
+                         "start_source": r.start_source, "end_source": r.end_source, "detected_end": r.detected_end}
+                        for r in results], "warnings": warnings}
+
+
 def cmd_probe(args: dict) -> dict:
     from amp.engine.dsp.separation import probe
 
     return probe()
 
 
-COMMANDS = {"separate": cmd_separate, "pitch": cmd_pitch, "tempo": cmd_tempo, "probe": cmd_probe}
+COMMANDS = {"separate": cmd_separate, "pitch": cmd_pitch, "tempo": cmd_tempo, "probe": cmd_probe, "asr": cmd_asr,
+            "emissions": cmd_emissions, "ctc_align": cmd_ctc_align}
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -186,9 +310,12 @@ def _resources() -> dict:
 def _classify(e: Exception) -> tuple[str, str]:
     from amp.core.errors import AudioLoadError
     from amp.engine.dsp.separation import SeparationError
+    from amp.lyrics.asr import AsrError
 
-    if isinstance(e, SeparationError):
+    if isinstance(e, (SeparationError, AsrError)):
         return e.code, str(e)
+    if isinstance(e, KeyboardInterrupt):
+        return "cancelled", "취소되었습니다."
     if isinstance(e, AudioLoadError):
         return "decode", str(e)
     if isinstance(e, ImportError):

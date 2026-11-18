@@ -3,6 +3,7 @@
 - pitch.json: 분석 결과만 담는다(사용자가 고치지 않는다). 프레임별 시간·주파수·MIDI·신뢰도·유성 여부·온셋.
 - notes.json: ``analysis`` (자동 분석 원본, 분석할 때만 바뀜)와 ``edits`` (사용자 작업본)를 나눠 담는다.
 - tempo.json: ``analysis`` (추정값·후보·박 위치)와 ``user`` (사용자가 정한 템포)를 나눠 담는다.
+- lyrics.json · alignment.json: 가사 텍스트와 음절 시간·음표 연결 (``amp.lyrics.io``). notes.json v2부터 음표는 가사를 모른다.
 
 모든 쓰기는 원자적 교체이고, notes·tempo는 직전 파일을 .bak으로 남긴다.
 """
@@ -17,6 +18,10 @@ import numpy as np
 from amp.core.fileio import atomic_write_json, read_json_with_backup
 from amp.core.model import AnalysisResult, ModelInfo, Note, PitchCurve, Project, Score
 from amp.core.tempo import TempoMap
+from amp.lyrics import io as lyrics_io
+from amp.lyrics import linking
+from amp.lyrics import ops as lyrics_ops
+from amp.lyrics.model import LyricsState
 from amp.project import schema
 from amp.project.layout import ProjectPaths
 from amp.storage import serialization as ser
@@ -93,11 +98,9 @@ def notes_to_dict(project: Project) -> dict:
             "models": {k: _model_dict(m) for k, m in a.models.items()},
             "warnings": list(a.warnings),
             "notes": [_note_out(n) for n in a.notes],
-            "lyrics": ser.lyrics_to_dict(a.lyrics) if a.lyrics else None,
         }
     edits = {
         "notes": [_note_out(n, project.note_status(n)) for n in project.score.notes()],
-        "lyrics": ser.lyrics_to_dict(project.score.lyrics),
     }
     return schema.stamp(schema.NOTES, {"analysis": analysis, "edits": edits})
 
@@ -140,6 +143,7 @@ class LoadReport:
     from_backup: list[str] = field(default_factory=list)
     warnings: list[str] = field(default_factory=list)  # 사용자가 꼭 알아야 할 문제 (손상 복구 등)
     notes: list[str] = field(default_factory=list)  # 참고 안내 (폴더 이동·복사 감지 등)
+    legacy_lyrics: dict | None = None  # notes.json v1에서 꺼낸 STEP 1 가사 (새 형식으로 옮길 것)
 
 
 def save_analysis_files(paths: ProjectPaths, project: Project, *, write_pitch: bool = True) -> None:
@@ -148,6 +152,45 @@ def save_analysis_files(paths: ProjectPaths, project: Project, *, write_pitch: b
         atomic_write_json(paths.pitch_json, pitch_to_dict(project.analysis), indent=None)
     atomic_write_json(paths.notes_json, notes_to_dict(project), backup=True)
     atomic_write_json(paths.tempo_json, tempo_to_dict(project), backup=True)
+    save_lyrics_files(paths, project.lyrics)
+
+
+def save_lyrics_files(paths: ProjectPaths, state: LyricsState) -> None:
+    """가사가 없고 파일도 없으면 만들지 않는다. 가사를 모두 지웠으면 빈 파일로 남긴다."""
+    if state.is_empty and not paths.lyrics_json.exists() and not paths.alignment_json.exists():
+        return
+    paths.analysis.mkdir(parents=True, exist_ok=True)
+    atomic_write_json(paths.lyrics_json, schema.stamp(schema.LYRICS, lyrics_io.lyrics_to_dict(state)), backup=True)
+    atomic_write_json(paths.alignment_json, schema.stamp(schema.ALIGNMENT, lyrics_io.alignment_to_dict(state)),
+                      backup=True)
+
+
+def load_lyrics_files(paths: ProjectPaths, report: LoadReport, note_ids, duration: float | None) -> LyricsState:
+    """lyrics.json·alignment.json을 읽는다. 없으면 notes.json v1의 STEP 1 가사를 옮긴다.
+
+    가사 파일이 깨져도 음표 편집본은 열려야 하므로 여기서 난 오류는 경고로 바꾼다.
+    """
+    warnings: list[str] = []
+    state = LyricsState()
+    try:
+        if paths.lyrics_json.exists():
+            lyr = _load(paths.lyrics_json, schema.LYRICS, report)
+            ali = _load(paths.alignment_json, schema.ALIGNMENT, report) if paths.alignment_json.exists() else None
+            state = lyrics_io.state_from_dicts(lyr, ali, warnings)
+        elif report.legacy_lyrics:
+            legacy = report.legacy_lyrics
+            state = lyrics_io.from_legacy(legacy.get("lyrics"), dict(legacy.get("note_links") or {}))
+            if not state.is_empty:
+                report.notes.append(f"이전 형식의 가사 음절 {len(state.text.syllables)}개를 lyrics.json·alignment.json으로 옮겼습니다.")
+    except Exception as e:  # noqa: BLE001
+        report.warnings.append(f"가사 파일을 읽지 못해 가사 없이 엽니다 (파일은 그대로 둡니다): {e}")
+        return LyricsState()
+    state, w2 = lyrics_ops.sanitize_alignment(state, duration)
+    state, dropped = linking.prune(state, note_ids)
+    if dropped:
+        w2.append(f"없는 음표를 가리키던 가사 연결 {dropped}개를 지웠습니다.")
+    report.warnings.extend(warnings + w2)
+    return state
 
 
 def _load(path, kind, report: LoadReport):
@@ -168,11 +211,11 @@ def load_analysis_files(paths: ProjectPaths, report: LoadReport) -> tuple[Analys
     tempo = _load(paths.tempo_json, schema.TEMPO, report) if paths.tempo_json.exists() else {"analysis": None, "user": None}
 
     edits = notes.get("edits") or {}
+    report.legacy_lyrics = notes.get("legacy_lyrics")
     user_tempo = (tempo.get("user") or {}).get("tempo_map")
     score = Score(
         ser.tempo_from_dict(user_tempo) if user_tempo else None,
         [ser.note_from_dict(n) for n in edits.get("notes", [])],
-        ser.lyrics_from_dict(edits.get("lyrics") or {}),
     )
 
     an = notes.get("analysis")
@@ -188,13 +231,11 @@ def load_analysis_files(paths: ProjectPaths, report: LoadReport) -> tuple[Analys
     tempo_map = ser.tempo_from_dict(ta["tempo_map"]) if ta.get("tempo_map") else (score.tempo or TempoMap.constant(120))
     tempo_info = {k: ta[k] for k in ("candidates", "beats", "reliable", "algorithm") if k in ta}
     tempo_info.update(ta.get("extra") or {})
-    lyr = an.get("lyrics")
     result = AnalysisResult(
         duration=float(an.get("duration", 0.0)),
         tempo=tempo_map,
         notes=tuple(ser.note_from_dict(n) for n in an.get("notes", [])),
         pitch_curve=curve,
-        lyrics=ser.lyrics_from_dict(lyr) if lyr else None,
         models={k: _model_from(m) for k, m in (an.get("models") or {}).items()},
         created_at=str(an.get("created", "")),
         audio_fingerprint=str(an.get("audio_sha256", "")),

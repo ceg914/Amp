@@ -30,6 +30,13 @@ WAVE_BG = QColor(T.WAVE_BG)
 PITCH_CURVE = QColor(T.ACCENT_2)
 NO_VOCAL_SHADE = QColor(0, 0, 0, 90)  # 보컬 없는 구간 배경
 NO_VOCAL_HATCH = QColor(T.TEXT_2)
+# 가사 (STEP 3): 음절 막대·강조. 상태는 색만이 아니라 테두리 모양·표식으로도 구분한다
+SURFACE = QColor(T.BG_PANEL)
+SURFACE_RAISED = QColor(T.BG_RAISED)
+BORDER = QColor(T.BORDER)
+LYRIC_CURRENT = QColor(T.ACCENT_2)  # 재생 중인 음절
+LYRIC_WARN = QColor(T.WARNING)  # 검토 필요·확신 낮음
+LYRIC_UNLINKED = QColor(T.TEXT_2)
 NO_VOCAL_HATCH.setAlpha(45)
 TEXT = QColor(T.TEXT)
 TEXT_DIM = QColor(T.TEXT_2)

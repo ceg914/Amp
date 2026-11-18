@@ -27,6 +27,7 @@ from PySide6.QtWidgets import (
     QMessageBox,
     QProgressBar,
     QSplitter,
+    QTabWidget,
     QToolButton,
     QWidget,
 )
@@ -36,6 +37,7 @@ from amp.app import theme
 from amp.app.autosave import AutosaveManager, RecoveryEntry
 from amp.app.dialogs import ExportDialog, NewProjectDialog, NoVocalRangesDialog, ReanalysisDialog
 from amp.app.document import ProjectDocument
+from amp.app.lyrics_controller import LyricsController
 from amp.app.pianoroll.view import PianoRollView
 from amp.app.player import AudioPlayer, PlaybackState
 from amp.app.session import ProjectSession
@@ -45,6 +47,8 @@ from amp.app.timeline import TimelineState
 from amp.app.widgets.inspector import Inspector
 from amp.app.widgets.keyboard import KEYBOARD_WIDTH, PianoKeyboard
 from amp.app.widgets.log_panel import LogPanel
+from amp.app.widgets.lyric_lane import LyricLane
+from amp.app.widgets.lyrics_panel import LyricsPanel
 from amp.app.widgets.ruler import TimeRuler
 from amp.app.widgets.track_panel import TRACK_HINTS, TRACK_LABELS, TrackPanel
 from amp.app.widgets.waveform import WaveformView
@@ -104,6 +108,7 @@ class MainWindow(QMainWindow):
 
         self._build_central()
         self._build_actions()
+        self.lyrics = LyricsController(self)
         self._build_menus()
         self._build_toolbar()
         self._build_statusbar()
@@ -148,15 +153,28 @@ class MainWindow(QMainWindow):
         grid.addWidget(self.waveform, 1, 1)
         grid.addWidget(self.keyboard, 2, 0)
         grid.addWidget(self.view, 2, 1)
+        # 가사 레인 (명세 5장: 피아노 롤 아래 '가사·음절 정렬 영역'). 파형·피아노 롤과 같은 시간축
+        self.lyric_label = QLabel("가사")
+        self.lyric_label.setFixedWidth(KEYBOARD_WIDTH)
+        self.lyric_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.lyric_label.setProperty("role", "secondary")
+        self.lyric_lane = LyricLane(self.doc, self.timeline)
+        grid.addWidget(self.lyric_label, 3, 0)
+        grid.addWidget(self.lyric_lane, 3, 1)
         grid.setRowStretch(2, 1)
         grid.setColumnStretch(1, 1)
 
         self.tracks = TrackPanel()
         self.inspector = Inspector()
+        self.lyrics_panel = LyricsPanel()
+        self.right_tabs = QTabWidget()
+        self.right_tabs.setDocumentMode(True)
+        self.right_tabs.addTab(self.inspector, "속성·분석")
+        self.right_tabs.addTab(self.lyrics_panel, "가사")
         self.splitter = QSplitter(Qt.Orientation.Horizontal)
         self.splitter.addWidget(self.tracks)
         self.splitter.addWidget(center)
-        self.splitter.addWidget(self.inspector)
+        self.splitter.addWidget(self.right_tabs)
         self.splitter.setStretchFactor(1, 1)
         self.splitter.setSizes([250, 900, 380])
         self.splitter.setChildrenCollapsible(False)
@@ -252,6 +270,7 @@ class MainWindow(QMainWindow):
         for a in (self.act_analyze, self.act_redetect, self.act_reseparate, self.act_cancel_analysis, None,
                   self.act_no_vocal, self.act_compare_runs, self.act_probe, self.act_clear_cache, None, self.act_sample):
             m.addSeparator() if a is None else m.addAction(a)
+        self.lyrics.build_menu(mb)
         m = mb.addMenu("내보내기(&X)")
         m.addAction(self.act_export)
         m.addAction(self.act_export_midi)
@@ -467,6 +486,8 @@ class MainWindow(QMainWindow):
         panel.reseparate.setEnabled(self.act_reseparate.isEnabled())
         panel.clear_cache.setEnabled(is_open)
         panel.set_cache_size(self.session.cache_size())
+        if hasattr(self, "lyrics"):
+            self.lyrics.update_actions()
 
     def _update_analysis_label(self) -> None:
         a = self.doc.project.analysis
@@ -631,6 +652,7 @@ class MainWindow(QMainWindow):
         self.view.set_playhead(t)
         self.waveform.set_playhead(t)
         self.ruler.set_playhead(t)
+        self.lyrics.on_position(t)
         self._update_time_label(t)
 
     def _update_time_label(self, t: float) -> None:
@@ -763,9 +785,17 @@ class MainWindow(QMainWindow):
         self._refresh_tracks()
         self._update_title()
 
+    def reveal_time(self, t: float) -> None:
+        """t가 화면 밖이면 가로로 스크롤해 보이게 한다."""
+        a, b = self.view.visible_time_range()
+        if not (a <= t <= b):
+            bar = self.view.horizontalScrollBar()
+            bar.setValue(int(self.view.mapper.time_to_x(t) - self.view.viewport().width() / 3))
+
     def _on_audio_ready(self) -> None:
         audio = self.session.audio
         self.view.roll.set_audio_duration(audio.duration)
+        self.lyric_lane.duration = audio.duration
         for name, st in (self._pending_playback.get("tracks") or {}).items():
             self.player.set_track_state(name, gain=float(st.get("gain", 1.0)), mute=bool(st.get("mute", False)),
                                         solo=bool(st.get("solo", False)))
@@ -789,6 +819,8 @@ class MainWindow(QMainWindow):
             "follow": self.act_follow.isChecked(),
             "waveform_track": self.tracks.selected_track,
             "splitter": self.splitter.sizes(),
+            "show_lyrics": self.lyrics.act_show.isChecked(),
+            "right_tab": self.right_tabs.currentIndex(),
         }
 
     def _playback_state(self) -> dict:
@@ -806,6 +838,8 @@ class MainWindow(QMainWindow):
             self.act_show_notes.setChecked(bool(ui.get("show_notes", True)))
             self.act_show_curve.setChecked(bool(ui.get("show_pitch", True)))
             self.act_follow.setChecked(bool(ui.get("follow", True)))
+            self.lyrics.act_show.setChecked(bool(ui.get("show_lyrics", True)))
+            self.right_tabs.setCurrentIndex(int(ui.get("right_tab", 0)))
             idx = self.snap_combo.findData(float(ui.get("snap_beats", 0.25)))
             if idx >= 0:
                 self.snap_combo.setCurrentIndex(idx)

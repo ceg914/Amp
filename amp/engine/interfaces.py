@@ -25,7 +25,8 @@ class Stems:
 @dataclass(frozen=True)
 class AlignmentResult:
     lyrics: LyricsTrack
-    notes: tuple[Note, ...]  # syllable_id가 채워진 음표
+    notes: tuple[Note, ...]
+    links: tuple[tuple[str, str], ...] = ()  # (음표 id, 음절 id)
 
 
 class Stage(ABC):
