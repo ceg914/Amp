@@ -86,3 +86,32 @@ def test_tracks_and_states_without_device(qapp):
     assert p.track_state("vocals") == {"gain": 0.5, "mute": True, "solo": False}
     p.set_track("vocals", None)
     assert set(p.tracks) == {"original"}
+
+
+def test_pcm_device_finish_returns_no_data_without_closing(qapp):
+    """정지 뒤 오디오 스레드가 늦게 읽어도 '열리지 않은 장치' 오류 대신 빈 데이터를 받는다 (Windows 로그)."""
+    from PySide6.QtCore import QIODevice
+
+    from amp.app.player import PcmDevice
+    from amp.audio.pcm import PcmMixer, SampleFormat
+
+    y = np.zeros((4410, 2), np.float32)
+    dev = PcmDevice(PcmMixer({"original": y}, 44100, 44100, 2, SampleFormat.INT16))
+    dev.open(QIODevice.OpenModeFlag.ReadOnly)
+    assert len(dev.read(400)) == 400
+    dev.finish()
+    dev.readAll()  # QIODevice가 미리 읽어 둔 버퍼는 비운다
+    assert dev.isOpen() and len(dev.read(400)) == 0 and dev.bytesAvailable() == 0
+
+
+@needs_device
+def test_teardown_keeps_device_alive_until_sink_is_deleted(qtbot):
+    p = AudioPlayer()
+    p.set_audio(AudioData(np.zeros((44100, 2), np.float32), 44100))
+    p.play()
+    dev, sink = p._device, p._sink
+    assert dev.parent() is sink  # 장치는 sink의 자식 → sink와 함께 지워진다
+    p.seek(0.5)  # 재생 중 이동 = 정리 후 새로 시작
+    dev.readAll()
+    assert dev.isOpen() and dev.finished and len(dev.read(64)) == 0
+    p.stop()

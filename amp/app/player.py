@@ -38,19 +38,32 @@ class PlaybackState(Enum):
 
 
 class PcmDevice(QIODevice):
-    """PcmConverter를 QIODevice로 감싼다. 오디오 스레드에서 읽힐 수 있어 잠금을 쓴다."""
+    """PcmConverter를 QIODevice로 감싼다. 오디오 스레드에서 읽힐 수 있어 잠금을 쓴다.
 
-    def __init__(self, converter, start_frame: int = 0) -> None:
+    재생을 멈출 때 장치를 닫지 않고 ``finish()`` 로 '더 줄 데이터 없음' 상태로만 바꾼다.
+    Windows의 Qt 오디오(링 버퍼를 채우는 별도 스레드)는 sink.stop() 뒤에도 잠깐 장치를 읽을 수 있어,
+    닫아 버리면 "QIODevice::read (PcmDevice): device not open" 경고가 나고(사용자 로그에서 확인),
+    부모 없는 장치를 파이썬이 그 순간 지우면 해제된 객체를 읽을 위험도 있다. 장치는 sink의 자식으로 두어 sink와 함께 지운다.
+    """
+
+    def __init__(self, converter, start_frame: int = 0, parent: QObject | None = None) -> None:
         """converter는 read(start, count)·total_out_frames·bytes_per_frame를 가진 객체 (PcmConverter, PcmMixer)."""
-        super().__init__()
+        super().__init__(parent)
         self._conv = converter
         self._frame = start_frame
         self._lock = threading.Lock()
         self.at_end = False
+        self.finished = False
+
+    def finish(self) -> None:
+        with self._lock:
+            self.finished = True
 
     def readData(self, maxlen: int) -> bytes:  # noqa: N802 - Qt API
         bpf = self._conv.bytes_per_frame
         with self._lock:
+            if self.finished:
+                return b""
             data = self._conv.read(self._frame, maxlen // bpf)
             self._frame += len(data) // bpf
             if self._frame >= self._conv.total_out_frames:
@@ -62,6 +75,8 @@ class PcmDevice(QIODevice):
 
     def bytesAvailable(self) -> int:  # noqa: N802
         with self._lock:
+            if self.finished:
+                return 0
             remaining = (self._conv.total_out_frames - self._frame) * self._conv.bytes_per_frame
         return remaining + super().bytesAvailable()
 
@@ -255,9 +270,9 @@ class AudioPlayer(QObject):
             st = self.track_state(name)
             conv.set_state(name, gain=st["gain"], mute=st["mute"], solo=st["solo"])
         self._mixer = conv
-        pcm = PcmDevice(conv, conv.out_frame_at(position))
-        pcm.open(QIODevice.OpenModeFlag.ReadOnly)
         sink = QAudioSink(device, fmt, self)
+        pcm = PcmDevice(conv, conv.out_frame_at(position), parent=sink)  # sink와 함께 지운다 (_teardown 참고)
+        pcm.open(QIODevice.OpenModeFlag.ReadOnly)
         sink.setBufferSize(int(fmt.bytesForDuration(BUFFER_USEC)))
         # stateChanged 시그널은 PySide6 6.12에서 QAudio::State 인자 변환에 실패한다.
         # 대신 _tick 타이머(30ms)에서 sink.state()를 확인한다.
@@ -275,11 +290,11 @@ class AudioPlayer(QObject):
         sink, pcm = self._sink, self._device
         self._sink = self._device = None
         self._mixer = None
+        if pcm is not None:
+            pcm.finish()  # 닫지 않는다: 오디오 스레드가 늦게 읽어도 빈 데이터만 받는다
         if sink is not None:
             sink.stop()
-            sink.deleteLater()
-        if pcm is not None:
-            pcm.close()
+            sink.deleteLater()  # 자식인 장치도 이때 함께 지워진다
 
     def _check_sink(self) -> None:
         if self._sink is None:
