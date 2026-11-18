@@ -58,7 +58,7 @@ def main(argv: list[str] | None = None) -> int:
         print(f"[SONATLAS] {msg}")
         if not ok:
             return 1
-        print("[SONATLAS] 처음 인식할 때 모델을 내려받습니다 (small 약 465MB, turbo 약 1.5GB).")
+        print("[SONATLAS] 처음 인식할 때 모델을 내려받습니다 (기본 turbo 약 1.5GB).")
         print("[SONATLAS] 처음 정렬할 때 정렬 모델 MMS_FA(약 1.2GB, CC-BY-NC 4.0 비상업 라이선스)를 내려받습니다.")
     return 0
 
