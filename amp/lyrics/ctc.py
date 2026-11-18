@@ -115,7 +115,8 @@ def apply_activity(logp: np.ndarray, active: np.ndarray | None, blank: int, star
 
 
 def _align_window(logp: np.ndarray, units: list[Unit], f0: int, f1: int, star: int, blank: int,
-                  dt: float, active: np.ndarray | None, next_start: float | None) -> list[UnitResult]:
+                  dt: float, active: np.ndarray | None, next_start: float | None,
+                  allow_coarse: bool = True) -> list[UnitResult]:
     """프레임 [f0, f1) 안에서 units를 정렬한다. 양 끝에 '*'를 둬 구간의 남는 소리를 흡수한다."""
     seq: list[int] = [star]
     owner: list[int] = [-1]
@@ -128,7 +129,7 @@ def _align_window(logp: np.ndarray, units: list[Unit], f0: int, f1: int, star: i
     owner.append(-1)
     window = logp[f0:f1]
     tokens = np.asarray(seq, dtype=np.int64)
-    if window.shape[0] * (2 * len(tokens) + 1) > MAX_CELLS and len({u.line for u in units}) > 1:
+    if allow_coarse and window.shape[0] * (2 * len(tokens) + 1) > MAX_CELLS and len({u.line for u in units}) > 1:
         return _align_coarse_then_lines(logp, units, f0, f1, star, blank, dt, active, next_start)
     path = viterbi(window, tokens, blank)
     spans = token_spans(path, len(tokens))
@@ -161,7 +162,7 @@ def _align_coarse_then_lines(logp, units, f0, f1, star, blank, dt, active, next_
     n = (f1 - f0) // k
     coarse = logp[f0:f0 + n * k].reshape(n, k, -1).max(axis=1)
     coarse = coarse - np.logaddexp.reduce(coarse, axis=1, keepdims=True)
-    rough = _align_window(coarse, units, 0, n, star, blank, dt * k, None, None)
+    rough = _align_window(coarse, units, 0, n, star, blank, dt * k, None, None, allow_coarse=False)
     by_id = {r.syllable_id: r for r in rough}
     lines: dict[int, list[Unit]] = {}
     for u in units:
@@ -183,7 +184,8 @@ def _align_coarse_then_lines(logp, units, f0, f1, star, blank, dt, active, next_
             if nr:
                 nxt = f0 * dt + min(r.start for r in nr)
         try:
-            out.extend(_align_window(logp, us, a, max(b, a + 1), star, blank, dt, active, nxt or next_start))
+            out.extend(_align_window(logp, us, a, max(b, a + 1), star, blank, dt, active, nxt or next_start,
+                                     allow_coarse=False))
         except AlignmentFailed:
             continue
     return out

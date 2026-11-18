@@ -494,6 +494,32 @@ def test_ctc_releases_model_anchors_when_new_syllables_do_not_fit():
     assert [round(r.start, 2) for r in res] == [1.0, 2.0, 2.5, 3.5]
 
 
+def test_ctc_long_input_uses_coarse_then_line_alignment(monkeypatch):
+    """역추적 표가 너무 크면(긴 곡) 4배 거친 정렬로 줄 위치를 잡고 줄마다 다시 정렬한다."""
+    st = ops.apply_text(LyricsState(), "가 나 다\n라 마 바")
+    import tempfile
+
+    starts = [1.0, 2.0, 3.0, 11.0, 12.0, 13.0]
+    with tempfile.TemporaryDirectory() as d:
+        p = Path(d) / "e.npz"
+        _fake_emissions(p, [s.reading for s in st.text.syllables], starts, 16.0)
+        lp = np.load(p)["logp"].astype(np.float32)
+    units = [ctc.Unit(s.id, tuple(mms.LABEL_INDEX[c] for c in s.reading), st.text.index[s.id][0])
+             for s in st.text.syllables]
+    calls = []
+    real = ctc._align_coarse_then_lines
+
+    def spy(*a, **k):
+        calls.append(1)
+        return real(*a, **k)
+
+    monkeypatch.setattr(ctc, "MAX_CELLS", 1000)
+    monkeypatch.setattr(ctc, "_align_coarse_then_lines", spy)
+    res, warn, _ = ctc.align(lp, units, dt=0.02, star=mms.STAR)
+    assert calls and not warn
+    assert [round(r.start, 2) for r in res] == pytest.approx(starts, abs=0.03)
+
+
 def test_ctc_unknown_reading_is_estimated_not_detected():
     units = [ctc.Unit("k", ()), ctc.Unit("n", (mms.LABEL_INDEX["n"], mms.LABEL_INDEX["o"]))]
     lp = np.full((100, len(mms.LABELS)), -8.0, dtype=np.float32)
