@@ -682,3 +682,38 @@ def test_half_heavy_layers_keeps_layernorm_in_float32():
         a = ref.logits(tokens, ref.embed_audio(mel))
         b = half.logits(tokens, half.embed_audio(mel))  # CPU: 계산 때 가중치를 32비트로 맞춘다
     assert torch.isfinite(a).all() and torch.allclose(a, b, atol=0.05, rtol=0.01)
+
+
+# --- 빈 구간 다시 듣기 (사용자 보고: 인식이 썩 정확하지 않음) --------------------------------------
+
+def _seg(a, b, text, **kw):
+    return {"start": a, "end": b, "text": text, "avg_logprob": -0.3, "compression_ratio": 1.1, "words": [], **kw}
+
+
+def test_find_gaps_only_where_vocals_play_without_trustworthy_text():
+    from amp.lyrics.asr import GAP_PAD_S, find_gaps
+
+    dt = 0.02
+    active = np.zeros(int(60 / dt), dtype=bool)
+    active[int(5 / dt): int(30 / dt)] = True  # 5~30초 노래
+    active[int(40 / dt): int(41 / dt)] = True  # 1초짜리 소리 (짧아서 제외)
+    first = [_seg(5.0, 12.0, "아득히 먼 날도"), _seg(12.0, 20.0, "한글자막 by 한효정"),  # 환각이 삼킨 구간
+             _seg(24.0, 30.0, "그리움")]
+    gaps = find_gaps(active, first)
+    assert len(gaps) == 1
+    a, b = gaps[0]
+    assert a == pytest.approx(12.0 - GAP_PAD_S, abs=0.05) and b == pytest.approx(24.0 + GAP_PAD_S, abs=0.05)
+
+
+def test_merge_second_pass_replaces_hallucination_and_rejects_new_ones():
+    from amp.lyrics.asr import merge_second_pass
+
+    first = [_seg(5.0, 12.0, "아득히 먼 날도"), _seg(12.0, 20.0, "한글자막 by 한효정"), _seg(24.0, 30.0, "그리움")]
+    second = [_seg(12.2, 16.0, "어젯밤 꿈처럼"), _seg(16.0, 19.5, "추억의 물결은"), _seg(20.0, 23.0, "아멘"),
+              _seg(25.0, 29.0, "그리움")]  # 이미 있는 줄과 겹치면 넣지 않는다
+    merged = merge_second_pass(first, second)
+    texts_ = [s["text"] for s in merged]
+    assert texts_ == ["아득히 먼 날도", "어젯밤 꿈처럼", "추억의 물결은", "그리움"]
+    assert [bool(s.get("second_pass")) for s in merged] == [False, True, True, False]
+    rec = engine.recognition_from_raw({"model": "turbo", "language": "ko", "segments": merged})
+    assert review.R_SECOND_PASS in rec.segments[1].review  # 다시 들어 찾은 줄은 확인 필요로 표시

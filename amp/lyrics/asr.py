@@ -98,13 +98,99 @@ def busiest_window(y: np.ndarray, sr: int = SAMPLE_RATE, win_s: float = 30.0) ->
 
 
 TUNABLE = ("hallucination_silence_threshold", "condition_on_previous_text", "no_speech_threshold", "beam_size")
+# beam_size 5: 실제 두 곡(CPU, turbo)에서 CER 0.239→0.200, 0.116→0.108, WER 0.436→0.396, 0.247→0.217 (시간 약 1.5배)
 DEFAULT_OPTIONS = {"hallucination_silence_threshold": 2.0, "condition_on_previous_text": False,
-                   "no_speech_threshold": None}
+                   "no_speech_threshold": None, "beam_size": 5}
+# 빈 구간 다시 듣기: 보컬은 들리는데 1차 인식에 쓸 만한 글자가 없는 구간(3초 이상)만 다른 디코딩으로 한 번 더 인식한다.
+# 05번 곡에서 환각("한글자막 by …")이 삼킨 첫 줄을 되찾았다. 다시 들은 결과도 의심 문구면 받지 않는다.
+GAP_MIN_S = 3.0
+GAP_JOIN_S = 0.5
+GAP_PAD_S = 0.3
+GAP_MAX_TOTAL_S = 150.0
 # GPU에 올릴 때 대략 필요한 메모리(GB): 16비트 가중치 + 추론 작업 공간. 가중치 크기에서 잡은 여유값이다(실측 아님)
 GPU_NEED_GB = {"tiny": 0.6, "base": 0.8, "small": 1.5, "medium": 3.0, "turbo": 3.0, "large-v3": 5.0}
 # CPU로 넘기면 곡 하나에 수십 분 걸릴 수 있어 자동으로 넘기지 않는 모델
 HEAVY_MODELS = ("medium", "large-v3")
 HEARTBEAT_S = 5.0
+
+
+def frame_activity(y16: np.ndarray, hop: int = 320, floor_db: float = 20.0) -> np.ndarray:
+    """20ms 프레임마다 보컬이 들리는가 (곡 안 상위 음량보다 floor_db 이상 작지 않음)."""
+    from amp.lyrics.ctc import activity_mask
+
+    n = len(y16) // hop
+    if n == 0:
+        return np.zeros(0, dtype=bool)
+    db = 20 * np.log10(np.sqrt(np.mean(np.asarray(y16[: n * hop], np.float64).reshape(n, hop) ** 2, axis=1)) + 1e-9)
+    return activity_mask(db, floor_db=floor_db, dilate_frames=0)
+
+
+def segment_suspect(seg: dict) -> bool:
+    """다시 듣기 판단용: 글자가 없거나, 흔한 환각 문구·반복·확신 낮음·비정상 속도인 구간."""
+    from amp.lyrics import review
+
+    text = str(seg.get("text", ""))
+    if not review._norm(text):  # noqa: SLF001
+        return True
+    reasons = review.review_segment(text, float(seg["start"]), float(seg["end"]), avg_logprob=seg.get("avg_logprob"),
+                                    compression_ratio=seg.get("compression_ratio"))
+    return any(r in (review.R_PHRASE, review.R_REPETITIVE, review.R_LOW_CONF, review.R_RATE) for r in reasons)
+
+
+def find_gaps(active: np.ndarray, segments: list[dict], dt: float = 0.02) -> list[tuple[float, float]]:
+    """보컬은 들리는데 믿을 만한 인식 결과가 없는 구간 (GAP_MIN_S 이상, 짧은 끊김은 이어 붙임)."""
+    n = len(active)
+    covered = np.zeros(n, dtype=bool)
+    for seg in segments:
+        if not segment_suspect(seg):
+            covered[max(0, int(seg["start"] / dt)): min(n, int(seg["end"] / dt) + 1)] = True
+    need = np.asarray(active, dtype=bool) & ~covered
+    join = max(1, int(GAP_JOIN_S / dt))
+    gaps: list[tuple[float, float]] = []
+    i = 0
+    while i < n:
+        if not need[i]:
+            i += 1
+            continue
+        j = i
+        while j < n and (need[j] or need[j:j + join].any()):
+            j += 1
+        if (j - i) * dt >= GAP_MIN_S:
+            gaps.append((round(max(0.0, i * dt - GAP_PAD_S), 3), round(min(n * dt, j * dt + GAP_PAD_S), 3)))
+        i = j
+    chosen, total = [], 0.0
+    for a, b in sorted(gaps, key=lambda g: g[1] - g[0], reverse=True):  # 너무 많으면 긴 구간부터
+        if total + (b - a) <= GAP_MAX_TOTAL_S:
+            chosen.append((a, b))
+            total += b - a
+    return sorted(chosen)
+
+
+def merge_second_pass(first: list[dict], second: list[dict]) -> list[dict]:
+    """다시 들은 결과를 1차 결과에 넣는다. 의심스러운 결과는 받지 않고, 받은 결과와 겹치는 1차 의심 구간은 뺀다."""
+
+    def overlap(a: dict, b: dict) -> float:
+        return max(0.0, min(a["end"], b["end"]) - max(a["start"], b["start"]))
+
+    accepted = [s for s in second if not segment_suspect(s)]
+    out = [s for s in first if not (segment_suspect(s) and any(overlap(s, a) > 0 for a in accepted))]
+    for a in accepted:
+        good = [s for s in out if not segment_suspect(s)]
+        if any(overlap(a, s) > 0.3 * max(a["end"] - a["start"], 1e-3) for s in good):
+            continue
+        out.append(dict(a, second_pass=True))
+    return sorted(out, key=lambda s: s["start"])
+
+
+def _segments(out: dict) -> list[dict]:
+    segs = []
+    for s in out.get("segments") or ():
+        words = [{"text": w.get("word", ""), "start": float(w["start"]), "end": float(w["end"]),
+                  "probability": float(w.get("probability", 0.0))} for w in s.get("words") or ()]
+        segs.append({"start": float(s["start"]), "end": float(s["end"]), "text": str(s.get("text", "")).strip(),
+                     "avg_logprob": float(s.get("avg_logprob", 0.0)), "no_speech_prob": float(s.get("no_speech_prob", 0.0)),
+                     "compression_ratio": float(s.get("compression_ratio", 0.0)), "words": words})
+    return segs
 
 
 def is_oom(e: BaseException) -> bool:
@@ -254,17 +340,26 @@ def _transcribe(y16, report, torch, whisper, choose_device, *, model_name, langu
         lang_prob = float(probs[language])
         report(0.17, f"언어 감지: {language} ({lang_prob:.2f})")
 
-    def run(m, fp16: bool):
-        report(0.18, f"가사 인식 중 ({actual.upper()}, {name})")
-        restore2 = _patch_progress(lambda f, msg: report(0.18 + 0.8 * f, msg),
-                                   lambda n, t: f"가사 인식 중 ({actual.upper()}, {name}) {n / 100:.0f}/{t / 100:.0f}초")
+    opts = dict(DEFAULT_OPTIONS)
+    opts.update({k: v for k, v in (options or {}).items() if k in TUNABLE})  # 평가용 조정
+
+    def run(m, fp16: bool, clip=None, override: dict | None = None, span=(0.18, 0.85), label="가사 인식 중"):
+        a, b = span
+        report(a, f"{label} ({actual.upper()}, {name})")
+        restore2 = _patch_progress(lambda f, msg: report(a + (b - a) * f, msg),
+                                   lambda n, t: f"{label} ({actual.upper()}, {name}) {n / 100:.0f}/{t / 100:.0f}초")
         try:
-            opts = dict(DEFAULT_OPTIONS)
-            opts.update({k: v for k, v in (options or {}).items() if k in TUNABLE})  # 평가용 조정
+            o = dict(opts)
+            for k, v in (override or {}).items():
+                if v is None:
+                    o.pop(k, None)
+                else:
+                    o[k] = v
+            extra = {"clip_timestamps": [x for g in clip for x in g]} if clip else {}
             return m.transcribe(
                 y16.astype(np.float32), language=language, task="transcribe", verbose=False,
                 temperature=(0.0, 0.2, 0.4, 0.6, 0.8, 1.0), compression_ratio_threshold=2.4,
-                logprob_threshold=-1.0, word_timestamps=True, fp16=fp16, **opts,
+                logprob_threshold=-1.0, word_timestamps=True, fp16=fp16, **o, **extra,
             )
         finally:
             restore2()
@@ -283,13 +378,16 @@ def _transcribe(y16, report, torch, whisper, choose_device, *, model_name, langu
             out = run(model, False)
         else:
             raise
-    segments = []
-    for s in out.get("segments") or ():
-        words = [{"text": w.get("word", ""), "start": float(w["start"]), "end": float(w["end"]),
-                  "probability": float(w.get("probability", 0.0))} for w in s.get("words") or ()]
-        segments.append({"start": float(s["start"]), "end": float(s["end"]), "text": str(s.get("text", "")).strip(),
-                         "avg_logprob": float(s.get("avg_logprob", 0.0)), "no_speech_prob": float(s.get("no_speech_prob", 0.0)),
-                         "compression_ratio": float(s.get("compression_ratio", 0.0)), "words": words})
+    segments = _segments(out)
+    gaps: list[tuple[float, float]] = []
+    if (options or {}).get("gap_fill", True):
+        gaps = find_gaps(frame_activity(y16), segments)
+        if gaps:  # 1차와 다른 디코딩(빔 ↔ 탐욕)으로 그 구간만 다시 인식
+            alt = {"beam_size": None} if opts.get("beam_size") else {"beam_size": 5}
+            out2 = run(model, actual == "cuda", clip=gaps, override=alt, span=(0.85, 0.98),
+                       label=f"빈 구간 {len(gaps)}곳 다시 듣는 중")
+            segments = merge_second_pass(segments, _segments(out2))
     report(1.0, "가사 인식 완료")
     return {"model": name, "model_version": getattr(whisper, "__version__", ""), "language": language,
-            "language_probability": lang_prob, "device": actual, "note": note or "", "segments": segments}
+            "language_probability": lang_prob, "device": actual, "note": note or "", "segments": segments,
+            "gaps": [list(g) for g in gaps], "options": {k: v for k, v in opts.items()}}

@@ -35,7 +35,7 @@ from amp.lyrics.model import (
 
 log = logging.getLogger(__name__)
 ProgressFn = Callable[[float, str], None]
-ASR_VERSION = 1
+ASR_VERSION = 2  # 2: 빔 탐색 + 빈 구간 다시 듣기 (이전 캐시는 쓰지 않음)
 MMS_VERSION = 1
 
 
@@ -189,6 +189,8 @@ def recognition_from_raw(raw: dict, req: LyricsRequest | None = None, params: di
                                         compression_ratio=s.get("compression_ratio"), activity=s.get("activity"),
                                         in_no_vocal=float(s.get("in_no_vocal", 0.0)), words=words,
                                         level_db=s.get("level_db"))
+        if s.get("second_pass"):
+            reasons.append(review.R_SECOND_PASS)
         segs.append(AsrSegment(f"seg{i}", float(s["start"]), float(s["end"]), text, s.get("avg_logprob"),
                                s.get("no_speech_prob"), s.get("compression_ratio"), tuple(reasons), words))
     segs = review.mark_repeats(segs)

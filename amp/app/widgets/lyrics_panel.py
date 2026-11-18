@@ -94,6 +94,11 @@ class LyricsPanel(QScrollArea):
         row.addWidget(self.recognize)
         row.addWidget(self.apply_rec)
         f.addRow(row)
+        hint = QLabel("노래 인식은 틀리기 쉽습니다(한국어 실제 곡 2개에서 글자 10~18% 틀림). 정확한 가사가 있으면 "
+                      "아래 편집기에 붙여넣고 [전체 정렬]을 쓰세요. 음절 시간은 그쪽이 더 정확합니다.")
+        hint.setWordWrap(True)
+        hint.setProperty("role", "secondary")
+        f.addRow(hint)
         self.install_label = QLabel("")
         self.install_label.setWordWrap(True)
         self.install_label.setProperty("role", "secondary")
