@@ -27,14 +27,20 @@ import errno
 import json
 import os
 import sys
+import threading
 import traceback
 
 _PROTO = sys.stdout
 
 
+_EMIT_LOCK = threading.Lock()
+
+
 def emit(event: str, **data) -> None:
-    _PROTO.write(json.dumps({"event": event, **data}, ensure_ascii=True) + "\n")
-    _PROTO.flush()
+    line = json.dumps({"event": event, **data}, ensure_ascii=True) + "\n"
+    with _EMIT_LOCK:  # 가사 인식은 경과 시간 알림을 다른 스레드에서도 보낸다 (줄이 섞이지 않게)
+        _PROTO.write(line)
+        _PROTO.flush()
 
 
 def _progress(fraction: float, message: str = "") -> None:

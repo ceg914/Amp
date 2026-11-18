@@ -25,9 +25,9 @@ MODELS = {
     "tiny": ("가장 빠름, 정확도 낮음", 75, 1),
     "base": ("빠름", 145, 1),
     "small": ("빠름, 노래에서 빠지는 구간이 많음", 465, 2),
-    "medium": ("느림, 더 정확", 1460, 5),
-    "turbo": ("기본값 (large-v3-turbo)", 1550, 6),
-    "large-v3": ("가장 정확, 가장 느림", 2950, 10),
+    "medium": ("느림 (GPU 약 3GB)", 1460, 3),
+    "turbo": ("기본값 (large-v3-turbo, GPU 약 3GB)", 1550, 3),
+    "large-v3": ("가장 느림 (GPU 약 5GB, CPU로는 수십 분)", 2950, 5),
 }
 LANGUAGES = {"auto": "자동 감지", "ko": "한국어", "en": "영어", "ja": "일본어"}
 
@@ -100,10 +100,93 @@ def busiest_window(y: np.ndarray, sr: int = SAMPLE_RATE, win_s: float = 30.0) ->
 TUNABLE = ("hallucination_silence_threshold", "condition_on_previous_text", "no_speech_threshold", "beam_size")
 DEFAULT_OPTIONS = {"hallucination_silence_threshold": 2.0, "condition_on_previous_text": False,
                    "no_speech_threshold": None}
+# GPU에 올릴 때 대략 필요한 메모리(GB): 16비트 가중치 + 추론 작업 공간. 가중치 크기에서 잡은 여유값이다(실측 아님)
+GPU_NEED_GB = {"tiny": 0.6, "base": 0.8, "small": 1.5, "medium": 3.0, "turbo": 3.0, "large-v3": 5.0}
+# CPU로 넘기면 곡 하나에 수십 분 걸릴 수 있어 자동으로 넘기지 않는 모델
+HEAVY_MODELS = ("medium", "large-v3")
+HEARTBEAT_S = 5.0
+
+
+def is_oom(e: BaseException) -> bool:
+    return type(e).__name__ == "OutOfMemoryError" or "out of memory" in str(e).lower()
+
+
+def half_heavy_layers(model):
+    """Linear·Conv1d·Embedding 가중치만 16비트로 바꾼다. Whisper의 이 층들은 계산할 때 가중치를 입력 dtype으로 맞추고,
+    LayerNorm은 32비트로 계산하므로 32비트로 남긴다. large-v3 기준 GPU 가중치가 약 6.2GB → 3.1GB가 된다."""
+    from torch import nn
+
+    for m in model.modules():
+        if isinstance(m, (nn.Linear, nn.Conv1d, nn.Embedding)):
+            m.half()
+    return model
+
+
+def load_model(name: str, device: str, download_root: str):
+    """whisper.load_model 대신 쓴다. 원래 함수는 16비트 체크포인트를 GPU에 둔 채 32비트 모델을 GPU로 하나 더 옮겨,
+    large-v3에서 순간 약 9.3GB가 필요했다(8GB GPU에서 메모리 부족 → CPU로 넘어가 멈춘 듯 보임, 사용자 보고).
+    여기서는 체크포인트를 CPU에서 읽고, GPU면 무거운 층만 16비트로 바꿔 올린다."""
+    import torch
+    import whisper
+    from whisper.model import ModelDimensions, Whisper
+
+    path = whisper._download(whisper._MODELS[name], download_root, False)  # noqa: SLF001 - 공개 함수가 없다
+    ckpt = torch.load(path, map_location="cpu", weights_only=True)
+    model = Whisper(ModelDimensions(**ckpt["dims"]))
+    model.load_state_dict(ckpt["model_state_dict"])
+    del ckpt
+    model.set_alignment_heads(whisper._ALIGNMENT_HEADS[name])  # noqa: SLF001
+    if device == "cuda":
+        half_heavy_layers(model)
+    return model.to(device)
+
+
+def _gpu_free_bytes() -> int | None:
+    try:
+        import torch
+
+        free, _total = torch.cuda.mem_get_info()
+        return int(free)
+    except Exception:  # noqa: BLE001
+        return None
+
+
+def _oom_model_error(name: str, free: int | None = None) -> "AsrError":
+    have = f"GPU 여유 메모리가 {free / 2**30:.1f}GB라 " if free is not None else "GPU 메모리가 부족해 "
+    return AsrError("oom_model",
+                    f"{have}{name} 모델(약 {GPU_NEED_GB.get(name, 0):.0f}GB 필요)을 GPU로 돌릴 수 없습니다. "
+                    "가사 탭에서 모델을 turbo로 바꿔 다시 실행하세요. "
+                    "CPU로 돌리면 곡 하나에 수십 분 걸릴 수 있어 자동으로 넘기지 않았습니다.")
+
+
+class _Progress:
+    """마지막 진행률을 기억했다가, 오래 걸리는 구간에서도 몇 초마다 경과 시간을 다시 알린다(멈춘 것처럼 보이지 않게)."""
+
+    def __init__(self, report: Callable[[float, str], None]) -> None:
+        import threading
+        import time
+
+        self._report = report
+        self._lock = threading.Lock()
+        self._time = time.monotonic
+        self.t0 = self._time()
+        self.fraction, self.message = 0.0, ""
+
+    def __call__(self, fraction: float, message: str) -> None:
+        with self._lock:
+            self.fraction, self.message = fraction, message
+        self._report(fraction, message)
+
+    def beat(self) -> None:
+        with self._lock:
+            f, m = self.fraction, self.message
+        self._report(f, f"{m} · {int(self._time() - self.t0)}초 경과")
 
 
 def transcribe(y16: np.ndarray, *, model_name: str, language: str, device: str, download_root: str,
                report: Callable[[float, str], None], options: dict | None = None) -> dict:
+    import threading
+
     try:
         import torch
         import whisper
@@ -112,21 +195,48 @@ def transcribe(y16: np.ndarray, *, model_name: str, language: str, device: str, 
                        f"가사 인식 라이브러리가 설치되어 있지 않습니다 ({e.name}). install_lyrics.bat을 실행하세요.") from e
     from amp.engine.dsp.separation import choose_device
 
+    prog = _Progress(report)
+    stop = threading.Event()
+
+    def heartbeat() -> None:
+        while not stop.wait(HEARTBEAT_S):
+            prog.beat()
+
+    threading.Thread(target=heartbeat, daemon=True).start()
+    try:
+        return _transcribe(y16, prog, torch, whisper, choose_device, model_name=model_name, language=language,
+                           device=device, download_root=download_root, options=options)
+    finally:
+        stop.set()
+
+
+def _transcribe(y16, report, torch, whisper, choose_device, *, model_name, language, device, download_root, options):
     actual, note = choose_device(device)
     name = resolve_model(model_name, actual)
     os.makedirs(download_root, exist_ok=True)
+    if actual == "cuda":
+        free = _gpu_free_bytes()
+        if free is not None and free < GPU_NEED_GB.get(name, 0) * 2**30:
+            if name in HEAVY_MODELS:
+                raise _oom_model_error(name, free)
+            actual, note = "cpu", f"GPU 여유 메모리({free / 2**30:.1f}GB)가 부족해 CPU로 인식합니다."
+            report(0.0, note)
     if not model_downloaded(name, download_root):
         report(0.0, f"인식 모델({name}) 내려받는 중")
     restore = _patch_progress(lambda f, m: report(0.02 + 0.13 * f, m),
                               lambda n, t: f"인식 모델({name}) 내려받는 중 {n / 2**20:.0f}/{t / 2**20:.0f}MB")
     try:
+        report(0.15, f"인식 모델({name}) 불러오는 중 ({actual.upper()})")
         try:
-            model = whisper.load_model(name, device=actual, download_root=download_root)
+            model = load_model(name, actual, download_root)
         except Exception as e:  # noqa: BLE001
-            if "out of memory" in str(e).lower() and actual == "cuda":
+            if actual == "cuda" and is_oom(e):
                 torch.cuda.empty_cache()
-                actual, note = "cpu", "GPU 메모리가 부족해 CPU로 인식했습니다."
-                model = whisper.load_model(name, device="cpu", download_root=download_root)
+                if name in HEAVY_MODELS:
+                    raise _oom_model_error(name) from e
+                actual, note = "cpu", "GPU 메모리가 부족해 CPU로 인식합니다 (시간이 더 걸립니다)."
+                report(0.15, note)
+                model = load_model(name, "cpu", download_root)
             elif isinstance(e, (OSError, RuntimeError)) and not model_downloaded(name, download_root):
                 raise AsrError("model_download", f"인식 모델({name})을 내려받지 못했습니다: {e}") from e
             else:
@@ -145,8 +255,9 @@ def transcribe(y16: np.ndarray, *, model_name: str, language: str, device: str, 
         report(0.17, f"언어 감지: {language} ({lang_prob:.2f})")
 
     def run(m, fp16: bool):
+        report(0.18, f"가사 인식 중 ({actual.upper()}, {name})")
         restore2 = _patch_progress(lambda f, msg: report(0.18 + 0.8 * f, msg),
-                                   lambda n, t: f"가사 인식 중 ({actual.upper()}) {n / 100:.0f}/{t / 100:.0f}초")
+                                   lambda n, t: f"가사 인식 중 ({actual.upper()}, {name}) {n / 100:.0f}/{t / 100:.0f}초")
         try:
             opts = dict(DEFAULT_OPTIONS)
             opts.update({k: v for k, v in (options or {}).items() if k in TUNABLE})  # 평가용 조정
@@ -161,11 +272,14 @@ def transcribe(y16: np.ndarray, *, model_name: str, language: str, device: str, 
     try:
         out = run(model, actual == "cuda")
     except Exception as e:  # noqa: BLE001
-        if actual == "cuda" and "out of memory" in str(e).lower():
+        if actual == "cuda" and is_oom(e):
+            del model
             torch.cuda.empty_cache()
-            model = model.to("cpu")
-            actual, note = "cpu", "GPU 메모리가 부족해 CPU로 다시 인식했습니다."
+            if name in HEAVY_MODELS:
+                raise _oom_model_error(name) from e
+            actual, note = "cpu", "GPU 메모리가 부족해 CPU로 다시 인식했습니다 (시간이 더 걸립니다)."
             report(0.18, note)
+            model = load_model(name, "cpu", download_root)
             out = run(model, False)
         else:
             raise

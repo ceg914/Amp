@@ -582,3 +582,103 @@ def test_auto_model_is_turbo():
 
     assert resolve_model("auto", "cpu") == resolve_model("auto", "cuda") == "turbo"
     assert resolve_model("small", "cpu") == "small"
+
+
+# --- GPU 메모리 부족 (사용자 보고: large 모델이 멈춘 듯 보임) ----------------------------------------
+
+def _stub_asr(monkeypatch, free_gb, oom_on=()):
+    pytest.importorskip("whisper")
+    torch = pytest.importorskip("torch")
+    from amp.engine.dsp import separation
+    from amp.lyrics import asr
+
+    monkeypatch.setattr(separation, "choose_device", lambda d: ("cuda", ""))
+    monkeypatch.setattr(asr, "_gpu_free_bytes", lambda: int(free_gb * 2**30))
+    monkeypatch.setattr(asr, "model_downloaded", lambda n, r: True)
+    monkeypatch.setattr(torch.cuda, "empty_cache", lambda: None)
+    loads = []
+
+    class Stub:
+        def __init__(self, dev):
+            self.dev = dev
+
+        def transcribe(self, y, **kw):
+            if self.dev == "cuda" and "transcribe" in oom_on:
+                raise RuntimeError("CUDA out of memory. Tried to allocate 512.00 MiB")
+            return {"segments": [{"start": 0.0, "end": 1.0, "text": "가", "words": []}]}
+
+    def fake_load(name, device, root):
+        loads.append((name, device))
+        if device == "cuda" and "load" in oom_on:
+            raise RuntimeError("CUDA out of memory")
+        return Stub(device)
+
+    monkeypatch.setattr(asr, "load_model", fake_load)
+    return asr, loads
+
+
+def _run(asr, model, tmp_path):
+    msgs = []
+    out = asr.transcribe(np.zeros(16000, np.float32), model_name=model, language="ko", device="auto",
+                         download_root=str(tmp_path), report=lambda f, m: msgs.append(m))
+    return out, msgs
+
+
+def test_heavy_model_that_does_not_fit_gpu_stops_with_turbo_advice(monkeypatch, tmp_path):
+    asr, loads = _stub_asr(monkeypatch, free_gb=3.0)
+    with pytest.raises(asr.AsrError) as e:
+        _run(asr, "large-v3", tmp_path)
+    assert e.value.code == "oom_model" and "turbo" in str(e.value) and loads == []  # 몰래 CPU로 넘기지 않는다
+    asr, loads = _stub_asr(monkeypatch, free_gb=7.0, oom_on=("load",))
+    with pytest.raises(asr.AsrError) as e:
+        _run(asr, "large-v3", tmp_path)
+    assert e.value.code == "oom_model" and loads == [("large-v3", "cuda")]
+
+
+def test_light_model_falls_back_to_cpu_and_says_so(monkeypatch, tmp_path):
+    asr, loads = _stub_asr(monkeypatch, free_gb=7.0, oom_on=("transcribe",))
+    out, msgs = _run(asr, "turbo", tmp_path)
+    assert out["device"] == "cpu" and "GPU 메모리" in out["note"]
+    assert loads == [("turbo", "cuda"), ("turbo", "cpu")]
+    assert any("GPU 메모리" in m for m in msgs) and any("(CPU, turbo)" in m for m in msgs)  # 화면에 보인다
+    asr, loads = _stub_asr(monkeypatch, free_gb=1.0)
+    out, msgs = _run(asr, "small", tmp_path)  # 여유 메모리가 처음부터 모자라면 GPU를 시도하지 않는다
+    assert out["device"] == "cpu" and loads == [("small", "cpu")]
+
+
+def test_progress_heartbeat_repeats_last_message_with_elapsed_time():
+    from amp.lyrics.asr import _Progress
+
+    got = []
+    p = _Progress(lambda f, m: got.append((f, m)))
+    p(0.42, "가사 인식 중 (GPU, large-v3) 30/300초")
+    p.beat()
+    assert got[-1][0] == 0.42 and got[-1][1].startswith("가사 인식 중 (GPU, large-v3) 30/300초 · ") and got[-1][1].endswith("초 경과")
+
+
+def test_half_heavy_layers_keeps_layernorm_in_float32():
+    torch = pytest.importorskip("torch")
+    pytest.importorskip("whisper")
+    from whisper.model import ModelDimensions, Whisper
+
+    from amp.lyrics.asr import half_heavy_layers
+
+    dims = ModelDimensions(n_mels=80, n_audio_ctx=1500, n_audio_state=64, n_audio_head=2, n_audio_layer=1,
+                           n_vocab=51865, n_text_ctx=448, n_text_state=64, n_text_head=2, n_text_layer=1)
+    torch.manual_seed(0)
+    ref = Whisper(dims).eval()
+    with torch.no_grad():  # Whisper는 위치 임베딩을 torch.empty로 만든다 (초기화 안 된 메모리 → NaN 가능)
+        for prm in ref.parameters():
+            prm.normal_(0.0, 0.02)
+    half = Whisper(dims).eval()
+    half.load_state_dict(ref.state_dict())
+    half_heavy_layers(half)
+    kinds = {n: p.dtype for n, p in half.named_parameters()}
+    assert all(d == torch.float32 for n, d in kinds.items() if "ln" in n)
+    assert kinds["decoder.token_embedding.weight"] == torch.float16
+    mel = torch.randn(1, 80, 3000)
+    tokens = torch.tensor([[50258, 50264, 50359]])
+    with torch.no_grad():
+        a = ref.logits(tokens, ref.embed_audio(mel))
+        b = half.logits(tokens, half.embed_audio(mel))  # CPU: 계산 때 가중치를 32비트로 맞춘다
+    assert torch.isfinite(a).all() and torch.allclose(a, b, atol=0.05, rtol=0.01)
