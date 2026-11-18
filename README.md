@@ -5,6 +5,7 @@ Windows용 데스크톱 프로그램입니다. Python과 PySide6로 만들고 �
 
 **현재 버전: 0.2.5** — STEP 1(편집기), STEP 2(보컬 분리·자동 채보), 음원별 프로젝트 폴더 관리에
 STEP 2.5(안정화·검증 도구·음표 검출 v2)를 더한 상태입니다. 검증 결과는 [STEP_2_5_VALIDATION_REPORT.md](STEP_2_5_VALIDATION_REPORT.md)에 있습니다.
+실제 곡 4개(분리·같은 음 반복·잔향·Windows/GPU·악보 대비 오차) 평가는 [REAL_SONG_EVALUATION_REPORT.md](REAL_SONG_EVALUATION_REPORT.md)에 정리했습니다.
 
 ## 구현 현황
 
