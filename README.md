@@ -255,6 +255,8 @@ python scripts/compare_runs.py "SONATLAS Projects\노래 이름" --list
 - pYIN은 한 사람의 멜로디를 전제로 합니다. 화음·코러스가 겹치면 피치가 흔들립니다.
 - 재생은 장치가 원본 샘플레이트를 지원하지 않으면 선형 보간으로 변환합니다.
 - 분리 결과 WAV는 24bit라서 ±1을 넘는 값은 잘립니다(드묾).
+- 가사(STEP 3): 한국어 실제 곡 2개에서 Whisper turbo 글자 오류율 0.12~0.24, MMS 정렬 음절 시작이 악보와 ±200ms 안에 96~97%.
+  음절 끝은 추정값이고, 영어·일본어 실제 곡과 Windows·GPU 실행은 확인하지 못했습니다. 자세한 내용은 STEP_3_IMPLEMENTATION_REPORT.md.
 
 ## 문제 해결
 
