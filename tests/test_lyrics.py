@@ -925,3 +925,80 @@ def test_subtitle_and_greeting_hallucinations_stay_out_of_lyrics():
 def _seg_raw(text, a, b):
     return {"start": a, "end": b, "text": text, "avg_logprob": -0.3, "no_speech_prob": 0.2, "compression_ratio": 1.1,
             "activity": 0.9, "level_db": -5.0, "words": [{"text": text, "start": a, "end": b, "probability": 0.8}]}
+
+
+# --- Whisper 빠른 불러오기 (사용자 Windows GPU 점검: large-v3 로딩 128초, 최대 RAM 8.8GB) ---------------------
+
+def _tiny_whisper_checkpoint(tmp_path, monkeypatch):
+    torch = pytest.importorskip("torch")
+    whisper = pytest.importorskip("whisper")
+    import base64
+    import dataclasses
+    import gzip
+
+    from whisper.model import ModelDimensions, Whisper
+
+    dims = ModelDimensions(n_mels=8, n_audio_ctx=6, n_audio_state=16, n_audio_head=2, n_audio_layer=1,
+                           n_vocab=40, n_text_ctx=8, n_text_state=16, n_text_head=2, n_text_layer=2)
+    torch.manual_seed(0)
+    ref = Whisper(dims)
+    for p_ in ref.parameters():
+        torch.nn.init.normal_(p_, std=0.2)
+    ckpt = {"dims": dataclasses.asdict(dims), "model_state_dict": {k: v.half() for k, v in ref.state_dict().items()}}
+    path = tmp_path / "tiny-test.pt"
+    torch.save(ckpt, path)
+    heads = np.zeros((2, 2), dtype=bool)
+    heads[1] = True
+    monkeypatch.setitem(whisper._ALIGNMENT_HEADS, "tiny-test", base64.b85encode(gzip.compress(heads.tobytes())))
+    monkeypatch.setitem(whisper._MODELS, "tiny-test", "https://example.invalid/tiny-test.pt")
+    monkeypatch.setattr(whisper, "_download", lambda url, root, in_memory: str(path))
+    return torch, whisper, dims, ckpt, path
+
+
+def _old_build(torch, whisper, dims, ckpt, device):
+    from whisper.model import Whisper
+
+    from amp.lyrics.asr import half_heavy_layers
+
+    m = Whisper(dims)
+    m.load_state_dict(ckpt["model_state_dict"])
+    m.set_alignment_heads(whisper._ALIGNMENT_HEADS["tiny-test"])
+    if device == "cuda":
+        half_heavy_layers(m)
+    return m
+
+
+def test_fast_whisper_loader_builds_the_same_model(tmp_path, monkeypatch):
+    torch, whisper, dims, ckpt, path = _tiny_whisper_checkpoint(tmp_path, monkeypatch)
+    from amp.lyrics import asr
+
+    for device in ("cpu", "cuda"):  # 'cuda'는 dtype 배치만 본다 (GPU로 옮기지 않음)
+        new = asr.build_from_checkpoint(torch.load(path, weights_only=True, mmap=True), "tiny-test", device)
+        old = _old_build(torch, whisper, dims, ckpt, device)
+        a = dict(list(old.named_parameters()) + list(old.named_buffers()))
+        b = dict(list(new.named_parameters()) + list(new.named_buffers()))
+        assert set(a) == set(b)
+        for k in a:
+            x, y = a[k], b[k]
+            if x.is_sparse:
+                x, y = x.to_dense(), y.to_dense()
+            assert x.dtype == y.dtype and x.shape == y.shape and torch.equal(x, y), (device, k)
+    new.float()
+    old = _old_build(torch, whisper, dims, ckpt, "cpu")
+    mel = torch.randn(1, 8, 12)
+    tok = torch.tensor([[1, 2, 3]])
+    with torch.no_grad():
+        new_cpu = asr.build_from_checkpoint(torch.load(path, weights_only=True, mmap=True), "tiny-test", "cpu")
+        assert torch.allclose(old.decoder(tok, old.encoder(mel)), new_cpu.decoder(tok, new_cpu.encoder(mel)), atol=1e-5)
+
+
+def test_whisper_loader_falls_back_to_old_path(tmp_path, monkeypatch):
+    torch, whisper, dims, ckpt, path = _tiny_whisper_checkpoint(tmp_path, monkeypatch)
+    from amp.lyrics import asr
+
+    def broken(*a, **k):
+        raise RuntimeError("whisper 내부가 바뀐 경우")
+
+    monkeypatch.setattr(asr, "build_from_checkpoint", broken)
+    m = asr.load_model("tiny-test", "cpu", str(tmp_path))
+    assert m.dims == dims and all(p_.dtype == torch.float32 for p_ in m.parameters())

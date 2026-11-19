@@ -14,10 +14,13 @@ Whisper 코드·가중치 라이선스: MIT.
 
 from __future__ import annotations
 
+import logging
 import os
 from typing import Callable
 
 import numpy as np
+
+log = logging.getLogger(__name__)
 
 SAMPLE_RATE = 16000
 # 이름 → (설명, 대략 크기 MB, 권장 GPU 메모리 GB)
@@ -215,15 +218,84 @@ def half_heavy_layers(model):
     return model
 
 
+def set_precision(model, device: str):
+    """CPU면 모두 32비트. GPU면 Linear·Conv1d·Embedding만 16비트, 나머지(LayerNorm·위치 임베딩 등)는 32비트.
+
+    이전 방식(32비트 모델 → 무거운 층만 16비트)과 같은 dtype 배치다.
+    """
+    from torch import nn
+
+    if device != "cuda":
+        return model.float()
+    heavy = (nn.Linear, nn.Conv1d, nn.Embedding)
+    for m in model.modules():
+        if isinstance(m, heavy):
+            m.half()
+            continue
+        for key, t in list(m._parameters.items()):  # noqa: SLF001 - 이 모듈이 직접 가진 것만
+            if t is not None and t.is_floating_point():
+                m._parameters[key] = nn.Parameter(t.float(), requires_grad=t.requires_grad)  # noqa: SLF001
+        for key, t in list(m._buffers.items()):  # noqa: SLF001
+            if t is not None and t.is_floating_point():
+                m._buffers[key] = t.float()  # noqa: SLF001
+    return model
+
+
+def build_from_checkpoint(ckpt: dict, name: str, device: str):
+    """체크포인트 값을 빈 모델에 바로 끼운다 (무작위 초기화·32비트 사본 없음).
+
+    whisper의 Whisper(dims)는 32비트로 무작위 초기화한 모델을 먼저 만들고 값을 덮어써서, large-v3를 불러오는 동안
+    RAM을 9GB 가까이 썼다(사용자 Windows PC 측정 8.8GB, 로딩 128초). 인코더·디코더를 meta 장치에 껍데기로 만들고
+    체크포인트 텐서를 그대로 연결한다. 체크포인트에 없는 디코더 마스크는 원래 코드와 같은 식으로 다시 만든다.
+    """
+    import numpy as np
+    import torch
+    import whisper
+    from torch import nn
+    from whisper.model import AudioEncoder, ModelDimensions, TextDecoder, Whisper
+
+    dims = ModelDimensions(**ckpt["dims"])
+    model = Whisper.__new__(Whisper)
+    nn.Module.__init__(model)
+    model.dims = dims
+    with torch.device("meta"):
+        model.encoder = AudioEncoder(dims.n_mels, dims.n_audio_ctx, dims.n_audio_state, dims.n_audio_head,
+                                     dims.n_audio_layer)
+        model.decoder = TextDecoder(dims.n_vocab, dims.n_text_ctx, dims.n_text_state, dims.n_text_head,
+                                    dims.n_text_layer)
+    model.load_state_dict(ckpt["model_state_dict"], strict=True, assign=True)
+    n = dims.n_text_ctx
+    model.decoder.register_buffer("mask", torch.empty(n, n).fill_(-np.inf).triu_(1), persistent=False)
+    left = [k for k, t in list(model.named_parameters()) + list(model.named_buffers()) if t.is_meta]
+    if left:
+        raise RuntimeError(f"체크포인트에 없는 값: {left[:5]}")
+    set_precision(model, device)
+    model.set_alignment_heads(whisper._ALIGNMENT_HEADS[name])  # noqa: SLF001
+    return model
+
+
 def load_model(name: str, device: str, download_root: str):
-    """whisper.load_model 대신 쓴다. 원래 함수는 16비트 체크포인트를 GPU에 둔 채 32비트 모델을 GPU로 하나 더 옮겨,
-    large-v3에서 순간 약 9.3GB가 필요했다(8GB GPU에서 메모리 부족 → CPU로 넘어가 멈춘 듯 보임, 사용자 보고).
-    여기서는 체크포인트를 CPU에서 읽고, GPU면 무거운 층만 16비트로 바꿔 올린다."""
+    """whisper.load_model 대신 쓴다.
+
+    - 원래 함수는 16비트 체크포인트를 GPU에 둔 채 32비트 모델을 GPU로 하나 더 옮겨 large-v3에서 순간 약 9.3GB가 필요했다
+      (8GB GPU에서 메모리 부족 → CPU로 넘어가 멈춘 듯 보임, 사용자 보고). 그래서 GPU에는 무거운 층만 16비트로 올린다.
+    - 체크포인트는 메모리 매핑으로 읽고 빈 모델에 바로 끼운다(build_from_checkpoint). 안 되면(whisper 내부가 바뀐 경우 등)
+      예전 방식으로 만든다.
+    """
     import torch
     import whisper
     from whisper.model import ModelDimensions, Whisper
 
     path = whisper._download(whisper._MODELS[name], download_root, False)  # noqa: SLF001 - 공개 함수가 없다
+    try:
+        ckpt = torch.load(path, map_location="cpu", weights_only=True, mmap=True)
+        model = build_from_checkpoint(ckpt, name, device)
+        del ckpt
+        return model.to(device)
+    except Exception as e:  # noqa: BLE001 - 빠른 경로가 안 되면 예전 경로
+        if is_oom(e):
+            raise
+        log.warning("Whisper 빠른 불러오기 실패, 예전 방식으로 불러옵니다: %s", e)
     ckpt = torch.load(path, map_location="cpu", weights_only=True)
     model = Whisper(ModelDimensions(**ckpt["dims"]))
     model.load_state_dict(ckpt["model_state_dict"])
