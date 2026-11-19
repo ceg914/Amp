@@ -34,6 +34,7 @@ from amp.core.errors import AnalysisError
 from amp.core.model import AnalysisResult, ModelInfo
 from amp.core.tempo import TempoMap
 from amp.engine import stems as stem_store
+from amp.engine.stem_import import EXTERNAL
 from amp.engine.cache import AnalysisCache
 from amp.engine.context import CancelToken, ProgressFn
 from amp.engine.dsp.pitch import FMAX_HZ, FMIN_HZ, PitchFrames
@@ -221,8 +222,10 @@ class TranscriptionPipeline:
     def _separation(self, req: TranscriptionRequest, stems_dir: Path, report: ProgressFn, token: CancelToken):
         manifest = stem_store.read_manifest(stems_dir) if stems_dir.exists() else None
         ok, reason = stem_store.validate(stems_dir, manifest, req.source_sha256)
-        if ok and manifest is not None and manifest.model == self.separation_model and not req.force_separation:
-            report(1.0, "기존 분리 결과 사용")
+        reusable = manifest is not None and manifest.model in (self.separation_model, EXTERNAL)
+        if ok and reusable and not req.force_separation:
+            # 사용자가 가져온 외부 분리 결과(model='external')도 그대로 쓴다. Demucs로 덮어쓰지 않는다
+            report(1.0, "가져온 분리 결과 사용" if manifest.model == EXTERNAL else "기존 분리 결과 사용")
             return manifest, True
         if manifest is not None and not ok:
             log.info("기존 분리 결과를 쓸 수 없음: %s", reason)

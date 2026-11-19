@@ -23,6 +23,7 @@ amp/
 │   ├── notes.py                피치 곡선 → 음표 (v3: 접근음 흡수)
 │   ├── transcription.py        분리 → 피치 → BPM → 음표 파이프라인, 음표만 재검출
 │   ├── stems.py                stems/ 목록(stems.json) 쓰기·검증·불러오기
+│   ├── stem_import.py          외부 분리 결과 가져오기: 리샘플·채널·교차 상관 어긋남 보정·원본 일치 검사, model 'external'
 │   ├── cache.py                cache/ 키·원자적 기록·정리
 │   ├── merge.py                재분석 반영 계획 (사용자 편집 보호)
 │   ├── settings.py             분석 설정·민감도 프리셋
@@ -95,6 +96,11 @@ run.bat, install_separation.bat, install_lyrics.bat   Windows 실행·설치
 
 1. **분리**: `stems/stems.json`이 있고 원본 해시·파일 크기·프레임 수가 맞으면 재사용합니다. 아니면 작업 프로세스가 `stems/.tmp-*`에
    쓰고, 기존 목록을 먼저 지운 뒤 파일을 옮기고 새 목록을 씁니다. 중간에 실패하면 목록이 없으므로 '분리 전'으로 보입니다.
+   **외부 분리 결과**(`model: "external"`, `amp/engine/stem_import.py`)도 같은 방식으로 `stems/`에 쓰고, 분석은 이것을 그대로 재사용합니다
+   (Demucs로 덮어쓰지 않음, '다시 분리'를 명시할 때만 교체하고 그 전에 `backup/`에 복사). 가져올 때 원본에 맞추는 순서:
+   같은 디코더로 읽기 → 샘플레이트가 다르면 `resample_poly` → 채널 맞춤 → 8kHz 교차 상관(±2초)으로 어긋남을 찾고 원래 샘플레이트에서
+   ±8샘플로 다듬기 → 옮기고 원본 프레임 수에 맞춤. 검사: 반주가 있으면 (원본 − 보컬 − 반주)가 원본보다 6dB 넘게 작아야 하고(−20dB 위면 경고),
+   보컬만 있으면 원본과 상관 0.08 이상. 반주가 없으면 원본 − 보컬. `stems_id`에 가져온 파일 해시를 넣어 다시 가져오면 피치 캐시가 바뀝니다.
 2. **시간 정렬**: 작업 프로세스도 GUI와 같은 디코더로 원본을 읽습니다. 44.1kHz로 바꿀 때와 되돌릴 때 `resample_poly`(지연 없는 필터)를
    쓰고, 원본 프레임 수에 맞춰 자르거나 채웁니다. stems.json에 `offset_frames: 0`을 기록합니다.
    시험: 48kHz 입력의 길이 일치·지연 0 샘플, 실제 htdemucs에서 원래 목소리와 상관 0.998·지연 0 샘플.
@@ -195,6 +201,7 @@ run.bat, install_separation.bat, install_lyrics.bat   Windows 실행·설치
 | `test_tempo_estimation.py` | 96·120BPM 클릭, 2배·절반 후보, 첫 박, 짧은/무음 기본값 |
 | `test_transcription.py` | 단계 재사용·캐시 끄기·강제 재분리·원본 변경 무효화·취소 정리·음표만 재검출, 실제 작업 프로세스, 비브라토 곡 × 민감도 3단계, 실제 htdemucs(`AMP_TEST_DEMUCS=1`) |
 | `test_worker_and_stems.py` | 작업 프로세스 길이·지연 0, 취소, 오류 코드, 무음 입력, stems.json 검증(해시·크기·손상) |
+| `test_stem_import.py` | 외부 분리 결과: 같은 파일·앞 무음·앞 잘림 보정(샘플 단위), 48kHz·모노, 원본 − 보컬, 다른 곡·길이 차이 거부, 음량 변경 경고, stems.json 기록, 분석이 분리를 건너뛰고 가져온 보컬 사용 |
 | `test_project_folder.py` | SONATLAS 요구 1~12: 생성(복사·연결), 중복 이름, stems 저장, WAV/MP3·일괄 내보내기, 저장·재열기, 폴더 이동, 재연결, 다른 이름으로 저장, 캐시 삭제 후 보존, 저장 실패 시 기존 파일 보존, 손상 파일 .bak 복구, 한글·특수문자 경로, 마이그레이션, .ampproj 변환 |
 | `test_cache_settings_merge.py` | 캐시 원자성·한글 경로, 설정 프리셋, 재분석 병합 규칙(요구 7) |
 | `test_accuracy.py` | STEP 2.5: 합성 사례 전 과정 허용 오차(F1·시작/끝 오차·cent·옥타브·무성 오경보), v1↔v2 비교(기본·변형 사례), 온셋 정렬, 틈 게이트 |

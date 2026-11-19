@@ -49,6 +49,8 @@ class StemManifest:
     @property
     def stems_id(self) -> str:
         text = f"{self.model}|{self.created}|{self.source_sha256}"
+        if self.model_info.get("vocals_sha256"):  # 가져온 결과: 같은 초에 다시 가져와도 파일이 다르면 다른 id
+            text += f"|{self.model_info['vocals_sha256']}|{self.model_info.get('instrumental_sha256', '')}"
         return hashlib.sha256(text.encode("utf-8")).hexdigest()[:16]
 
     def to_dict(self) -> dict:

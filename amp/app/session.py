@@ -73,6 +73,7 @@ class ProjectSession(QObject):
     alignmentReady = Signal(object)  # amp.lyrics.engine.AlignOutput
     busyChanged = Signal(bool)
     taskStarted = Signal(object, str)  # TaskHandle, 표시 문구
+    stemsImported = Signal(object)  # amp.engine.stem_import.ImportReport
 
     def __init__(self, doc: ProjectDocument, player: AudioPlayer, runner: TaskRunner,
                  settings: QSettings, projects_root: str | None = None, parent: QObject | None = None) -> None:
@@ -313,6 +314,62 @@ class ProjectSession(QObject):
         if self.raw_stems and self._applied_mask != self.mask_ranges:
             self._remask()  # 작업 중에 구간이 바뀌었다
 
+    def import_stems(self, vocals_path: str, instrumental_path: str | None = None, tool: str = "") -> TaskHandle | None:
+        """다른 프로그램으로 만든 분리 결과를 stems/로 가져온다. 기존 분리 결과는 backup/에 남긴다.
+
+        가져온 결과는 manifest model='external'이고, 다음 분석은 Demucs 대신 이 결과로 피치·음표를 계산한다.
+        """
+        if self.folder is None or self.audio is None or self.busy:
+            return None
+        from amp.engine import stem_import
+        from amp.project.workspace import backup_file
+
+        folder, audio, seq, ranges = self.folder, self.audio, self._seq, self.mask_ranges
+        sha = folder.meta.original.sha256
+
+        def job(progress, token):
+            vocals, inst, rep = stem_import.prepare(audio, vocals_path, instrumental_path, tool, progress)
+            token.raise_if_cancelled()
+            old, _ok, _why = folder.stems_status()
+            if old is not None:  # 덮어쓰기 전에 지금 분리 결과를 남긴다 (Demucs 결과로 돌아갈 수 있게)
+                progress(0.75, "기존 분리 결과 백업 중")
+                label = f"before-import-{old.model}"
+                for name in ("vocals", "instrumental"):
+                    path = folder.paths.stems / str(old.files.get(name, {}).get("path", f"{name}.wav"))
+                    if path.exists():
+                        backup_file(folder, path, label)
+                if (folder.paths.stems / stem_store.MANIFEST).exists():
+                    backup_file(folder, folder.paths.stems / stem_store.MANIFEST, label)
+            progress(0.8, "분리 결과 저장 중")
+            manifest = stem_import.write_stems(folder.paths.stems, vocals, inst, sha, rep, vocals_path, instrumental_path)
+            raw = stem_store.load(folder.paths.stems, manifest)  # 저장한 그대로(24bit) 다시 읽어 재생·분석과 같게
+            eff = apply_no_vocal(raw, ranges)
+            peaks = {n: WaveformPeaks.build(a.mono(), a.sample_rate) for n, a in eff.items()}
+            return manifest, raw, eff, peaks, ranges, rep
+
+        handle = self._submit("외부 분리 결과 가져오기", job)
+        self._track_analysis(handle)  # ended 연결 순서상 바쁨 해제가 아래 announce보다 먼저 실행된다
+        imported = []
+
+        def done(r) -> None:
+            manifest, raw, eff, peaks, applied, rep = r
+            if seq != self._seq:
+                return
+            self.manifest = manifest
+            self.stems_reason = ""
+            self._set_stems(raw, eff, peaks, applied)
+            log.info("외부 분리 결과 가져옴: %s (%s)", rep.vocals_file, rep.summary())
+            imported.append(rep)
+
+        def announce() -> None:
+            # 작업이 완전히 끝난 뒤(바쁨 해제 뒤)에 알린다. 받는 쪽이 곧바로 재분석을 시작할 수 있게
+            if imported and seq == self._seq:
+                self.stemsImported.emit(imported[0])
+
+        handle.finished.connect(done)
+        handle.ended.connect(announce)
+        return handle
+
     def set_no_vocal_mask(self, ranges) -> None:
         """보컬 없는 구간을 보컬·반주 트랙(재생·파형·내보내기)에 적용한다. 빈 값이면 분리 결과 그대로."""
         ranges = tuple(tuple(float(x) for x in r) for r in ranges)
@@ -462,8 +519,16 @@ class ProjectSession(QObject):
             self.error.emit("분석할 수 없습니다", str(e), "")
             return None
         audio, seq, ranges = self.audio, self._seq, self.mask_ranges
+        folder = self.folder
+        keep_external = force_separation and self.manifest is not None and self.manifest.model == "external"
 
         def job(progress, token):
+            if keep_external and folder is not None:  # 가져온 분리 결과를 Demucs 결과로 바꾸기 전에 남긴다
+                from amp.project.workspace import backup_file
+
+                for path in sorted(folder.paths.stems.glob("*.wav")) + [folder.paths.stems / stem_store.MANIFEST]:
+                    if path.exists():
+                        backup_file(folder, path, "before-reseparate-external")
             out = TranscriptionPipeline().run(req, progress, token)
             # 파형 요약은 작업 스레드에서 만든다. 화면 스레드에서 만들면 5분 곡 스템 둘에 0.7초쯤 화면이 멈췄다
             # (사용자 Windows 로그: 분석 실행 직후 0.65~1.05초 멈춤)

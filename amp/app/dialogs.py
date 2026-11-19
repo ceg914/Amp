@@ -368,3 +368,71 @@ class NoVocalRangesDialog(QDialog):
 
     def ranges(self) -> tuple:
         return self._ranges
+
+
+AUDIO_FILTER = "오디오 (*.wav *.flac *.mp3 *.ogg *.m4a *.aiff *.aif);;모든 파일 (*)"
+
+
+class StemImportDialog(QDialog):
+    """외부 분리 결과 가져오기: 보컬 파일(필수), 반주 파일(선택), 만든 도구 이름(기록용)."""
+
+    def __init__(self, start_dir: str = "", parent=None) -> None:
+        super().__init__(parent)
+        self.setWindowTitle("외부 분리 결과 가져오기")
+        self.setMinimumWidth(560)
+        self._dir = start_dir
+        lay = QVBoxLayout(self)
+        lay.addWidget(_title("외부 분리 결과 가져오기"))
+        lay.addWidget(_hint(
+            "다른 프로그램(예: Ultimate Vocal Remover의 Mel-Band RoFormer 모델)으로 같은 곡을 분리한 파일을 가져옵니다. "
+            "원본과 샘플레이트·시간 어긋남·길이를 자동으로 맞추고, 다른 곡이면 가져오지 않습니다. "
+            "지금 분리 결과는 backup/ 폴더에 남깁니다. 가져온 뒤 '보컬 분석 실행'을 하면 Demucs를 다시 돌리지 않고 "
+            "가져온 보컬로 피치·음표를 계산합니다."))
+        form = QFormLayout()
+        self.vocals = QLineEdit()
+        self.instrumental = QLineEdit()
+        self.instrumental.setPlaceholderText("비우면 원본 − 보컬로 만듭니다")
+        self.tool = QLineEdit()
+        self.tool.setPlaceholderText("예: UVR MelBand RoFormer (기록용, 선택)")
+        for label, edit in (("보컬 파일", self.vocals), ("반주 파일 (선택)", self.instrumental)):
+            row = QHBoxLayout()
+            row.addWidget(edit, 1)
+            b = QPushButton("찾아보기…")
+            b.clicked.connect(lambda _c=False, e=edit: self._browse(e))
+            row.addWidget(b)
+            form.addRow(label, row)
+        form.addRow("만든 도구", self.tool)
+        lay.addLayout(form)
+        self.error = QLabel("")
+        self.error.setProperty("role", "warning")
+        self.error.setWordWrap(True)
+        lay.addWidget(self.error)
+        bb = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
+        bb.button(QDialogButtonBox.StandardButton.Ok).setText("가져오기")
+        bb.button(QDialogButtonBox.StandardButton.Cancel).setText("취소")
+        bb.accepted.connect(self._accept)
+        bb.rejected.connect(self.reject)
+        lay.addWidget(bb)
+
+    def _browse(self, edit: QLineEdit) -> None:
+        path, _ = QFileDialog.getOpenFileName(self, "파일 고르기", edit.text() or self._dir, AUDIO_FILTER)
+        if path:
+            edit.setText(path)
+            self._dir = os.path.dirname(path)
+
+    def values(self) -> tuple[str, str | None, str]:
+        inst = self.instrumental.text().strip()
+        return self.vocals.text().strip(), (inst or None), self.tool.text().strip()
+
+    def _accept(self) -> None:
+        vocals, inst, _tool = self.values()
+        if not vocals or not os.path.isfile(vocals):
+            self.error.setText("보컬 파일을 고르세요.")
+            return
+        if inst and not os.path.isfile(inst):
+            self.error.setText("반주 파일을 찾을 수 없습니다.")
+            return
+        if inst and os.path.abspath(inst) == os.path.abspath(vocals):
+            self.error.setText("보컬과 반주에 같은 파일을 골랐습니다.")
+            return
+        self.accept()

@@ -18,6 +18,7 @@ from PySide6.QtCore import QElapsedTimer, QSettings, Qt, QTimer, QUrl
 from PySide6.QtGui import QAction, QCloseEvent, QDesktopServices, QKeySequence
 from PySide6.QtWidgets import (
     QComboBox,
+    QDialog,
     QDockWidget,
     QDoubleSpinBox,
     QFileDialog,
@@ -35,7 +36,7 @@ from PySide6.QtWidgets import (
 from amp import APP_DISPLAY_NAME, __version__
 from amp.app import theme
 from amp.app.autosave import AutosaveManager, RecoveryEntry
-from amp.app.dialogs import ExportDialog, NewProjectDialog, NoVocalRangesDialog, ReanalysisDialog
+from amp.app.dialogs import ExportDialog, NewProjectDialog, NoVocalRangesDialog, ReanalysisDialog, StemImportDialog
 from amp.app.document import ProjectDocument
 from amp.app.lyrics_controller import LyricsController
 from amp.app.vocal_controller import VocalDetailController
@@ -246,6 +247,7 @@ class MainWindow(QMainWindow):
         self.act_analyze = A("보컬 분석 실행", self.run_analysis, "F5", icon_name="wand-sparkles")
         self.act_redetect = A("음표만 다시 검출", self.redetect_notes, "Shift+F5", icon_name="refresh-cw")
         self.act_reseparate = A("보컬 분리 다시 실행", self.reseparate)
+        self.act_import_stems = A("외부 분리 결과 가져오기…", self.import_stems_dialog, icon_name="file-audio")
         self.act_cancel_analysis = A("분석 취소", self.session.cancel_analysis, icon_name="x")
         self.act_clear_cache = A("캐시 비우기", self.clear_cache)
         self.act_compare_runs = A("최근 두 실행 비교 보고서", self.compare_recent_runs)
@@ -289,7 +291,7 @@ class MainWindow(QMainWindow):
         for a in (self.act_play, self.act_stop, self.act_home):
             m.addAction(a)
         m = mb.addMenu("분석(&A)")
-        for a in (self.act_analyze, self.act_redetect, self.act_reseparate, self.act_cancel_analysis, None,
+        for a in (self.act_analyze, self.act_redetect, self.act_reseparate, self.act_import_stems, self.act_cancel_analysis, None,
                   self.act_no_vocal, self.act_compare_runs, self.act_probe, self.act_clear_cache, None, self.act_sample):
             m.addSeparator() if a is None else m.addAction(a)
         self.lyrics.build_menu(mb)
@@ -446,6 +448,7 @@ class MainWindow(QMainWindow):
         s.error.connect(self._show_error)
         s.notice.connect(lambda title, text: QMessageBox.information(self, title, text))
         s.analysisReady.connect(self._on_analysis_ready)
+        s.stemsImported.connect(self._on_stems_imported)
         s.busyChanged.connect(lambda _b: self._update_actions())
         s.taskStarted.connect(self._track)
 
@@ -495,6 +498,7 @@ class MainWindow(QMainWindow):
         self.act_revert.setEnabled(self.doc.project.analysis is not None)
         self.act_analyze.setEnabled(has_audio and is_open and not busy)
         self.act_reseparate.setEnabled(has_audio and is_open and not busy)
+        self.act_import_stems.setEnabled(has_audio and is_open and not busy)
         self.act_redetect.setEnabled(has_pitch and not busy)
         self.act_sample.setEnabled(has_audio and not busy)
         self.act_cancel_analysis.setEnabled(busy)
@@ -626,9 +630,16 @@ class MainWindow(QMainWindow):
                     row.set_available(False, "오디오 없음", "—", "muted")
             elif audio is not None:
                 m = s.manifest
-                dev = m.model_info.get("device", "") if m else ""
-                info = f"stems/{name}.wav\n{audio.duration:.1f}s · {m.model if m else ''} · {dev.upper()}"
-                row.set_available(True, info, "✓ 분리됨", "ok")
+                if m is not None and m.model == "external":
+                    src = m.model_info.get("tool") or m.model_info.get(f"{name}_file") or m.model_info.get("vocals_file", "")
+                    if name == "instrumental" and m.model_info.get("instrumental") == "original_minus_vocals":
+                        src = "원본 − 가져온 보컬"
+                    info = f"stems/{name}.wav\n{audio.duration:.1f}s · 가져옴: {src}"
+                    row.set_available(True, info, "✓ 가져옴", "ok")
+                else:
+                    dev = m.model_info.get("device", "") if m else ""
+                    info = f"stems/{name}.wav\n{audio.duration:.1f}s · {m.model if m else ''} · {dev.upper()}"
+                    row.set_available(True, info, "✓ 분리됨", "ok")
             else:
                 reason = s.stems_reason or "분리 전"
                 row.set_available(False, reason + " — 보컬 분석을 실행하면 만들어집니다", "분리 전" if reason == "분리 전" else "⚠ 무효",
@@ -1004,11 +1015,49 @@ class MainWindow(QMainWindow):
         self.session.run_analysis(self.inspector.analysis.settings())
 
     def reseparate(self) -> None:
-        answer = QMessageBox.question(self, "보컬 분리 다시 실행",
-                                      "기존 분리 결과(stems/)를 쓰지 않고 htdemucs를 다시 실행합니다. "
-                                      "새 결과가 완성된 뒤에 기존 파일을 바꿉니다. 계속할까요?")
+        text = ("기존 분리 결과(stems/)를 쓰지 않고 htdemucs를 다시 실행합니다. "
+                "새 결과가 완성된 뒤에 기존 파일을 바꿉니다.")
+        manifest = self.session.manifest
+        if manifest is not None and manifest.model == "external":
+            text += " 지금 쓰는 결과는 다른 프로그램에서 가져온 것이라, 바꾸기 전에 backup/ 폴더에 복사해 둡니다."
+        answer = QMessageBox.question(self, "보컬 분리 다시 실행", text + " 계속할까요?")
         if answer == QMessageBox.StandardButton.Yes:
             self.session.run_analysis(self.inspector.analysis.settings(), force_separation=True)
+
+    def import_stems_dialog(self) -> None:
+        folder = self.session.folder
+        if folder is None or self.session.audio is None or self.session.busy:
+            return
+        start = str(self.settings.value("import_stems_dir", "") or "")
+        dlg = StemImportDialog(start, self)
+        if dlg.exec() != QDialog.DialogCode.Accepted:
+            return
+        vocals, inst, tool = dlg.values()
+        self.settings.setValue("import_stems_dir", os.path.dirname(vocals))
+        self.session.import_stems(vocals, inst, tool)
+
+    def _on_stems_imported(self, rep) -> None:
+        self._update_actions()
+        text = rep.summary()
+        if rep.warnings:
+            text += "\n\n주의:\n" + "\n".join(f"• {w}" for w in rep.warnings)
+        settings = self.inspector.analysis.settings()
+        if settings.separation == "none":
+            text += ("\n\n분석 설정의 보컬 분리가 '분리 안 함'이라 지금은 가져온 보컬이 분석에 쓰이지 않습니다. "
+                     "'분리함'으로 바꾸면 Demucs를 다시 돌리지 않고 가져온 결과를 씁니다.")
+        if self.doc.project.analysis is None and settings.separation != "none":
+            QMessageBox.information(self, "분리 결과를 가져왔습니다",
+                                    text + "\n\n보컬 분석 실행(F5)을 하면 가져온 보컬로 피치·음표를 계산합니다.")
+            return
+        if settings.separation == "none":
+            QMessageBox.information(self, "분리 결과를 가져왔습니다", text)
+            return
+        answer = QMessageBox.question(
+            self, "분리 결과를 가져왔습니다",
+            text + "\n\n지금 음표는 이전 보컬로 계산한 것입니다. 새 보컬로 피치·음표를 다시 분석할까요? "
+            "(직접 고친 음표를 어떻게 할지는 다음 창에서 고릅니다)")
+        if answer == QMessageBox.StandardButton.Yes:
+            self.run_analysis()
 
     def redetect_notes(self) -> None:
         self.session.redetect(self.inspector.analysis.settings())

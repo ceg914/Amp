@@ -437,3 +437,102 @@ def test_large_pitch_change_setting_shows_warning(qtbot, window):
     panel.change.setValue(1.0)
     assert not panel.change_warn.isVisibleTo(panel)
     assert "합쳐집니다" in panel.change.toolTip()
+
+
+class CountingPipeline(IdentityPipeline):
+    commands: list = []
+
+    def _call(self, command, *a, **k):
+        CountingPipeline.commands.append(command)
+        return super()._call(command, *a, **k)
+
+
+def test_import_external_stems_backs_up_and_reanalyses_without_separating(qtbot, window, song, monkeypatch, tmp_path):
+    """외부 분리 결과 가져오기: 기존 분리 결과는 backup/에 남기고, 트랙·파형을 바꾸고, 재분석은 분리를 건너뛴다.
+    직접 고친 음표는 '수정 유지'로 남는다. 다른 곡 파일은 거부하고 기존 결과를 건드리지 않는다."""
+    import hashlib
+
+    import numpy as np
+    import soundfile as sf
+
+    CountingPipeline.commands = []
+    monkeypatch.setattr("amp.app.session.TranscriptionPipeline", CountingPipeline)
+    monkeypatch.setattr(dialogs.ReanalysisDialog, "exec", lambda self: (setattr(self, "mode", "keep_edits"), 1)[1])
+    folder = create(qtbot, window, song)
+    window.run_analysis()
+    qtbot.waitUntil(lambda: window.doc.project.analysis is not None and not window.session.busy, timeout=120_000)
+    qtbot.waitUntil(lambda: "vocals" in window.session.stems, timeout=20_000)
+    assert CountingPipeline.commands.count("separate") == 1
+    old_hash = {p.name: hashlib.sha256(p.read_bytes()).hexdigest() for p in folder.paths.stems.glob("*.wav")}
+    first = window.doc.score.notes()[0].id
+    window.doc.move_notes([first], 0.0, 2)  # 사용자 편집 (64 → 66)
+
+    # 다른 곡 → 거부, stems/는 그대로
+    y, sr = sf.read(song, dtype="float32", always_2d=True)
+    other = np.random.default_rng(1).standard_normal(y.shape).astype(np.float32) * 0.1
+    sf.write(tmp_path / "other.wav", other, sr)
+    h = window.session.import_stems(str(tmp_path / "other.wav"))
+    qtbot.waitSignal(h.ended, timeout=30_000)
+    qtbot.waitUntil(lambda: window.errors != [], timeout=5_000)
+    assert "맞지 않습니다" in window.errors[0]
+    assert {p.name: hashlib.sha256(p.read_bytes()).hexdigest() for p in folder.paths.stems.glob("*.wav")} == old_hash
+    assert not (folder.root / "backup").exists() or not list((folder.root / "backup").glob("*before-import*"))
+    window.errors.clear()
+
+    # 같은 곡의 보컬 (앞에 20ms 무음이 붙은 파일) → 맞춰서 가져온다
+    vox = np.concatenate([np.zeros((int(0.02 * sr), 2), np.float32), y * 0.8])
+    sf.write(tmp_path / "vox.wav", vox, sr, subtype="FLOAT")
+    imported = []
+    window.session.stemsImported.connect(imported.append)
+    analyses_before = window.doc.project.analysis
+    h = window.session.import_stems(str(tmp_path / "vox.wav"), None, "시험 도구")
+    assert window.session.busy
+    qtbot.waitUntil(lambda: imported != [], timeout=30_000)
+    rep = imported[0]
+    assert rep.lag_ms == pytest.approx(-20.0, abs=0.05) and rep.instrumental == "original_minus_vocals"
+    assert window.session.manifest.model == "external"
+    v = window.session.raw_stems["vocals"].samples
+    assert np.allclose(v, y * 0.8, atol=2 ** -21)
+    assert np.allclose(window.session.raw_stems["instrumental"].samples, y * 0.2, atol=2 ** -20)
+    assert window.player.tracks["vocals"] is window.session.stems["vocals"]
+    assert "가져옴: 시험 도구" in window.tracks.rows["vocals"].toolTip() + window.tracks.rows["vocals"].info.text()
+    backups = sorted(p.name for p in (folder.root / "backup").iterdir())
+    assert sum("before-import-_identity" in n for n in backups) == 3  # vocals, instrumental, stems.json
+    for p in (folder.root / "backup").glob("*before-import-_identity-*.wav"):
+        assert hashlib.sha256(p.read_bytes()).hexdigest() == old_hash[p.name.rsplit("-", 1)[-1]]
+
+    # 가져온 뒤 '다시 분석할까요?' → 예 (conftest가 예로 답한다) → 분리 없이 피치부터
+    qtbot.waitUntil(lambda: window.doc.project.analysis is not analyses_before and not window.session.busy,
+                    timeout=120_000)
+    assert CountingPipeline.commands.count("separate") == 1  # 처음 한 번뿐
+    assert window.doc.project.analysis.models["separation"].name == "external"
+    pitches = sorted(n.pitch for n in window.doc.score.notes())
+    assert pitches == [66, 67, 69]  # 고친 음표 유지
+    assert window.errors == []
+
+    # 다시 분리하면 가져온 결과도 backup/에 남긴다
+    window.reseparate()
+    qtbot.waitUntil(lambda: CountingPipeline.commands.count("separate") == 2 and not window.session.busy,
+                    timeout=120_000)
+    assert window.session.manifest.model == "_identity"
+    assert sum("before-reseparate-external" in p.name for p in (folder.root / "backup").iterdir()) == 3
+
+
+def test_stem_import_dialog_validates_files(qtbot, tmp_path):
+    d = dialogs.StemImportDialog(str(tmp_path))
+    qtbot.addWidget(d)
+    d._accept()
+    assert d.result() == 0 and "보컬 파일" in d.error.text()
+    f = tmp_path / "v.wav"
+    f.write_bytes(b"x")
+    d.vocals.setText(str(f))
+    d.instrumental.setText(str(f))
+    d._accept()
+    assert "같은 파일" in d.error.text()
+    d.instrumental.setText(str(tmp_path / "없음.wav"))
+    d._accept()
+    assert "찾을 수 없습니다" in d.error.text()
+    d.instrumental.setText("")
+    d.tool.setText(" UVR ")
+    d._accept()
+    assert d.result() == 1 and d.values() == (str(f), None, "UVR")
