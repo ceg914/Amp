@@ -18,7 +18,7 @@ TEMPO = "sonatlas.tempo"
 LYRICS = "sonatlas.lyrics"
 ALIGNMENT = "sonatlas.alignment"
 
-CURRENT = {PROJECT: 1, PITCH: 1, NOTES: 2, TEMPO: 1, LYRICS: 1, ALIGNMENT: 1}
+CURRENT = {PROJECT: 1, PITCH: 1, NOTES: 2, TEMPO: 1, LYRICS: 1, ALIGNMENT: 2}
 
 LABELS = {PROJECT: "프로젝트 파일", PITCH: "피치 분석 파일", NOTES: "음표 파일", TEMPO: "템포 파일",
           LYRICS: "가사 파일", ALIGNMENT: "가사 정렬 파일"}
@@ -57,9 +57,15 @@ def _notes_v1_to_v2(d: dict) -> dict:
     return d
 
 
+def _alignment_v1_to_v2(d: dict) -> dict:
+    """STEP 3.5: 연결에 역할(role: 접근음)이 생겼다. v1 연결은 모두 보통 연결이라 값은 바꾸지 않는다."""
+    return d
+
+
 # 종류 → {이전 버전: (dict → dict)}
 MIGRATIONS: dict[str, dict[int, Callable[[dict], dict]]] = {k: {} for k in CURRENT}
 MIGRATIONS[NOTES][1] = _notes_v1_to_v2
+MIGRATIONS[ALIGNMENT][1] = _alignment_v1_to_v2
 
 
 def stamp(kind: str, body: dict) -> dict:

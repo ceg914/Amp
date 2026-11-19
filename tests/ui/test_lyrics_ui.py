@@ -158,6 +158,20 @@ def test_window_alignment_and_recognition_results_are_applied_once(qtbot, window
     assert w.doc.lyrics.alignment.timing(a).start_source == "asr_word"
 
 
+def test_piano_roll_puts_lyric_on_main_note_after_approach(qtbot):
+    from amp.app.pianoroll.view import PianoRollView
+
+    notes = [note("a", 1.0, 1.12, 62), note("b", 1.12, 1.6, 64)]
+    doc, ids = _doc_with("가", [(1.0, 1.6)], notes)
+    view = PianoRollView(doc, TimelineState())
+    qtbot.addWidget(view)
+    items = view.roll.items_by_id
+    assert (items["a"].label, items["b"].label) == ("·", "가")  # 짧은 접근음에는 점, 글자는 주 음표에
+    assert ["a", "b"] in view.roll.melisma_chains
+    doc.push_lyrics(linking.set_approach(doc.lyrics, ids[0], "a", False), "해제")
+    assert (items["a"].label, items["b"].label) == ("가", "–")
+
+
 def test_txt_import_encodings(tmp_path):
     text = "사랑해\n너를"
     for enc in ("utf-8-sig", "cp949", "utf-16"):

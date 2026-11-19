@@ -167,7 +167,7 @@ def alignment_to_dict(state: LyricsState) -> dict:
             "user_edited": t.user_edited, "stale": t.stale,
             "linked_note_ids": [lk.note_id for lk in links],
             "links": [{"note_id": lk.note_id, "confidence": _num(lk.confidence), "source": lk.source,
-                       "confirmed": lk.confirmed} for lk in links],
+                       "confirmed": lk.confirmed, **({"role": lk.role} if lk.role else {})} for lk in links],
         })
     total = len(state.text.syllables)
     aligned = total - len(state.unaligned())
@@ -178,6 +178,14 @@ def alignment_to_dict(state: LyricsState) -> dict:
                     "linked": linked, "unlinked": total - linked},
         "syllables": rows,
     }
+
+
+LINK_ROLES = ("", "approach")
+
+
+def _role(x) -> str:
+    """모르는 역할은 보통 연결로 읽는다 (가사 글자 위치만 바뀌고 연결은 남는다)."""
+    return x if isinstance(x, str) and x in LINK_ROLES else ""
 
 
 def alignment_from_dict(d: dict, warnings: list[str]) -> Alignment:
@@ -196,7 +204,8 @@ def alignment_from_dict(d: dict, warnings: list[str]) -> Alignment:
             if t != SyllableTiming():
                 timings[sid] = t
             lk = tuple(NoteLink(str(x["note_id"]), finite_or_none(x.get("confidence")), str(x.get("source", "auto")),
-                                bool(x.get("confirmed", False))) for x in row.get("links") or ())
+                                bool(x.get("confirmed", False)), _role(x.get("role")))
+                       for x in row.get("links") or ())
             if not lk and row.get("linked_note_ids"):
                 lk = tuple(NoteLink(str(n)) for n in row["linked_note_ids"])
             if lk:

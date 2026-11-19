@@ -216,3 +216,45 @@ def test_articulation_uses_fine_rms_when_given():
     fine[145:150] = 0.01  # 20ms RMS에는 20dB 하락
     assert articulation_envelope(onset, rms, 100.0)[150] < 1.0
     assert articulation_envelope(onset, rms, 100.0, rms_fine=fine)[150] > 8.0
+
+
+# --- STEP 3.5: 접근음(끌어올림) 합성 사례 (pYIN 포함 전체 경로) --------------------------------------
+
+@pytest.fixture(scope="module")
+def approach():
+    from dataclasses import replace
+
+    from amp.engine import notes as N
+    from amp.engine import pitch_post as P
+
+    out = {}
+    for case in B.APPROACH_CASES:
+        y = B.render(case)
+        f = track_pitch(y, B.SR)
+        c = P.build_curve(f.f0_hz, f.voiced_prob, f.rms, f.frame_rate, f.start_time, rms_fine=f.rms_fine)
+        art = P.articulation_envelope(f.onset, f.rms, f.frame_rate, rms_fine=f.rms_fine)
+        for sens in ("simple", "standard", "precise"):
+            for merge in (False, True):
+                ns = N.detect_notes(c, art, replace(AnalysisSettings.for_sensitivity(sens), merge_approach=merge).note_params())
+                out[(case.name, sens, merge)] = (score_notes(B._reference(case), ns), [(round(n.start, 2), n.pitch) for n in ns])
+    return out
+
+
+@pytest.mark.parametrize("sens", ["standard", "precise"])
+def test_scoops_become_one_note(approach, sens):
+    """요구 회귀 4(짧은 접근음): 끌어올림이 따로 음표가 되던 사례가 목표 음 하나가 된다."""
+    for name in ("a_scoop_glide", "a_scoop_flat", "a_scoop_big"):
+        before, notes_before = approach[(name, sens, False)]
+        after, notes_after = approach[(name, sens, True)]
+        assert before.f1 < 1.0, (name, notes_before)  # 이전 동작에서 실제로 과분할이 있었다
+        assert after.f1 == 1.0, (name, notes_after)
+
+
+@pytest.mark.parametrize("sens", ["simple", "standard", "precise"])
+def test_real_notes_survive_approach_merge(approach, sens):
+    """요구 회귀 5(실제 장식음)·7(멜리스마): 재발음한 앞꾸밈음, 한 모음 안의 평평한 짧은 음, 멜리스마는 그대로."""
+    for name in ("a_grace_articulated", "a_legato_step", "a_melisma", "a_fall_in", "a_scoop_vibrato"):
+        off, on = approach[(name, sens, False)], approach[(name, sens, True)]
+        assert on[1] == off[1], (name, off[1], on[1])
+    for name in ("a_grace_articulated", "a_legato_step", "a_melisma"):
+        assert approach[(name, sens, True)][0].f1 == 1.0, (name, approach[(name, sens, True)][1])

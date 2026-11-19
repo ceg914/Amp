@@ -9,6 +9,13 @@
 사용자가 확정한 연결(``confirmed``)이나 직접 만든 연결(source user/sequential)은 자동 재계산이 바꾸지 않는다.
 
 음표를 나누거나 합치거나 지우면(``reconcile``) 음절 텍스트·시간은 그대로 두고 연결만 다시 잇는다.
+
+접근음 (STEP 3.5)
+- 음절이 짧고 낮은 음표로 시작해 바로 위 음표로 올라가면(끌어올림이 따로 음표로 잡힌 경우), 그 짧은 음표는
+  같은 음절의 '접근음'(role="approach")으로 잇고 가사 글자는 뒤의 주 음표에 붙인다. 음표는 지우지 않는다.
+- 조건: 짧은 음표가 음절 시작(±ONSET_TOL)에서 시작, 길이 APPROACH_MAX_S 이하, 바로 뒤(틈 APPROACH_GAP_S 이하)에
+  1~7반음 위이고 더 길거나 같은 음표가 같은 음절에 이어진다, 장식음으로 표시된 음표가 아니다.
+- 연결 시간·음높이만 본다(피치 곡선은 보지 않는다). 음표 검출이 끌어올림을 이미 합쳤으면 이 경우가 생기지 않는다.
 """
 
 from __future__ import annotations
@@ -24,6 +31,10 @@ from amp.lyrics.model import LyricsState, NoteLink, SyllableTiming
 
 ONSET_TOL = 0.12  # 음표·음절 시작이 이만큼 가까우면 같은 발성으로 본다
 PROTECTED_SOURCES = ("user", "sequential")
+# 접근음 판정 (amp.engine.notes의 접근음 흡수와 같은 길이·간격·음정 기준)
+APPROACH_MAX_S = 0.25
+APPROACH_GAP_S = 0.08
+APPROACH_MAX_INTERVAL = 7
 
 
 def _overlap(a0: float, a1: float, b0: float, b1: float) -> float:
@@ -97,15 +108,59 @@ def auto_link(state: LyricsState, notes: Sequence[Note], *, only: Iterable[str] 
         ov = _overlap(n.start, n.end, t.start, t.end) / max(t.end - t.start, 1e-6)
         owners[sid] = [(n, round(0.6 * min(1.0, ov) * _timing_quality(t), 3))]
 
+    timing_of = dict(timed)
     updates: dict[str, tuple[NoteLink, ...] | None] = {}
     for sid in syls:
         if sid in kept:
             continue
-        pairs = owners.get(sid, [])
-        updates[sid] = tuple(NoteLink(n.id, conf, "auto", False) for n, conf in sorted(pairs, key=lambda p: p[0].start))
+        pairs = sorted(owners.get(sid, []), key=lambda p: p[0].start)
+        approach = _approach_note(sid, [n for n, _c in pairs], timing_of.get(sid))
+        updates[sid] = tuple(NoteLink(n.id, conf, "auto", False, "approach" if n.id == approach else "")
+                             for n, conf in pairs)
     out = replace(state, alignment=al.with_links(updates))
     n_links = sum(len(v or ()) for v in updates.values())
     return out.with_history("음표 자동 연결", f"연결 {n_links}개, 사용자 연결 유지 {len(kept)}음절")
+
+
+def _approach_note(sid: str, notes: Sequence[Note], t: SyllableTiming | None) -> str | None:
+    """음절의 첫 음표가 접근음이면 그 id. 규칙은 모듈 설명 참고."""
+    if len(notes) < 2 or t is None or t.start is None:
+        return None
+    a, b = notes[0], notes[1]
+    if getattr(a, "ornament", False):
+        return None
+    if abs(a.start - t.start) > ONSET_TOL or a.duration > APPROACH_MAX_S or b.duration < a.duration:
+        return None
+    if not (-1e-6 <= b.start - a.end <= APPROACH_GAP_S):
+        return None
+    if not (1 <= b.pitch - a.pitch <= APPROACH_MAX_INTERVAL):
+        return None
+    return a.id
+
+
+def main_note_id(links: Sequence[NoteLink], notes_by_id: dict[str, Note]) -> str | None:
+    """가사 글자를 붙일 주 음표: 시간순으로 접근음이 아닌 첫 음표 (모두 접근음이면 첫 음표)."""
+    ns = sorted(((notes_by_id[lk.note_id], lk) for lk in links if lk.note_id in notes_by_id),
+                key=lambda x: (x[0].start, x[0].id))
+    for n, lk in ns:
+        if lk.role != "approach":
+            return n.id
+    return ns[0][0].id if ns else None
+
+
+def set_approach(state: LyricsState, sid: str, note_id: str, approach: bool) -> LyricsState:
+    """사용자가 연결 음표 하나를 접근음으로 표시하거나 해제한다. 그 음절의 연결은 확정된다."""
+    links = state.alignment.links.get(sid, ())
+    if all(lk.note_id != note_id for lk in links):
+        raise EditError("이 음절에 연결된 음표가 아닙니다.")
+    if approach and len(links) < 2:
+        raise EditError("음표가 하나뿐인 연결에서는 접근음을 지정할 수 없습니다.")
+    new = tuple(replace(lk, role=("approach" if approach else "") if lk.note_id == note_id else lk.role, confirmed=True)
+                for lk in links)
+    if all(lk.role == "approach" for lk in new):
+        raise EditError("주 음표가 하나는 있어야 합니다.")
+    out = replace(state, alignment=state.alignment.with_links({sid: new}))
+    return out.with_history("접근음 표시" if approach else "접근음 표시 해제", "음표 1개")
 
 
 def link_sequential(state: LyricsState, syllable_ids: Sequence[str], notes: Sequence[Note], *,
@@ -207,9 +262,11 @@ def reconcile(state: LyricsState, removed: Sequence[Note], added: Sequence[Note]
                 if inside:
                     cands = inside
             src = lk.source if lk.source in PROTECTED_SOURCES else "remapped"
-            for a in cands:
+            for a in cands:  # 바뀐 음표의 역할(접근음)은 새 음표에 넘기지 않는다
                 if all(x.note_id != a.id for x in out):
                     out.append(NoteLink(a.id, lk.confidence, src, lk.confirmed))
+        if out and all(x.role == "approach" for x in out):
+            out = [replace(x, role="") for x in out]
         updates[sid] = tuple(out)
     return replace(state, alignment=al.with_links(updates))
 
@@ -238,4 +295,6 @@ def relation_kind(state: LyricsState, sid: str) -> str:
     shared = any(len(state.alignment.note_to_syllables.get(lk.note_id, ())) > 1 for lk in links)
     if len(links) == 1:
         return "N:1" if shared else "1:1"
-    return "N:M" if shared else "1:N"
+    if shared:
+        return "N:M"
+    return "1:1" if sum(1 for lk in links if lk.role != "approach") == 1 else "1:N"

@@ -92,6 +92,8 @@ class NoteDetectionParams:
     pitch_low: int
     pitch_high: int
     no_vocal_ranges: tuple = ()  # 이 구간(초)의 프레임은 무성으로 보고 음표를 만들지 않는다
+    merge_approach: bool = True  # 음 시작의 짧은 끌어올림을 목표 음에 합친다 (STEP 3.5)
+    syllable_starts: tuple = ()  # 정렬한 가사 음절 시작(초). 있으면 다음 음절의 음을 접근음 대상으로 삼지 않는다
 
 
 @dataclass(frozen=True)
@@ -107,6 +109,8 @@ class AnalysisSettings:
     # 보컬이 없는 구간 [(시작초, 끝초)]. 분리 결과에 반주가 섞여 생기는 잘못된 음표를 막는다.
     # 곡마다 다르므로 프로젝트에만 저장하고 프로그램 기본 설정에는 저장하지 않는다.
     no_vocal_ranges: tuple = ()
+    # 음 시작에서 낮은 데서 올라가는 짧은 구간(끌어올림)을 목표 음에 합친다. 끄면 STEP 3까지와 같은 결과.
+    merge_approach: bool = True
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "no_vocal_ranges", normalize_ranges(self.no_vocal_ranges))
@@ -143,6 +147,7 @@ class AnalysisSettings:
             pitch_low=self.pitch_low,
             pitch_high=self.pitch_high,
             no_vocal_ranges=self.no_vocal_ranges,
+            merge_approach=bool(self.merge_approach),
             **internal,
         )
 

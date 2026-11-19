@@ -143,6 +143,11 @@ class AnalysisPanel(QGroupBox):
         for d in DEVICES:
             self.device.addItem(DEVICE_LABELS[d], d)
         self.use_cache = QCheckBox("이전 분석 캐시 재사용")
+        self.merge_approach = QCheckBox("음 시작의 끌어올림을 한 음으로 합치기")
+        self.merge_approach.setToolTip(
+            "목표 음보다 1~2반음 아래에서 미끄러져 올라가며 시작한 짧은 구간을 따로 음표로 만들지 않고 목표 음에 합칩니다.\n"
+            "재발음이 있거나 한 높이에 0.12초 넘게 머문 음은 합치지 않습니다. 피치 곡선은 바뀌지 않습니다.\n"
+            "끄면 STEP 3까지와 같은 음표가 나옵니다. 바꾼 뒤 '음표만 다시 검출'로 비교할 수 있습니다.")
         self.device_info = QLabel("GPU 상태를 확인하지 않았습니다.")
         self.device_info.setProperty("role", "secondary")
         self.device_info.setWordWrap(True)
@@ -179,6 +184,7 @@ class AnalysisPanel(QGroupBox):
         form.addRow("보컬 없는 구간", nv)
         lay = QVBoxLayout(self)
         lay.addLayout(form)
+        lay.addWidget(self.merge_approach)
         lay.addWidget(self.use_cache)
         dev = QHBoxLayout()
         dev.addWidget(self.device_info, 1)
@@ -200,6 +206,7 @@ class AnalysisPanel(QGroupBox):
         for w in (self.low, self.high, self.separation, self.device):
             w.currentIndexChanged.connect(self._emit)
         self.use_cache.toggled.connect(self._emit)
+        self.merge_approach.toggled.connect(self._emit)
         self.run.clicked.connect(self.runRequested)
         self.redetect.clicked.connect(self.redetectRequested)
         self.reseparate.clicked.connect(self.reseparateRequested)
@@ -241,6 +248,7 @@ class AnalysisPanel(QGroupBox):
             pitch_change_semitones=float(self.change.value()), pitch_low=int(low), pitch_high=int(high),
             device=self.device.currentData(), use_cache=self.use_cache.isChecked(),
             separation=self.separation.currentData(), no_vocal_ranges=self._no_vocal,
+            merge_approach=self.merge_approach.isChecked(),
         )
 
     def set_settings(self, s: AnalysisSettings) -> None:
@@ -254,6 +262,7 @@ class AnalysisPanel(QGroupBox):
             self.separation.setCurrentIndex(max(0, self.separation.findData(s.separation)))
             self.device.setCurrentIndex(max(0, self.device.findData(s.device)))
             self.use_cache.setChecked(s.use_cache)
+            self.merge_approach.setChecked(s.merge_approach)
             self._set_no_vocal(s.no_vocal_ranges)
         finally:
             self._updating = False

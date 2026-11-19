@@ -49,7 +49,7 @@ PITCH_VERSION = 2  # 2: 온셋 32ms 창·비중심, 20ms RMS 추가 (STEP 2.5)
 TEMPO_VERSION = 1
 OLD_FEATURES_WARNING = ("이전 버전(STEP 2)에서 추출한 피치·온셋 정보로 음표를 다시 검출했습니다. "
                         "개선된 음표 시작·끝 판정을 모두 반영하려면 전체 분석을 다시 실행하세요.")
-NOTES_VERSION = "2"  # 2: 틈 게이트·재발음 절대 임계·미끄러짐 흡수·발음된 꾸밈음 (STEP 2.5)
+NOTES_VERSION = "3"  # 2: 틈 게이트·재발음 절대 임계·미끄러짐 흡수·발음된 꾸밈음 (STEP 2.5), 3: 접근음(끌어올림) 흡수 (STEP 3.5)
 SEPARATION_MODEL = "htdemucs"
 
 Runner = Callable[..., dict]
@@ -65,6 +65,8 @@ class TranscriptionRequest:
     cache_root: str | None = None  # 프로젝트 cache/
     force_separation: bool = False  # 사용자가 '다시 분리'를 요청했을 때
     numba_cache_dir: str | None = None
+    # 정렬한 가사의 음절 시작(초). 접근음 흡수가 다음 음절의 음을 대상으로 삼지 않게 한다 (설정에는 저장하지 않음)
+    syllable_starts: tuple = ()
 
 
 @dataclass
@@ -183,7 +185,7 @@ class TranscriptionPipeline:
         notes_report(0.0, "음표 검출 중")
         curve = build_curve(frames.f0_hz, frames.voiced_prob, frames.rms, frames.frame_rate, frames.start_time,
                             rms_fine=frames.rms_fine)
-        params = st.note_params()
+        params = dataclasses.replace(st.note_params(), syllable_starts=tuple(req.syllable_starts))
         artic = articulation_envelope(frames.onset, frames.rms, frames.frame_rate, rms_fine=frames.rms_fine)
         notes = detect_notes(curve, artic, params)
         notes_report(1.0, f"음표 {len(notes)}개 검출")
@@ -305,18 +307,18 @@ def _read_json(path: Path) -> dict:
         return {}
 
 
-def redetect_notes(result: AnalysisResult, settings: AnalysisSettings) -> AnalysisResult:
+def redetect_notes(result: AnalysisResult, settings: AnalysisSettings, syllable_starts=()) -> AnalysisResult:
     """보컬 분리·피치 추출 결과는 그대로 두고 음표 검출만 다시 한다."""
     if result.pitch_curve is None:
         raise AnalysisError("피치 곡선이 없어 음표를 다시 검출할 수 없습니다. 먼저 분석을 실행하세요.")
-    params = settings.note_params()
+    params = dataclasses.replace(settings.note_params(), syllable_starts=tuple(syllable_starts))
     notes = detect_notes(result.pitch_curve, result.onset_envelope, params)
     models = dict(result.models)
     models["notes"] = ModelInfo("segment", NOTES_VERSION, params=dataclasses.asdict(params))
     merged = dict(result.settings)
     merged.update({k: v for k, v in settings.to_dict().items()
                    if k in ("sensitivity", "min_note_ms", "pitch_change_semitones", "pitch_low", "pitch_high",
-                            "no_vocal_ranges")})
+                            "no_vocal_ranges", "merge_approach")})
     warnings = tuple(w for w in result.warnings if w != OLD_FEATURES_WARNING)
     pitch_info = result.models.get("pitch")
     if pitch_info is not None and int((pitch_info.params or {}).get("features_version", 1)) < PITCH_VERSION:

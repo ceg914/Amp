@@ -137,3 +137,87 @@ def test_confidence_finite_when_merging_across_unvoiced_gap():
     m[125:200] = 62  # 50ms 틈: 표준의 틈 잇기(40ms)보다 길고 같은 음 병합(50ms) 이내
     notes = detect_notes(curve(m), None, params("standard"))
     assert len(notes) == 1 and math.isfinite(notes[0].confidence) and notes[0].confidence > 0.5
+
+
+# --- STEP 3.5: 접근음(끌어올림) 흡수 --------------------------------------------------------------
+
+def _scoop(lead_hold=6, rise=8, low=62, high=64, start=50, target=60, n=300):
+    """프레이즈 시작: low에 lead_hold프레임 머문 뒤 rise프레임 동안 high로 올라가 target프레임 유지."""
+    m = np.full(n, np.nan)
+    a = start
+    m[a:a + lead_hold] = low
+    m[a + lead_hold:a + lead_hold + rise] = np.linspace(low, high, rise + 1)[1:]
+    m[a + lead_hold + rise:a + lead_hold + rise + target] = high
+    return m
+
+
+def _onset(n=300, peaks=()):
+    o = np.zeros(n)
+    for k, v in peaks:
+        o[k] = v
+    return o
+
+
+def test_approach_scoop_merges_into_target_and_keeps_curve():
+    m = _scoop()
+    c = curve(m)
+    f0_before, conf_before = c.f0_hz.copy(), c.confidence.copy()
+    off = detect_notes(c, _onset(peaks=[(50, 8.0)]), params(merge_approach=False))
+    on = detect_notes(c, _onset(peaks=[(50, 8.0)]), params())
+    assert [n.pitch for n in off] == [62, 64]  # 이전 동작: 끌어올림이 따로 음표
+    assert [(round(n.start, 2), n.pitch) for n in on] == [(0.5, 64)]
+    assert abs(on[0].end - off[-1].end) < 1e-9
+    # 피치 곡선은 바꾸지 않는다
+    np.testing.assert_array_equal(c.f0_hz, f0_before)
+    np.testing.assert_array_equal(c.confidence, conf_before)
+
+
+def test_approach_needs_articulation_evidence():
+    m = _scoop()
+    assert len(detect_notes(curve(m), None, params())) == 2  # 재발음 지표가 없으면 합치지 않는다
+
+
+def test_reattacked_target_is_not_an_approach():
+    m = _scoop()
+    on = detect_notes(curve(m), _onset(peaks=[(50, 8.0), (64, 5.0)]), params())
+    assert [n.pitch for n in on] == [62, 64]  # 뒤 음 시작에 재발음 → 따로 부른 장식음
+
+
+def test_flat_short_note_before_step_is_kept():
+    m = _scoop(lead_hold=18, rise=1)  # 180ms 평평하게 머문 뒤 바로 위 음 (한 모음 안의 실제 음)
+    on = detect_notes(curve(m), _onset(peaks=[(50, 8.0)]), params())
+    assert [n.pitch for n in on] == [62, 64]
+
+
+def test_fall_and_mid_phrase_are_unchanged():
+    fall = _scoop(low=66, high=64)  # 위에서 내려오며 시작
+    mid = np.full(300, np.nan)
+    mid[30:80] = 60  # 앞 음에서 이어지는 중간 음 (노래 시작 자리가 아님)
+    mid[80:150] = _scoop(start=0, n=70)[0:70]
+    for m in (fall, mid):
+        o = _onset(peaks=[(30, 8.0), (50, 8.0)])
+        assert summary(detect_notes(curve(m), o, params())) == summary(detect_notes(curve(m), o, params(merge_approach=False)))
+
+
+def test_long_approach_or_big_flat_interval_is_kept():
+    long_lead = _scoop(lead_hold=20, rise=10)  # 300ms
+    assert len(detect_notes(curve(long_lead), _onset(peaks=[(50, 8.0)]), params())) == 2
+    big = _scoop(lead_hold=10, rise=2, low=59, high=64)  # 5반음 아래에서 거의 머물다 뛰어오름
+    assert len(detect_notes(curve(big), _onset(peaks=[(50, 8.0)]), params())) == 2
+
+
+def test_syllable_start_on_target_blocks_merge():
+    from dataclasses import replace
+
+    m = _scoop()
+    p = replace(params(), syllable_starts=(0.5, 0.64))  # 뒤 음 시작(0.64초)에서 다음 음절이 시작
+    assert [n.pitch for n in detect_notes(curve(m), _onset(peaks=[(50, 8.0)]), p)] == [62, 64]
+    p2 = replace(params(), syllable_starts=(0.5,))  # 음절은 앞에서 한 번만 시작
+    assert [n.pitch for n in detect_notes(curve(m), _onset(peaks=[(50, 8.0)]), p2)] == [64]
+
+
+def test_merge_approach_setting_round_trip():
+    s = AnalysisSettings(merge_approach=False)
+    assert AnalysisSettings.from_dict(s.to_dict()).merge_approach is False
+    assert AnalysisSettings.from_dict({"sensitivity": "standard"}).merge_approach is True  # 이전 프로젝트 설정
+    assert s.note_params().merge_approach is False

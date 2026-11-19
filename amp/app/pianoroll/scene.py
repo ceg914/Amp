@@ -115,19 +115,24 @@ class PianoRollScene(QGraphicsScene):
         self.invalidate(self.sceneRect(), QGraphicsScene.SceneLayer.ForegroundLayer)
 
     def _refresh_labels(self) -> None:
-        """음절이 시작하는 음표에는 글자를(여러 음절이 한 음표면 이어 붙임: '사랑'),
-        멜리스마로 이어지는 음표에는 '–'를 붙인다. 연결은 가사 쪽(alignment)에서 읽는다."""
+        """음절의 주 음표에는 글자를(여러 음절이 한 음표면 이어 붙임: '사랑'), 멜리스마로 이어지는 음표에는 '–',
+        주 음표로 올라가는 접근음에는 '·'을 붙인다. 연결은 가사 쪽(alignment)에서 읽는다."""
+        from amp.lyrics.linking import main_note_id
+
         ly = self.doc.lyrics
         text, al = ly.text, ly.alignment
         first_of: dict[str, str] = {}
+        approach: set[str] = set()
         self.melisma_chains: list[list[str]] = []
+        notes_by_id = {nid: item.note for nid, item in self.items_by_id.items()}
         for sid, links in al.links.items():
             if sid not in text.index:
                 continue
-            notes = sorted((self.items_by_id[lk.note_id].note for lk in links if lk.note_id in self.items_by_id),
+            notes = sorted((notes_by_id[lk.note_id] for lk in links if lk.note_id in notes_by_id),
                            key=lambda n: (n.start, n.id))
             if notes:
-                first_of[sid] = notes[0].id
+                first_of[sid] = main_note_id(links, notes_by_id) or notes[0].id
+                approach.update(lk.note_id for lk in links if lk.role == "approach" and lk.note_id != first_of[sid])
                 if len(notes) > 1:
                     self.melisma_chains.append([n.id for n in notes])
         for nid, item in self.items_by_id.items():
@@ -135,6 +140,8 @@ class PianoRollScene(QGraphicsScene):
             firsts = [x for x in sids if first_of.get(x) == nid]
             if firsts:
                 item.set_label("".join(text.syllable(x).text for x in firsts))
+            elif nid in approach:
+                item.set_label("·")
             elif sids:
                 item.set_label("–")
             else:

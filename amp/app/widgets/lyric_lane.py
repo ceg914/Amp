@@ -409,6 +409,10 @@ class LyricLane(QWidget):
         add("선택한 음표로 연결 바꾸기", "link_replace", one)
         add("선택한 음표를 연결에 더하기 (멜리스마)", "link_add", one)
         add("음표와 순서대로 연결 (선택 음절 ↔ 선택 음표)", "link_sequential", bool(sel))
+        n_links = len(ly.alignment.links.get(sel[0], ())) if one else 0
+        first_is_approach = one and any(lk.role == "approach" for lk in ly.alignment.links.get(sel[0], ()))
+        add("접근음 표시 해제 (첫 음표에도 가사 표시)" if first_is_approach else "첫 연결 음표를 접근음으로 (가사는 다음 음표에)",
+            "toggle_approach", n_links >= 2)
         add("연결 확정", "confirm", bool(sel))
         add("연결 지우기", "unlink", bool(sel))
         add("연결한 음표의 시간 가져오기", "times_from_notes", bool(sel))

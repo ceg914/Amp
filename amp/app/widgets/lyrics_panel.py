@@ -385,10 +385,13 @@ class LyricsPanel(QScrollArea):
             state.append("연결 확정")
         f["state"].setText(", ".join(state) or "자동")
         f["links"].setText(", ".join(f"{lk.note_id[:6]}({lk.source}{', 확정' if lk.confirmed else ''}"
+                                     f"{', 접근음' if lk.role == 'approach' else ''}"
                                      f"{'' if lk.confidence is None else f', {lk.confidence:.2f}'})" for lk in links) or "없음")
         kind = linking.relation_kind(ly, sid)
-        f["rel"].setText({"none": "연결 없음", "1:1": "1:1", "1:N": "1:N (멜리스마)", "N:1": "N:1 (여러 음절이 한 음표)",
-                          "N:M": "여러 음표·여러 음절"}[kind])
+        rel = {"none": "연결 없음", "1:1": "1:1", "1:N": "1:N (멜리스마)", "N:1": "N:1 (여러 음절이 한 음표)",
+               "N:M": "여러 음표·여러 음절"}[kind]
+        n_app = sum(1 for lk in links if lk.role == "approach")
+        f["rel"].setText(rel + (f" + 접근음 {n_app}" if n_app else ""))
         line = ly.text.lines[li]
         f["note"].setText("; ".join(x for x in (s.note, line.review) if x) or "—")
 

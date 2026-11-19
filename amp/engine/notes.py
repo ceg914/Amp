@@ -21,7 +21,19 @@
 8. 짧은 이탈(표준·정밀): 음표 안에서 중심선 창보다 짧게 기준 이상 벗어났다 돌아오는 구간을 떼어 낸다.
    최소 길이 미만이면서 신뢰도가 높으면 장식음(ornament), 최소 길이 이상이면 일반 음표가 된다.
    비브라토 폭이 기준에 가까운 음은 건너뛴다.
-9. 음표별 비브라토(3.5~9Hz, 20cent 이상)를 추정한다. 음의 앞뒤 가장자리는 빼고 본다.
+9. 접근음 흡수(STEP 3.5): 노래를 시작할 때 목표 음보다 낮은 데서 출발해 올라가는 짧은 구간(끌어올림)이
+   따로 음표로 잡혔으면 뒤의 목표 음에 합친다. 다음을 모두 만족할 때만 합친다.
+   - 짧은 음이 프레이즈 첫 음이거나 재발음으로 시작한다 (노래가 시작되는 자리).
+   - 길이 APPROACH_MAX_S 이하, 장식음으로 판정되지 않았다.
+   - 바로 뒤 음(틈 APPROACH_GAP_S 이하)이 1~7반음 위다. 4반음 이상이면 짧은 음 안에서 1반음 이상 올라가야 한다.
+   - 짧은 음 안에서 음높이가 위로 움직인다(기울기 APPROACH_MIN_SLOPE 이상). 그리고 0.3반음 폭 안에 머문 구간이
+     APPROACH_PLATEAU_S 미만이다. 평평하게 머문 음은 한 모음 안에서 따로 부른 음(멜리스마)일 수 있다.
+   - 뒤 음 시작에 재발음 근거가 없다(재발음 지표 APPROACH_ONSET_MAX 미만). 재발음 지표가 없으면 합치지 않는다.
+   - 뒤 음이 짧은 음보다 짧지 않다 (목표 음에 머문다).
+   - 가사 음절 시작 시각이 주어졌으면(정렬한 가사가 있을 때) 뒤 음 시작 ±APPROACH_SYLLABLE_TOL 안에서 다른 음절이
+     시작하지 않는다. 뒤 음이 다음 음절의 음이면 짧은 음은 앞 음절의 실제 음이다.
+   피치 곡선은 바꾸지 않는다. 합친 음표의 높이는 뒤 음의 높이다.
+10. 음표별 비브라토(3.5~9Hz, 20cent 이상)를 추정한다. 음의 앞뒤 가장자리는 빼고 본다.
 """
 
 from __future__ import annotations
@@ -45,6 +57,18 @@ GLIDE_PIECE_MAX_S = 0.25  # 미끄러짐 조각 하나의 최대 길이
 GLIDE_RUN_MAX_S = 0.4  # 미끄러짐 조각 묶음 전체의 최대 길이
 GLIDE_MIN_DRIFT = 0.4  # 반음. 조각 안에서 이만큼 이상 한 방향으로 움직여야 미끄러짐으로 본다
 REF_WINDOW_S = 0.5  # 현재 음 높이를 추정할 때 볼 최근 구간
+# 접근음(끌어올림) 흡수. 값은 원리에서 정했다: 16분음표(90~100BPM에서 0.15~0.17초)보다 조금 긴 길이까지,
+# 재발음 지표는 표준 민감도의 같은 음 분할 임계(4.0)의 절반 미만이면 '다시 부른 근거 없음'으로 본다.
+APPROACH_MAX_S = 0.25
+APPROACH_GAP_S = 0.08
+APPROACH_MAX_INTERVAL = 7
+APPROACH_BIG_INTERVAL = 4  # 이 이상 떨어져 있으면 짧은 음 안에서 실제로 1반음 이상 올라가야 한다
+APPROACH_MIN_SLOPE = 1.5  # 반음/초
+APPROACH_ONSET_MAX = 2.0
+APPROACH_PLATEAU_S = 0.12  # 이보다 오래 한 높이에 머물렀으면 접근이 아니라 음이다 (합성 사례 a_legato_step 뒤에 추가)
+APPROACH_PLATEAU_BAND = 0.3  # 반음
+APPROACH_SYLLABLE_TOL = 0.08  # 초
+APPROACH_ONSET_WINDOW = (3, 4)  # 뒤 음 시작 기준 앞·뒤 프레임
 
 
 @dataclass
@@ -234,6 +258,10 @@ def detect_notes(curve: PitchCurve, onset: np.ndarray | None, params: NoteDetect
                              blocked)
     if params.ornament_min_s:
         segs = _carve_ornaments(segs, params, fr, min_len, midi, filled, center, conf, voiced)
+    if params.merge_approach and onset is not None and len(onset) == n:
+        syl = np.sort(np.asarray([(t - curve.start_time) * fr for t in params.syllable_starts], dtype=np.float64))
+        segs = _absorb_approaches(segs, np.asarray(onset, dtype=np.float64), fr, midi, filled, center, conf, voiced,
+                                  syl)
 
     notes = []
     for seg in segs:
@@ -443,6 +471,96 @@ def _carve_ornaments(segs, params, fr, min_len, midi, filled, center, conf, voic
             out.append(tail)
         elif out[-1].ornament:
             out[-1].e = g.e
+    return out
+
+
+def approach_slope(filled: np.ndarray, s: int, e: int, fr: float) -> tuple[float, float]:
+    """(기울기 반음/초, 처음→끝 상승 반음). 구간 안 유성 프레임에 직선을 맞춘다.
+
+    끝쪽 1/5은 뒤 음으로 넘어가는 경계라 뺀다(_is_glide_piece와 같은 생각). 평평하게 머물다 뛰어오른 음이
+    경계 프레임 때문에 올라가는 것처럼 보이지 않게 한다.
+    """
+    e = e - max(1, (e - s) // 5)
+    y = filled[s:e]
+    x = np.arange(len(y), dtype=np.float64)
+    ok = np.isfinite(y)
+    if ok.sum() < 3:
+        return 0.0, 0.0
+    k, c = np.polyfit(x[ok], y[ok], 1)
+    return float(k * fr), float(k * (x[ok][-1] - x[ok][0]))
+
+
+def longest_plateau(filled: np.ndarray, s: int, e: int, band: float = APPROACH_PLATEAU_BAND) -> int:
+    """[s, e) 안에서 높이가 band 폭 안에 머문 가장 긴 연속 프레임 수."""
+    y = filled[s:e]
+    best = 0
+    for i in range(len(y)):
+        if not np.isfinite(y[i]):
+            continue
+        lo = hi = y[i]
+        j = i
+        while j < len(y) and np.isfinite(y[j]):
+            lo, hi = min(lo, y[j]), max(hi, y[j])
+            if hi - lo > band:
+                break
+            j += 1
+        best = max(best, j - i)
+    return best
+
+
+def is_approach(a: _Seg, b: _Seg, prev_end: int | None, onset: np.ndarray, filled: np.ndarray, fr: float) -> bool:
+    """a가 b로 올라가는 접근 구간(끌어올림)인가. 규칙은 모듈 설명 9번."""
+    if a.ornament or b.ornament:
+        return False
+    if not (prev_end is None or prev_end < a.s or a.onset_start):
+        return False  # 앞 음에서 이어지는 중간 음은 미끄러짐 흡수(6번)가 다룬다
+    if (a.e - a.s) > APPROACH_MAX_S * fr or (b.e - b.s) < (a.e - a.s):
+        return False
+    if b.s - a.e > APPROACH_GAP_S * fr or b.s < a.e:
+        return False
+    interval = b.pitch - a.pitch
+    if not (1 <= interval <= APPROACH_MAX_INTERVAL):
+        return False
+    slope, rise = approach_slope(filled, a.s, a.e, fr)
+    if slope < APPROACH_MIN_SLOPE:
+        return False
+    if interval >= APPROACH_BIG_INTERVAL and rise < 1.0:
+        return False
+    if longest_plateau(filled, a.s, a.e) >= APPROACH_PLATEAU_S * fr:
+        return False
+    lo, hi = max(0, b.s - APPROACH_ONSET_WINDOW[0]), min(len(onset), b.s + APPROACH_ONSET_WINDOW[1])
+    return not (hi > lo and float(np.nanmax(onset[lo:hi])) >= APPROACH_ONSET_MAX)
+
+
+def _new_syllable_at(syl: np.ndarray, a: int, b: int, tol: int) -> bool:
+    """b 근처(±tol)에서 시작하는 음절 중, a 근처에서 시작한 그 음절이 아닌 것이 있는가."""
+    if syl.size == 0:
+        return False
+    lo, hi = np.searchsorted(syl, b - tol), np.searchsorted(syl, b + tol, side="right")
+    return any(abs(t - a) > tol for t in syl[lo:hi])
+
+
+def _absorb_approaches(segs, onset, fr, midi, filled, center, conf, voiced, syllable_frames=None):
+    syl = syllable_frames if syllable_frames is not None else np.zeros(0)
+    tol = int(round(APPROACH_SYLLABLE_TOL * fr))
+    out: list[_Seg] = []
+    i = 0
+    while i < len(segs):
+        a = segs[i]
+        if i + 1 < len(segs):
+            b = segs[i + 1]
+            prev_end = out[-1].e if out else None
+            # 뒤 음에서 다른 음절이 시작하면 합치지 않는다
+            if not _new_syllable_at(syl, a.s, b.s, tol) and is_approach(a, b, prev_end, onset, filled, fr):
+                pitch, est = b.pitch, b.est
+                merged = _Seg(a.s, b.e, a.onset_start)
+                _evaluate(merged, midi, filled, center, conf, voiced)
+                merged.pitch, merged.est = pitch, est  # 높이는 목표 음
+                out.append(merged)
+                i += 2
+                continue
+        out.append(a)
+        i += 1
     return out
 
 

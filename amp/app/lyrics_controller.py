@@ -401,6 +401,18 @@ class LyricsController(QObject):
                 return new
 
             self._push(seq, "음표와 순서대로 연결")
+        elif kind == "toggle_approach":
+            links = st.alignment.links.get(ids[0], ())
+            marked = [lk.note_id for lk in links if lk.role == "approach"]
+            if marked:
+                self._push(lambda s: linking.set_approach(s, ids[0], marked[0], False), "접근음 표시 해제")
+            else:
+                notes = sorted((self.doc.score.get(lk.note_id) for lk in links if lk.note_id in self.doc.score),
+                               key=lambda n: n.start)
+                if len(notes) < 2:
+                    self.w._show_status_error("음표가 두 개 이상 연결된 음절에서만 접근음을 지정할 수 있습니다.")
+                    return
+                self._push(lambda s: linking.set_approach(s, ids[0], notes[0].id, True), "접근음 표시")
         elif kind == "confirm":
             self._push(lambda s: linking.confirm_links(s, ids), "연결 확정")
         elif kind == "unlink":

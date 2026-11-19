@@ -723,3 +723,95 @@ def test_merge_second_pass_replaces_hallucination_and_rejects_new_ones():
     assert [bool(s.get("second_pass")) for s in merged] == [False, True, True, False]
     rec = engine.recognition_from_raw({"model": "turbo", "language": "ko", "segments": merged})
     assert review.R_SECOND_PASS in rec.segments[1].review  # 다시 들어 찾은 줄은 확인 필요로 표시
+
+
+# --- STEP 3.5: 주 음표와 접근음 ----------------------------------------------------------------------
+
+def _timed(text, spans):
+    st = ops.apply_text(LyricsState(), text)
+    ids = [s.id for s in st.text.syllables]
+    return ops.set_times(st, {ids[i]: sp for i, sp in enumerate(spans)}, source="model"), ids
+
+
+def test_approach_note_is_linked_but_label_goes_to_main_note():
+    st, ids = _timed("가나", [(1.0, 1.6), (1.6, 2.2)])
+    notes = [note("a", 1.0, 1.12, 62), note("b", 1.12, 1.6, 64), note("c", 1.6, 2.2, 65)]
+    out = linking.auto_link(st, notes)
+    links = out.alignment.links[ids[0]]
+    assert [(lk.note_id, lk.role) for lk in links] == [("a", "approach"), ("b", "")]  # 음표는 지우지 않는다
+    assert linking.main_note_id(links, {n.id: n for n in notes}) == "b"
+    assert linking.relation_kind(out, ids[0]) == "1:1"
+    assert [(lk.note_id, lk.role) for lk in out.alignment.links[ids[1]]] == [("c", "")]
+
+
+def test_melisma_and_falls_are_not_approaches():
+    st, ids = _timed("아", [(1.0, 2.0)])
+    cases = {
+        "긴 첫 음 (멜리스마)": [note("a", 1.0, 1.4, 62), note("b", 1.4, 2.0, 64)],
+        "아래로 (내려옴)": [note("a", 1.0, 1.12, 66), note("b", 1.12, 2.0, 64)],
+        "뒤 음이 더 짧음": [note("a", 1.0, 1.2, 62), note("b", 1.2, 1.3, 64), note("c", 1.3, 2.0, 62)],
+        "장식음 표시": [note("a", 1.0, 1.06, 62, ornament=True), note("b", 1.06, 2.0, 64)],
+        "음절 시작에서 먼 음": [note("x", 0.7, 1.15, 60), note("a", 1.15, 1.3, 62), note("b", 1.3, 2.0, 64)],
+    }
+    for label, notes in cases.items():
+        out = linking.auto_link(st, notes)
+        assert all(lk.role == "" for lk in out.alignment.links[ids[0]]), label
+
+
+def test_user_marks_and_unmarks_approach_and_auto_link_keeps_it():
+    st, ids = _timed("가", [(1.0, 1.6)])
+    notes = [note("a", 1.0, 1.3, 62), note("b", 1.3, 1.6, 64)]  # 자동으로는 접근음이 아님 (0.3초)
+    st = linking.auto_link(st, notes)
+    st = linking.set_approach(st, ids[0], "a", True)
+    links = st.alignment.links[ids[0]]
+    assert [(lk.note_id, lk.role, lk.confirmed) for lk in links] == [("a", "approach", True), ("b", "", True)]
+    again = linking.auto_link(st, notes)  # 확정한 연결은 자동 재계산이 바꾸지 않는다
+    assert again.alignment.links[ids[0]] == links
+    back = linking.set_approach(again, ids[0], "a", False)
+    assert all(lk.role == "" for lk in back.alignment.links[ids[0]])
+    with pytest.raises(EditError):
+        linking.set_approach(back, ids[0], "zz", True)
+    one, oid = _timed("나", [(1.0, 1.6)])
+    one = linking.auto_link(one, [note("n", 1.0, 1.6, 60)])
+    with pytest.raises(EditError):
+        linking.set_approach(one, oid[0], "n", True)
+
+
+def test_note_edits_reset_approach_role_on_remapped_notes():
+    st, ids = _timed("가", [(1.0, 1.6)])
+    a, b = note("a", 1.0, 1.12, 62), note("b", 1.12, 1.6, 64)
+    st = linking.auto_link(st, [a, b])
+    merged = note("m", 1.0, 1.6, 64)  # 사용자가 접근음과 주 음표를 합침
+    out = linking.reconcile(st, [a, b], [merged])
+    assert [(lk.note_id, lk.role) for lk in out.alignment.links[ids[0]]] == [("m", "")]
+    # 주 음표만 나누면 접근음 표시는 그대로 남는다
+    b1, b2 = note("b1", 1.12, 1.4, 64), note("b2", 1.4, 1.6, 64)
+    out2 = linking.reconcile(st, [b], [b1, b2])
+    assert [(lk.note_id, lk.role) for lk in out2.alignment.links[ids[0]]] == [("a", "approach"), ("b1", ""), ("b2", "")]
+
+
+def test_alignment_v2_saves_roles_and_reads_v1(tmp_path):
+    st, ids = _timed("가", [(1.0, 1.6)])
+    st = linking.auto_link(st, [note("a", 1.0, 1.12, 62), note("b", 1.12, 1.6, 64)])
+    d = schema.stamp(schema.ALIGNMENT, io.alignment_to_dict(st))
+    assert d["schema_version"] == 2
+    row = d["syllables"][0]
+    assert row["links"][0]["role"] == "approach" and "role" not in row["links"][1]
+    w: list[str] = []
+    back = io.alignment_from_dict(schema.migrate(schema.ALIGNMENT, json.loads(json.dumps(d)))[0], w)
+    assert back.links == st.alignment.links and not w
+    # STEP 3 파일(v1, 역할 없음)은 바꾸지 않고 올린다
+    v1 = dict(d, schema_version=1)
+    v1["syllables"] = [dict(r, links=[{k: v for k, v in x.items() if k != "role"} for x in r["links"]]) for r in d["syllables"]]
+    up, migrated = schema.migrate(schema.ALIGNMENT, v1)
+    assert migrated and up["schema_version"] == 2
+    assert all(lk.role == "" for lk in io.alignment_from_dict(up, w).links[ids[0]])
+    # 모르는 역할은 보통 연결로 읽는다
+    odd = json.loads(json.dumps(d))
+    odd["syllables"][0]["links"][0]["role"] = "glissando"
+    assert io.alignment_from_dict(odd, w).links[ids[0]][0].role == ""
+    # 더 새로운 버전은 열지 않는다 (기존 규칙)
+    from amp.core.errors import ProjectFormatError
+
+    with pytest.raises(ProjectFormatError):
+        schema.migrate(schema.ALIGNMENT, dict(d, schema_version=3))

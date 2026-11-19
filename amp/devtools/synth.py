@@ -31,12 +31,21 @@ def formant_voice(f0: np.ndarray, sr: int = SR, seed: int = 0, vowel=VOWELS[0]) 
 
 
 def melody_f0(melody, duration: float, sr: int = SR, vibrato_cents: float = 0.0, vibrato_hz: float = 5.5,
-              glide_s: float = 0.0) -> np.ndarray:
-    """[(시작초, 끝초, MIDI), ...] → f0 배열. glide_s > 0이면 붙어 있는 음 사이를 미끄러지듯 잇는다."""
+              glide_s: float = 0.0, bends=()) -> np.ndarray:
+    """[(시작초, 끝초, MIDI), ...] → f0 배열. glide_s > 0이면 붙어 있는 음 사이를 미끄러지듯 잇는다.
+
+    bends: [(시작초, 끝초, 처음 MIDI, 끝 MIDI, 머무는 비율)] — 그 구간의 음높이를 덮어쓴다. 처음 높이에
+    '머무는 비율'만큼 머문 뒤 끝 높이까지 직선으로 간다 (끌어올림·한 모음 안의 음 바뀜). 소리 크기는 바꾸지 않는다.
+    """
     t = np.arange(int(duration * sr)) / sr
     midi = np.full_like(t, np.nan)
     for a, b, m in melody:
         midi[(t >= a) & (t < b)] = m
+    for a, b, m0, m1, hold in bends:
+        sel = (t >= a) & (t < b)
+        x = (t[sel] - a) / max(b - a, 1e-9)
+        ramp = np.clip((x - hold) / max(1.0 - hold, 1e-9), 0.0, 1.0) if hold < 1.0 else np.zeros_like(x)
+        midi[sel] = m0 + (m1 - m0) * ramp
     if glide_s > 0:
         for (a0, b0, m0), (a1, b1, m1) in zip(melody, melody[1:]):
             if abs(a1 - b0) < 1e-9:
@@ -74,7 +83,7 @@ def sung(melody, duration: float, sr: int = SR, attack: float = 0.03, release: f
 
 def ref_midi_frames(melody, duration: float, frame_rate: float = 100.0, **kw) -> np.ndarray:
     """프레임 격자(i/frame_rate 초)에서 정답 MIDI (무음 = NaN). sung()과 같은 인자를 받는다."""
-    f0 = melody_f0(melody, duration, int(frame_rate), **{k: v for k, v in kw.items() if k in ("vibrato_cents", "vibrato_hz", "glide_s")})
+    f0 = melody_f0(melody, duration, int(frame_rate), **{k: v for k, v in kw.items() if k in ("vibrato_cents", "vibrato_hz", "glide_s", "bends")})
     return np.where(f0 > 0, 69 + 12 * np.log2(np.where(f0 > 0, f0, 1) / 440.0), np.nan)
 
 

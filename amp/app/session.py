@@ -402,7 +402,14 @@ class ProjectSession(QObject):
             audio=self.audio, source_path=str(self.original.path), source_sha256=self.folder.meta.original.sha256,
             settings=settings, stems_dir=str(self.folder.paths.stems), cache_root=str(self.folder.paths.cache),
             force_separation=force_separation, numba_cache_dir=app_data_dir("numba"),
+            syllable_starts=self.syllable_starts(),
         )
+
+    def syllable_starts(self) -> tuple[float, ...]:
+        """음표 검출에 넘길 음절 시작: 정렬 모델·사용자·음표에서 온 시간만 (인식 단어 시각 추정값은 쓰지 않는다)."""
+        al = self.doc.lyrics.alignment
+        return tuple(sorted(t.start for t in al.timings.values()
+                            if t.aligned and not t.stale and (t.user_edited or t.start_source in ("model", "user", "notes"))))
 
     def run_analysis(self, settings: AnalysisSettings, force_separation: bool = False) -> TaskHandle | None:
         if self.busy:
@@ -441,9 +448,11 @@ class ProjectSession(QObject):
         if result is None or result.pitch_curve is None or self.busy:
             self.error.emit("음표를 다시 검출할 수 없습니다", "피치 분석 결과가 없습니다. 먼저 보컬 분석을 실행하세요.", "")
             return None
+        starts = self.syllable_starts()
+
         def job(progress, token):
             t0 = time.perf_counter()
-            new = redetect_notes(result, settings)
+            new = redetect_notes(result, settings, starts)
             return new, time.perf_counter() - t0
 
         handle = self._submit("음표 다시 검출", job)

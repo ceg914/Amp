@@ -130,6 +130,9 @@ class NoteLink:
     confidence: float | None = None
     source: str = "auto"
     confirmed: bool = False  # 사용자가 확정한 연결 (자동 재계산이 바꾸지 않는다)
+    # 연결 안에서 이 음표의 역할. "" = 보통(첫 음표가 주 음표, 뒤는 멜리스마),
+    # "approach" = 주 음표로 올라가는 짧은 접근음(끌어올림). 같은 음절에 속하지만 가사 글자는 주 음표에 붙인다.
+    role: str = ""
 
 
 @dataclass(frozen=True)
