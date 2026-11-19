@@ -393,7 +393,7 @@ git pull origin claude/dazzling-mendel-mw3z4s
 1. GPU 점검: 분석까지 끝난 프로젝트의 보컬로 실행하면 실제 곡 속도가 나옵니다.
 
 ```bash
-gpu_check.bat --audio "SONATLAS Projects\노래 이름\stems\vocals.wav"
+gpu_check.bat --audio "%USERPROFILE%\Documents\SONATLAS Projects\노래 이름\stems\vocals.wav"
 ```
 
    `gpu_check_reports\gpu_check-날짜\` 안의 `gpu_check.md`와 `gpu_check.json`을 보내 주세요. large-v3가 8GB에서 성공했는지, 실패했다면 안내 메시지로 멈췄는지가 나옵니다.

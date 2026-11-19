@@ -250,7 +250,7 @@ python scripts/validate_audio.py --self-check
 사용자 PC(Windows + NVIDIA GPU)에서 GPU 가사 인식 점검 (결과: `gpu_check_reports\gpu_check-날짜\gpu_check.md`):
 
 ```bash
-gpu_check.bat --audio "SONATLAS Projects\노래 이름\stems\vocals.wav"
+gpu_check.bat --audio "%USERPROFILE%\Documents\SONATLAS Projects\노래 이름\stems\vocals.wav"
 ```
 
 재생 경고 반복 점검 (결과: `playback_check_reports\…\playback_check.md`, 20초 동안 직접 출력 장치를 바꿔 보려면 `--device-change 20`):
