@@ -1,7 +1,7 @@
 """GPU 가사 인식 진단 도구 (STEP 3.5). 사용자 PC(Windows + NVIDIA)에서 실행해 결과 파일을 보내 받는다.
 
     python scripts/gpu_check.py                      # 합성 음성 60초로 large-v3·turbo·MMS 확인
-    python scripts/gpu_check.py --audio 보컬.flac     # 실제 분리 보컬로 (프로젝트의 stems/vocals.flac)
+    python scripts/gpu_check.py --audio 보컬.wav      # 실제 분리 보컬로 (프로젝트의 stems/vocals.wav)
     python scripts/gpu_check.py --models turbo --seconds 30 --no-cancel
 
 앱과 같은 작업 프로세스(amp.engine.worker의 asr·emissions 명령)를 돌린다. 이 도구 자신은 CUDA를 쓰지 않는다
@@ -404,7 +404,7 @@ def _write(rep: dict, out_dir: Path) -> tuple[dict, Path]:
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description="SONATLAS GPU 가사 인식 진단")
     ap.add_argument("--models", default="large-v3,turbo", help="쉼표로 구분 (기본 large-v3,turbo)")
-    ap.add_argument("--audio", default=None, help="검사에 쓸 오디오 (예: 프로젝트의 stems/vocals.flac). 없으면 합성 음성")
+    ap.add_argument("--audio", default=None, help="검사에 쓸 오디오 (예: 프로젝트의 stems/vocals.wav). 없으면 합성 음성")
     ap.add_argument("--seconds", type=float, default=60.0, help="앞에서부터 이만큼만 쓴다 (0이면 전체)")
     ap.add_argument("--device", default="cuda", choices=("cuda", "cpu"))
     ap.add_argument("--no-cancel", action="store_true", help="취소 시험을 건너뛴다")
