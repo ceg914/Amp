@@ -135,7 +135,25 @@ def wait_for_release(baseline: float | None, timeout: float = 15.0) -> tuple[flo
 
 
 def _app_model_dirs() -> tuple[str, str]:
-    """앱이 모델을 받아 두는 폴더 (다시 내려받지 않게 같은 곳을 쓴다)."""
+    """앱이 모델을 받아 두는 폴더 (다시 내려받지 않게 같은 곳을 쓴다).
+
+    Qt 앱 객체는 명령줄 실행(main)에서만 만든다. 시험 등 다른 프로세스 안에서 만들면 그 뒤 화면 위젯을 만들 수 없다.
+    """
+    try:
+        from PySide6.QtCore import QCoreApplication
+
+        from amp.app.session import app_data_dir
+
+        if QCoreApplication.instance() is not None:
+            return app_data_dir("models", "whisper"), app_data_dir("models", "mms")
+    except Exception:  # noqa: BLE001
+        pass
+    base = os.path.expanduser("~/.sonatlas")
+    return os.path.join(base, "models", "whisper"), os.path.join(base, "models", "mms")
+
+
+def _cli_app():
+    """명령줄에서 앱과 같은 이름의 Qt 앱 객체를 만든다 (앱과 같은 모델 폴더를 찾기 위해)."""
     try:
         from PySide6.QtCore import QCoreApplication
 
@@ -144,12 +162,9 @@ def _app_model_dirs() -> tuple[str, str]:
         app = QCoreApplication.instance() or QCoreApplication([])
         app.setOrganizationName(ORGANIZATION)
         app.setApplicationName(APP_NAME)
-        from amp.app.session import app_data_dir
-
-        return app_data_dir("models", "whisper"), app_data_dir("models", "mms")
+        return app
     except Exception:  # noqa: BLE001
-        base = os.path.expanduser("~/.sonatlas")
-        return os.path.join(base, "models", "whisper"), os.path.join(base, "models", "mms")
+        return None
 
 
 def prepare_audio(path: str | None, seconds: float, out_dir: Path) -> tuple[str, str]:
@@ -396,8 +411,10 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--no-mms", action="store_true", help="시간 정렬 모델 시험을 건너뛴다")
     ap.add_argument("--out", default="gpu_check_reports", help="결과 폴더")
     a = ap.parse_args(argv)
+    app = _cli_app()  # 모델 폴더 경로에 필요 (끝날 때까지 살아 있어야 한다)
     models = [m.strip() for m in a.models.split(",") if m.strip()]
     rep, md = check(models, a.audio, a.seconds, Path(a.out), a.device, not a.no_cancel, not a.no_mms)
+    del app
     print("\n" + md.read_text(encoding="utf-8"))
     print(f"결과 파일: {md.resolve()}")
     return 0
