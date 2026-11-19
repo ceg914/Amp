@@ -420,15 +420,20 @@ class ProjectSession(QObject):
             self.error.emit("분석할 수 없습니다", str(e), "")
             return None
         audio, seq = self.audio, self._seq
-        handle = self._submit("보컬 분석", lambda p, t: TranscriptionPipeline().run(req, p, t))
+
+        def job(progress, token):
+            out = TranscriptionPipeline().run(req, progress, token)
+            # 파형 요약은 작업 스레드에서 만든다. 화면 스레드에서 만들면 5분 곡 스템 둘에 0.7초쯤 화면이 멈췄다
+            # (사용자 Windows 로그: 분석 실행 직후 0.65~1.05초 멈춤)
+            return out, {name: WaveformPeaks.build(a.mono(), a.sample_rate) for name, a in out.stems.items()}
+
+        handle = self._submit("보컬 분석", job)
         self._track_analysis(handle)
 
-        def done(out) -> None:
+        def done(result) -> None:
+            out, peaks = result
             if seq != self._seq or self.audio is not audio:
                 return
-            peaks = {}
-            for name, a in out.stems.items():
-                peaks[name] = WaveformPeaks.build(a.mono(), a.sample_rate)
             self.manifest = out.manifest
             self.stems_reason = ""
             if out.stems:

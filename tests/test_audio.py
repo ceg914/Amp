@@ -145,3 +145,17 @@ def test_pcm_mixer_mute_solo_gain():
     assert read() == pytest.approx(0.5)
     with pytest.raises(ValueError):
         PcmMixer({"a": a, "b": np.zeros((5, 1), np.float32)}, 100, 100, 1)
+
+
+def test_mono_matches_channel_mean_for_any_channel_count():
+    """mono()를 열 단위 덧셈으로 바꿨다(속도). 이전 mean(axis=1, float32)과 값이 같아야 한다."""
+    rng = np.random.default_rng(3)
+    for ch in range(1, 7):
+        x = rng.standard_normal((20_001, ch)).astype(np.float32)
+        m = AudioData(x, 44100).mono()
+        ref = x[:, 0] if ch == 1 else x.mean(axis=1, dtype=np.float32)
+        assert m.dtype == np.float32 and np.array_equal(m, ref)
+    x = rng.standard_normal((1000, 2)).astype(np.float32)
+    m = AudioData(x, 44100).mono()
+    m[:] = 0  # 돌려준 배열을 고쳐도 원본은 그대로 (복사본)
+    assert np.any(x != 0)

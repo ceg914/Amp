@@ -476,3 +476,29 @@ def test_chain_with_only_hallucinations_keeps_existing_lyrics(qtbot, analysed):
     qtbot.waitUntil(lambda: w.lyrics.chain is None and not w.session.busy, timeout=20_000)
     assert w.doc.lyrics.text == before and "emissions" not in fake.calls
     assert "비어" in w.lyrics_panel.align_info.text()
+
+
+def test_play_from_syllable_and_syllable_loop_on_real_player(qtbot, make_window, song):
+    """사용자 Windows 로그: 가사 레인에서 '여기서 재생'·'구간 반복'을 쓰면 TypeError('PlaybackState' object is not callable).
+    player.state는 속성인데 함수처럼 불렀다. 실제 재생기로 두 경로를 지나 본다."""
+    from amp.app.player import AudioPlayer, PlaybackState
+
+    w = make_window("p")
+    create(qtbot, w, song)
+    st = ops.apply_text(w.doc.lyrics, "미솔라")
+    ids = [s.id for s in st.text.syllables]
+    w.doc.push_lyrics(ops.set_times(st, {ids[0]: (1.0, 1.8), ids[1]: (1.9, 2.7), ids[2]: (2.8, 4.0)}, source="model"), "시간")
+    w.lyric_lane.playFromRequested.emit(1.9)  # 가사 레인 '여기서 재생'
+    can_play = AudioPlayer.output_available()
+    if can_play:
+        qtbot.waitUntil(lambda: w.player.state is PlaybackState.PLAYING, timeout=3000)
+    w.player.stop()
+    w.lyrics.on_syllable_action("loop", [ids[1]])  # 구간 반복 1.9~2.7초
+    assert w.lyrics.loop == (1.9, 2.7)
+    if can_play:
+        qtbot.waitUntil(lambda: w.player.state is PlaybackState.PLAYING, timeout=3000)
+        w.lyrics.on_position(2.75)  # 끝을 지나면 처음으로
+        assert abs(w.player.position() - 1.9) < 0.1
+    w.lyrics.stop_loop()
+    w.player.stop()
+    assert w.errors == []

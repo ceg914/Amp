@@ -246,7 +246,16 @@ def reconcile(state: LyricsState, removed: Sequence[Note], added: Sequence[Note]
     if not affected:
         return state
     added_sorted = sorted(added, key=lambda n: n.start)
+    starts = [n.start for n in added_sorted]
+    longest = max((n.end - n.start for n in added_sorted), default=0.0)
     known = {n.id: n for n in added}
+
+    def overlapping(old: Note) -> list[Note]:
+        # 겹치는 음표는 시작이 (old.start - 가장 긴 음표 길이, old.end) 안에 있다. 시작 순서는 그대로 둔다
+        lo = bisect.bisect_left(starts, old.start - longest)
+        hi = bisect.bisect_left(starts, old.end)
+        return [a for a in added_sorted[lo:hi] if _overlap(a.start, a.end, old.start, old.end) > 1e-6]
+
     updates: dict[str, tuple[NoteLink, ...]] = {}
     for sid, links in affected.items():
         t = al.timing(sid)
@@ -257,7 +266,7 @@ def reconcile(state: LyricsState, removed: Sequence[Note], added: Sequence[Note]
                     out.append(lk)
                 continue
             old = removed_map[lk.note_id]
-            cands = [a for a in added_sorted if _overlap(a.start, a.end, old.start, old.end) > 1e-6]
+            cands = overlapping(old)
             if t.aligned and not t.stale and len(cands) > 1:
                 inside = [a for a in cands if _overlap(a.start, a.end, t.start, t.end) > 1e-6]
                 if inside:

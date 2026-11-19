@@ -119,6 +119,31 @@ class IdentityPipeline(TranscriptionPipeline):
         super().__init__(*a, separation_model="_identity", **k)
 
 
+def test_analysis_builds_stem_waveforms_off_the_ui_thread(qtbot, window, song, monkeypatch):
+    """사용자 Windows 로그: 분석 실행 직후 화면이 0.65~1.05초 멈춤. 스템 파형 요약을 화면 스레드에서 만들던 것이 원인
+    (5분 곡 스템 둘에 약 0.7초). 이제 분석 작업 스레드에서 만든다."""
+    import threading
+
+    from amp.audio.peaks import WaveformPeaks
+
+    monkeypatch.setattr("amp.app.session.TranscriptionPipeline", IdentityPipeline)
+    folder = create(qtbot, window, song)
+    qtbot.waitUntil(lambda: not window.session.busy, timeout=20_000)
+    built_on = []
+    real = WaveformPeaks.build.__func__
+
+    def spy(cls, samples, sr, *a, **k):
+        built_on.append(threading.current_thread() is threading.main_thread())
+        return real(cls, samples, sr, *a, **k)
+
+    monkeypatch.setattr(WaveformPeaks, "build", classmethod(spy))
+    window.run_analysis()
+    qtbot.waitUntil(lambda: window.doc.project.analysis is not None and not window.session.busy, timeout=120_000)
+    qtbot.waitUntil(lambda: "vocals" in window.session.peaks and "instrumental" in window.session.peaks, timeout=20_000)
+    assert built_on and not any(built_on)  # 파형은 모두 작업 스레드에서
+    assert folder.paths.stems.is_dir()
+
+
 def test_analysis_tracks_export_and_edit_protection(qtbot, window, song, monkeypatch):
     monkeypatch.setattr("amp.app.session.TranscriptionPipeline", IdentityPipeline)
     folder = create(qtbot, window, song)

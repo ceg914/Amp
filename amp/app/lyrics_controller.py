@@ -200,7 +200,7 @@ class LyricsController(QObject):
         sid = self.lane.set_playhead(t)
         notes = set(self.doc.lyrics.alignment.linked_notes(sid)) if sid else set()
         self.scene.set_highlights(current=notes)
-        if self.loop is not None and self.w.player.state() is PlaybackState.PLAYING and t >= self.loop[1]:
+        if self.loop is not None and self.w.player.state is PlaybackState.PLAYING and t >= self.loop[1]:
             self.w.seek(self.loop[0])
 
     def on_syllables_selected(self, ids: list, select_notes: bool = True) -> None:
@@ -231,7 +231,7 @@ class LyricsController(QObject):
 
     def play_from(self, t: float) -> None:
         self.w.seek(t)
-        if self.w.player.state() is not PlaybackState.PLAYING:
+        if self.w.player.state is not PlaybackState.PLAYING:
             self.w.toggle_play()
 
     def stop_loop(self) -> None:
