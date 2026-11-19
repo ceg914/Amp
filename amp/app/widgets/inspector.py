@@ -47,6 +47,8 @@ def _mono_label() -> QLabel:
     return lab
 
 
+CHANGE_WARN_SEMITONES = 3.0  # 이보다 큰 '음높이 변화 기준'은 경고 (음계 한 칸·두 칸 변화가 나뉘지 않는다)
+
 class NoteInfo(QGroupBox):
     FIELDS = (("name", "음계"), ("midi", "MIDI"), ("freq", "주파수"), ("measured", "실제 피치"), ("start", "시작"),
               ("end", "종료"), ("length", "길이"), ("beat", "박 위치"), ("conf", "신뢰도"), ("status", "구분"),
@@ -134,6 +136,13 @@ class AnalysisPanel(QGroupBox):
         self.change.setSingleStep(0.1)
         self.change.setDecimals(1)
         self.change.setSuffix(" 반음")
+        self.change.setToolTip("음높이가 이만큼 이상 바뀌어 잠시 유지되면 새 음표로 나눕니다. 보통 1반음(정밀 0.8).\n"
+                               "값을 키우면 음이 바뀌어도 나뉘지 않아 여러 음이 한 음표로 합쳐집니다.\n"
+                               "음표가 너무 잘게 나뉘면 이 값 대신 민감도나 최소 음표 길이를 바꾸세요.")
+        self.change_warn = QLabel("")
+        self.change_warn.setWordWrap(True)
+        self.change_warn.setProperty("role", "warning")
+        self.change_warn.setVisible(False)
         self.low = self._note_combo()
         self.high = self._note_combo()
         self.separation = QComboBox()
@@ -171,6 +180,7 @@ class AnalysisPanel(QGroupBox):
         form.addRow("음표 분리 민감도", self.sensitivity)
         form.addRow("최소 음표 길이", self.min_note)
         form.addRow("음높이 변화 기준", self.change)
+        form.addRow("", self.change_warn)
         rng = QHBoxLayout()
         rng.addWidget(self.low)
         rng.addWidget(QLabel("~"))
@@ -232,7 +242,15 @@ class AnalysisPanel(QGroupBox):
         self.set_settings(s)
         self.settingsChanged.emit(s)
 
+    def _update_change_warning(self) -> None:
+        v = self.change.value()
+        big = v > CHANGE_WARN_SEMITONES
+        self.change_warn.setText(f"{v:.1f}반음이면 그보다 작은 음 변화는 재발음이 없는 한 한 음표로 합쳐집니다. "
+                                 "보통 1반음(정밀 0.8)을 씁니다." if big else "")
+        self.change_warn.setVisible(big)
+
     def _emit(self, *_args) -> None:
+        self._update_change_warning()
         if not self._updating:
             try:
                 self.settingsChanged.emit(self.settings())
@@ -257,6 +275,7 @@ class AnalysisPanel(QGroupBox):
             self.sensitivity.setCurrentIndex(max(0, self.sensitivity.findData(s.sensitivity)))
             self.min_note.setValue(int(s.min_note_ms))
             self.change.setValue(s.pitch_change_semitones)
+            self._update_change_warning()
             self.low.setCurrentIndex(max(0, self.low.findData(s.pitch_low)))
             self.high.setCurrentIndex(max(0, self.high.findData(s.pitch_high)))
             self.separation.setCurrentIndex(max(0, self.separation.findData(s.separation)))

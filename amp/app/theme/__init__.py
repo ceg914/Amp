@@ -93,6 +93,7 @@ QWidget#panel, QDockWidget > QWidget, QFrame#panel {{ background: {T.BG_PANEL}; 
 QLabel#panelTitle {{ font-size: {T.SIZE_PANEL_TITLE}px; font-weight: 600; color: {T.TEXT}; }}
 QLabel#hint, QLabel[role="secondary"] {{ color: {T.TEXT_2}; font-size: {T.SIZE_SMALL + 1}px; }}
 QLabel#mono, QLabel[role="mono"] {{ font-family: "{fam['mono']}"; font-size: {T.SIZE_MONO + 1}px; }}
+QLabel[role="warning"] {{ color: {T.WARNING}; font-size: {T.SIZE_SMALL + 1}px; }}
 QLabel#timecode {{ font-family: "{fam['mono']}"; font-size: 14px; font-weight: 500; padding: 0 8px; }}
 QToolBar {{ background: {T.BG_PANEL}; border: none; border-bottom: 1px solid {T.BORDER}; spacing: 4px; padding: 4px; }}
 QToolBar::separator {{ background: {T.BORDER}; width: 1px; margin: 4px 6px; }}

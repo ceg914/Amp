@@ -358,3 +358,13 @@ def test_event_loop_stall_is_logged_with_running_task(qtbot, window, caplog):
     window._stall_clock.restart()
     window._check_stall()  # 정상 간격이면 남기지 않는다
     assert len(window.stalls) == 1
+
+
+def test_large_pitch_change_setting_shows_warning(qtbot, window):
+    """사용자 실행 기록에서 '음높이 변화 기준'이 9반음이었다. 3반음을 넘기면 패널에 경고를 보인다."""
+    panel = window.inspector.analysis
+    panel.change.setValue(9.0)
+    assert panel.change_warn.isVisibleTo(panel) and "9.0반음" in panel.change_warn.text()
+    panel.change.setValue(1.0)
+    assert not panel.change_warn.isVisibleTo(panel)
+    assert "합쳐집니다" in panel.change.toolTip()
