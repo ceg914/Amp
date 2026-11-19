@@ -96,7 +96,7 @@ def test_piano_roll_shows_lyrics_under_notes_for_all_relations(qtbot):
     items = view.roll.items_by_id
     assert items["n"].label == "사랑"  # 여러 음절이 한 음표 (N:1)
     assert items["m1"].label == "아" and items["m2"].label == "–"  # 멜리스마
-    assert ["m1", "m2"] in view.roll.melisma_chains
+    assert ["m1", "m2"] in [c for c, _style in view.roll.melisma_chains]
     doc.split_note("n", 1.3)  # 음표를 나누면 각 조각에 자기 음절
     labels = sorted(i.label for i in items.values())
     assert labels == ["–", "랑", "사", "아"]
@@ -167,7 +167,7 @@ def test_piano_roll_puts_lyric_on_main_note_after_approach(qtbot):
     qtbot.addWidget(view)
     items = view.roll.items_by_id
     assert (items["a"].label, items["b"].label) == ("·", "가")  # 짧은 접근음에는 점, 글자는 주 음표에
-    assert ["a", "b"] in view.roll.melisma_chains
+    assert ["a", "b"] in [c for c, _style in view.roll.melisma_chains]
     doc.push_lyrics(linking.set_approach(doc.lyrics, ids[0], "a", False), "해제")
     assert (items["a"].label, items["b"].label) == ("가", "–")
 

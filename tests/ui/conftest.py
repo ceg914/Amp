@@ -3,11 +3,23 @@
 import numpy as np
 import pytest
 import soundfile as sf
+from PySide6.QtCore import QSettings
 from PySide6.QtWidgets import QMessageBox
 
 from amp.app.main_window import MainWindow
 from amp.devtools.synth import SR, sung
 
+
+
+@pytest.fixture(autouse=True)
+def isolated_settings(tmp_path_factory):
+    """창 설정(QSettings)을 시험마다 임시 폴더의 ini 파일로. 사용자 설정을 읽거나 남기지 않는다."""
+    path = tmp_path_factory.mktemp("qsettings")
+    old = QSettings.defaultFormat()
+    QSettings.setDefaultFormat(QSettings.Format.IniFormat)
+    QSettings.setPath(QSettings.Format.IniFormat, QSettings.Scope.UserScope, str(path))
+    yield
+    QSettings.setDefaultFormat(old)
 
 @pytest.fixture
 def make_window(qtbot, tmp_path, monkeypatch):

@@ -38,6 +38,7 @@ from amp.app.autosave import AutosaveManager, RecoveryEntry
 from amp.app.dialogs import ExportDialog, NewProjectDialog, NoVocalRangesDialog, ReanalysisDialog
 from amp.app.document import ProjectDocument
 from amp.app.lyrics_controller import LyricsController
+from amp.app.vocal_controller import VocalDetailController
 from amp.app.pianoroll.view import PianoRollView
 from amp.app.player import AudioPlayer, PlaybackState
 from amp.app.session import ProjectSession
@@ -129,6 +130,7 @@ class MainWindow(QMainWindow):
         self._build_central()
         self._build_actions()
         self.lyrics = LyricsController(self)
+        self.vocal = VocalDetailController(self)
         self._build_menus()
         self._build_toolbar()
         self._build_statusbar()
@@ -298,6 +300,8 @@ class MainWindow(QMainWindow):
         for a in (self.act_zoom_in, self.act_zoom_out, self.act_zoom_fit, None, self.act_show_notes,
                   self.act_show_curve, self.act_follow):
             m.addSeparator() if a is None else m.addAction(a)
+        m.addSeparator()
+        self.vocal.build_menu(m, self.lyrics.menu)
         self.view_menu = m
         m = mb.addMenu("도움말(&H)")
         m.addAction(self.act_help)

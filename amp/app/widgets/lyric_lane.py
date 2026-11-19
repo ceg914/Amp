@@ -68,6 +68,10 @@ class LyricLane(QWidget):
         self._preview: dict[str, tuple[float, float]] = {}
         self._rows: list[tuple[str, float, float]] = []  # (id, 시작, 끝) 시작 순
         self._starts: list[float] = []
+        # STEP 4: 음절 아래 둘째 줄(none / pron / ipa), 음절 구간 길이 표시, 멜리스마 판정
+        self.sub_mode = "none"
+        self.show_lengths = False
+        self.vocal_groups: dict = {}
         self.setMinimumHeight(44)
         self.setFixedHeight(52)
         self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
@@ -175,6 +179,10 @@ class LyricLane(QWidget):
                        "가사 없음 — 오른쪽 '가사' 탭에서 입력하거나 자동 인식하세요")
             return
         font = theme.ui_font(13)
+        small = theme.ui_font(10)
+        mono = theme.mono_font(9)
+        p.setFont(small)
+        small_fm = p.fontMetrics()
         p.setFont(font)
         fm = p.fontMetrics()
         h = self.height()
@@ -214,13 +222,36 @@ class LyricLane(QWidget):
                 label += "!"
             dark = sid == self.current or sid in selected
             p.setPen(theme.BG if dark else (theme.TEXT if linked else theme.LYRIC_UNLINKED))
+            sub = self._sub_text(sid) if self.sub_mode != "none" else ""
+            main_r = QRectF(r.left(), r.top(), r.width(), r.height() * (0.55 if sub or self.show_lengths else 1.0))
             if r.width() >= fm.horizontalAdvance(label[:1]) + 2:
-                p.drawText(r, Qt.AlignmentFlag.AlignCenter, fm.elidedText(label, Qt.TextElideMode.ElideRight, int(r.width())))
-            n_links = len(al.links.get(sid, ()))
-            if n_links > 1:  # 멜리스마 표식
+                p.drawText(main_r, Qt.AlignmentFlag.AlignCenter,
+                           fm.elidedText(label, Qt.TextElideMode.ElideRight, int(r.width())))
+            if sub or self.show_lengths:
+                p.setFont(small)
+                sub_r = QRectF(r.left() + 1, main_r.bottom() - 1, r.width() - 2, r.bottom() - main_r.bottom())
+                if sub and r.width() >= 10:
+                    e = ly.pronunciation.get(sid)
+                    uncertain = e is not None and (e.status != "valid" or e.stale) and not (e.user_edited and not e.stale)
+                    p.setPen(theme.BG if dark else (theme.LYRIC_WARN if uncertain else theme.ACCENT))
+                    p.drawText(sub_r, Qt.AlignmentFlag.AlignHCenter | Qt.AlignmentFlag.AlignTop,
+                               small_fm.elidedText(sub, Qt.TextElideMode.ElideRight, int(sub_r.width())))
+                if self.show_lengths and t.aligned and r.width() >= 26:
+                    p.setFont(mono)
+                    p.setPen(theme.BG if dark else theme.TEXT_DIM)
+                    p.drawText(sub_r, Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignBottom, f"{(t.end - t.start) * 1000:.0f}")
+                p.setFont(font)
+            g = self.vocal_groups.get(sid)
+            if self.vocal_groups:  # 멜리스마 표식: 판정 결과 기준 (확정·자동 멜리스마는 민트, 판정 불확실은 회색)
+                n_dots = len(g.note_ids) if g is not None and (g.is_melisma or (g.kind == "uncertain" and not g.user_kind)) else 0
+                color = theme.LYRIC_CURRENT if g is not None and g.is_melisma else theme.TEXT_DIM
+            else:  # 판정 결과가 없으면 STEP 3처럼 연결 수로
+                n_dots = len(al.links.get(sid, ())) if len(al.links.get(sid, ())) > 1 else 0
+                color = theme.LYRIC_CURRENT
+            if n_dots > 1:
                 p.setPen(Qt.PenStyle.NoPen)
-                p.setBrush(theme.LYRIC_CURRENT)
-                for k in range(min(n_links, 4)):
+                p.setBrush(color)
+                for k in range(min(n_dots, 4)):
                     p.drawEllipse(QPointF(xa + 4 + k * 5, bot + 4), 1.6, 1.6)
         n_un = len(ly.unaligned())
         if n_un:
@@ -422,4 +453,35 @@ class LyricLane(QWidget):
         add("음절 합치기", "merge", len(sel) >= 2)
         add("선택 음절만 다시 정렬", "realign", bool(sel))
         add("시간 지우기 (미정렬로)", "clear_times", bool(sel))
+        menu.addSeparator()
+        decided = one and sel[0] in ly.alignment.melisma
+        add("멜리스마로 확정 (선택 음표가 2개 이상이면 그 음표로)", "mel_set", one)
+        add("멜리스마 아님으로 확정", "mel_not", one)
+        add("선택 음표를 멜리스마에 추가", "mel_add", one)
+        add("선택 음표를 멜리스마에서 빼기", "mel_remove", one)
+        add("멜리스마 자동 판정으로 되돌리기", "mel_clear", bool(sel) and (decided or len(sel) > 1))
+        menu.addSeparator()
+        add("발음 확정 (자동 재생성에서 보호)", "pron_confirm", bool(sel))
+        add("기본 발음으로 되돌리기", "pron_reset", bool(sel))
+        add("발음 다시 생성 (자동 발음만)", "pron_regen", bool(sel))
         menu.exec(pos)
+
+    def set_display(self, sub_mode: str | None = None, show_lengths: bool | None = None) -> None:
+        if sub_mode is not None:
+            self.sub_mode = sub_mode
+        if show_lengths is not None:
+            self.show_lengths = show_lengths
+        self.setFixedHeight(68 if self.sub_mode != "none" or self.show_lengths else 52)
+        self.update()
+
+    def set_vocal_groups(self, groups: dict) -> None:
+        self.vocal_groups = dict(groups)
+        self.update()
+
+    def _sub_text(self, sid: str) -> str:
+        e = self.doc.lyrics.pronunciation.get(sid)
+        if e is None:
+            return ""
+        if self.sub_mode == "ipa":
+            return e.ipa or "—"
+        return e.text if e.text else ("∅" if e.user_edited else "?")

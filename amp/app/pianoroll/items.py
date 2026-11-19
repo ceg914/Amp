@@ -27,6 +27,8 @@ class NoteItem(QGraphicsRectItem):
         self.note = note
         self.status = status
         self.label = ""
+        self.label_pron = ""  # STEP 4: 이 음표가 주 음표인 음절의 발음 표기
+        self.label_ipa = ""
         self._mapper = mapper
         self.setFlag(QGraphicsItem.GraphicsItemFlag.ItemIsSelectable, True)
         self.setZValue(Z_NOTE)

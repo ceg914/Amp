@@ -202,6 +202,8 @@ class _Context:
     voiced: np.ndarray | None
     starts: list[tuple[float, str]] = field(default_factory=list)  # (음절 시작, 음절 id) 정렬
     all_notes: list[Note] = field(default_factory=list)
+    ends: list[float] = field(default_factory=list)  # all_notes의 시작 시각 (정렬됨, 탐색 시작점)
+    longest: float = 0.0  # 가장 긴 음표 길이: 시작이 (t - longest)보다 앞인 음표는 t 뒤까지 이어질 수 없다
 
 
 def direction_of(pitches: list[int]) -> str:
@@ -254,7 +256,7 @@ def _uncovered_voicing(sid: str, ctx: _Context) -> bool:
     if j <= i:
         return False
     covered = np.zeros(j - i, dtype=bool)
-    k = bisect.bisect_left([n.end for n in ctx.all_notes], t.start)
+    k = bisect.bisect_left(ctx.ends, t.start - ctx.longest)
     for n in ctx.all_notes[k:]:
         if n.start >= t.end:
             break
@@ -383,7 +385,7 @@ def analyze(state: LyricsState, notes: Iterable[Note], curve: PitchCurve | None 
     al = state.alignment
     starts = sorted((t.start, sid) for sid, t in al.timings.items() if t.aligned and sid in state.text.index)
     ctx = _Context(state, by_id, curve, None if onset is None else np.asarray(onset, dtype=np.float64), voiced, starts,
-                   all_notes)
+                   all_notes, [n.start for n in all_notes], max((n.duration for n in all_notes), default=0.0))
     out: dict[str, VocalGroup] = {}
     chosen = state.text.order if ids is None else [i for i in ids if i in state.text.index]
     for sid in chosen:

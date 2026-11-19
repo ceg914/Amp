@@ -38,6 +38,13 @@ class PianoRollScene(QGraphicsScene):
         self.lyrics_visible = True
         self.highlight_notes: set[str] = set()  # 선택한 음절에 연결된 음표 (민트 테두리)
         self.current_notes: set[str] = set()  # 재생 중인 음절에 연결된 음표 (글자 강조)
+        # STEP 4: 가사 표시 방식(lyrics / pron / lyrics_pron / lyrics_ipa / all)과 멜리스마 강조.
+        # vocal_groups는 VocalDetailController가 넣는 음절별 판정(amp.lyrics.vocal.VocalGroup). 비어 있으면 연결만 보고 그린다
+        self.display_mode = "lyrics"
+        self.melisma_emphasis = True
+        self.vocal_groups: dict = {}
+        self.melisma_chains: list[tuple[list[str], str]] = []  # (음표 id, 모양: user / auto / uncertain)
+        self.labels_hidden = 0  # 마지막으로 그릴 때 겹쳐서 생략한 글상자 수 (시험·상태 표시용)
         self.setItemIndexMethod(QGraphicsScene.ItemIndexMethod.BspTreeIndex)
 
         doc.projectReset.connect(self.rebuild)
@@ -123,7 +130,7 @@ class PianoRollScene(QGraphicsScene):
         text, al = ly.text, ly.alignment
         first_of: dict[str, str] = {}
         approach: set[str] = set()
-        self.melisma_chains: list[list[str]] = []
+        chains: list[tuple[list[str], str]] = []
         notes_by_id = {nid: item.note for nid, item in self.items_by_id.items()}
         for sid, links in al.links.items():
             if sid not in text.index:
@@ -133,19 +140,62 @@ class PianoRollScene(QGraphicsScene):
             if notes:
                 first_of[sid] = main_note_id(links, notes_by_id) or notes[0].id
                 approach.update(lk.note_id for lk in links if lk.role == "approach" and lk.note_id != first_of[sid])
-                if len(notes) > 1:
-                    self.melisma_chains.append([n.id for n in notes])
+                if len(notes) > 1 and not self.vocal_groups:
+                    chains.append(([n.id for n in notes], "auto"))
+        for sid, g in self.vocal_groups.items():  # STEP 4: 멜리스마 판정 결과로 잇는다
+            ids = [n for n in g.note_ids if n in notes_by_id]
+            if len(ids) < 2:
+                continue
+            if g.is_melisma:
+                chains.append((ids, "user" if g.source == "user" else "auto"))
+            elif g.kind == "uncertain" and not g.user_kind:
+                chains.append((ids, "uncertain"))
+        self.melisma_chains = chains
+        pron = ly.pronunciation
         for nid, item in self.items_by_id.items():
             sids = sorted((x for x in al.note_to_syllables.get(nid, ()) if x in text.index), key=text.order.get)
             firsts = [x for x in sids if first_of.get(x) == nid]
             if firsts:
                 item.set_label("".join(text.syllable(x).text for x in firsts))
-            elif nid in approach:
-                item.set_label("·")
-            elif sids:
-                item.set_label("–")
+                ps = [pron.get(x) for x in firsts]
+                item.label_pron = "".join(e.text if e is not None and e.text else "?" for e in ps)
+                item.label_ipa = " ".join(e.ipa if e is not None and e.ipa else "—" for e in ps)
             else:
-                item.set_label("")
+                item.label_pron = item.label_ipa = ""
+                if nid in approach:
+                    item.set_label("·")
+                elif sids:
+                    item.set_label("–")
+                else:
+                    item.set_label("")
+
+    def set_display(self, mode: str | None = None, melisma_emphasis: bool | None = None) -> None:
+        if mode is not None:
+            self.display_mode = mode
+        if melisma_emphasis is not None:
+            self.melisma_emphasis = melisma_emphasis
+        self.invalidate(self.sceneRect(), QGraphicsScene.SceneLayer.ForegroundLayer)
+
+    def set_vocal_groups(self, groups: dict) -> None:
+        self.vocal_groups = dict(groups)
+        self._refresh_labels()
+        self.invalidate(self.sceneRect(), QGraphicsScene.SceneLayer.ForegroundLayer)
+
+    def label_lines(self, item: NoteItem) -> list[tuple[str, str]]:
+        """음표 아래 글상자 줄 [(종류, 글)]. 이어지는 음표('–')·접근음('·')은 한 줄만."""
+        if not item.label:
+            return []
+        if not item.label_pron and not item.label_ipa:
+            return [("lyric", item.label)]
+        mode = self.display_mode
+        lines = []
+        if mode in ("lyrics", "lyrics_pron", "lyrics_ipa", "all"):
+            lines.append(("lyric", item.label))
+        if mode in ("pron", "lyrics_pron", "all"):
+            lines.append(("pron", f"[{item.label_pron}]"))
+        if mode in ("lyrics_ipa", "all"):
+            lines.append(("ipa", f"/{item.label_ipa}/"))
+        return lines
 
     def set_lyrics_visible(self, visible: bool) -> None:
         self.lyrics_visible = visible
@@ -268,23 +318,15 @@ class PianoRollScene(QGraphicsScene):
     # --- 가사 글자 ---------------------------------------------------------------
 
     def drawForeground(self, painter: QPainter, rect: QRectF) -> None:  # noqa: N802
-        """가사는 음표 아래에 쓴다 (명세: 음표 아래 가사 표시). 멜리스마는 민트 연결선으로 잇는다."""
+        """가사·발음·IPA는 음표 아래 글상자로 쓴다. 화면에 보이는 음표만 그리고, 앞 글상자와 겹치면 생략한다.
+        멜리스마는 음표를 민트 선으로 잇고 아래에 괄호선을 긋는다(사용자 확정: 굵은 실선, 자동: 실선, 판정 불확실: 점선)."""
         if not self.lyrics_visible:
             return
         grow = QRectF(rect).adjusted(-200, -40, 200, 40)
         visible = [i for i in self.items(grow) if isinstance(i, NoteItem) and i.isVisible()]
         if not visible:
             return
-        pen = QPen(theme.LYRIC_CURRENT, 1.4)
-        pen.setCosmetic(True)
-        painter.setPen(pen)
         on_screen = {i.note.id for i in visible}
-        for chain in getattr(self, "melisma_chains", ()):
-            if not on_screen.intersection(chain):
-                continue
-            pts = [self.items_by_id[n].rect() for n in chain if n in self.items_by_id]
-            for a, b in zip(pts, pts[1:]):
-                painter.drawLine(QPointF(a.right(), a.center().y()), QPointF(b.left(), b.center().y()))
         for item in visible:
             if item.note.id in self.highlight_notes:
                 hp = QPen(theme.LYRIC_CURRENT, 2.2)
@@ -296,15 +338,49 @@ class PianoRollScene(QGraphicsScene):
         font.setPixelSize(max(10, min(13, int(self.mapper.row_height - 2))))
         painter.setFont(font)
         fm = painter.fontMetrics()
-        for item in visible:
-            if not item.label:
+        line_h = fm.height() + 1
+        n_lines = {"lyrics": 1, "pron": 1, "lyrics_pron": 2, "lyrics_ipa": 2, "all": 3}.get(self.display_mode, 1)
+        for chain, style in self.melisma_chains:
+            if not on_screen.intersection(chain) or (style == "uncertain" and not self.melisma_emphasis):
+                continue
+            pts = [self.items_by_id[n].rect() for n in chain if n in self.items_by_id]
+            if len(pts) < 2:
+                continue
+            width = {"user": 2.0, "auto": 1.4, "uncertain": 1.0}[style] if self.melisma_emphasis else 1.2
+            pen = QPen(theme.LYRIC_CURRENT if style != "uncertain" else theme.TEXT_DIM, width)
+            if style == "uncertain":
+                pen.setStyle(Qt.PenStyle.DotLine)
+            pen.setCosmetic(True)
+            painter.setPen(pen)
+            for a, b in zip(pts, pts[1:]):
+                painter.drawLine(QPointF(a.right(), a.center().y()), QPointF(b.left(), b.center().y()))
+            if self.melisma_emphasis:  # 괄호선: 시작~끝 음표 아래, 글상자 밑
+                y = max(r.bottom() for r in pts) + line_h * n_lines + 4
+                x0, x1 = min(r.left() for r in pts), max(r.right() for r in pts)
+                painter.drawLine(QPointF(x0, y), QPointF(x1, y))
+                painter.drawLine(QPointF(x0, y - 4), QPointF(x0, y))
+                painter.drawLine(QPointF(x1, y - 4), QPointF(x1, y))
+        colors = {"lyric": theme.TEXT, "pron": theme.ACCENT, "ipa": theme.TEXT_DIM}
+        active: list[QRectF] = []  # 이미 그린 글상자 중 오른쪽 끝이 아직 지나지 않은 것
+        hidden = 0
+        for item in sorted(visible, key=lambda i: i.rect().left()):
+            lines = self.label_lines(item)
+            if not lines:
                 continue
             r = item.rect()
-            w = max(fm.horizontalAdvance(item.label) + 6, 12)
-            box = QRectF(r.left(), r.bottom() + 1, w, fm.height() + 1)
+            w = max(max(fm.horizontalAdvance(t) for _k, t in lines) + 6, 12)
+            box = QRectF(r.left(), r.bottom() + 1, w, line_h * len(lines))
+            active = [x for x in active if x.right() > box.left()]
+            if any(x.intersects(box) for x in active):
+                hidden += 1  # 앞 글상자와 겹친다 (확대하면 보인다). 음높이가 가까운 이웃 음표의 글상자도 본다
+                continue
+            active.append(box)
             current = item.note.id in self.current_notes
             bg = QColor(theme.LYRIC_CURRENT if current else theme.SURFACE_RAISED)
             bg.setAlpha(235 if current else 215)
             painter.fillRect(box, bg)
-            painter.setPen(theme.BG if current else theme.TEXT)
-            painter.drawText(box, Qt.AlignmentFlag.AlignCenter, item.label)
+            for k, (kind, t) in enumerate(lines):
+                painter.setPen(theme.BG if current else colors[kind])
+                painter.drawText(QRectF(box.left(), box.top() + k * line_h, box.width(), line_h),
+                                 Qt.AlignmentFlag.AlignCenter, t)
+        self.labels_hidden = hidden

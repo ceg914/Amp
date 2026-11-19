@@ -17,6 +17,7 @@ from PySide6.QtWidgets import (
     QGroupBox,
     QHBoxLayout,
     QLabel,
+    QLineEdit,
     QListWidget,
     QListWidgetItem,
     QPlainTextEdit,
@@ -30,14 +31,19 @@ from PySide6.QtWidgets import (
 )
 
 from amp.app import theme
-from amp.lyrics import linking, review
+from amp.lyrics import linking, review, vocal
+from amp.lyrics import pronunciation as pron
 from amp.lyrics.asr import LANGUAGES, MODELS
 from amp.lyrics.model import SOURCE_LABELS, LyricsState
 
 LANG_ITEMS = list(LANGUAGES.items())
 MODEL_ITEMS = [("auto", "자동 (GPU 여유 5.5GB 이상: large-v3, 아니면 turbo)")] + [(k, f"{k} — {v[0]}") for k, v in MODELS.items()]
 FILTERS = (("unaligned", "정렬 안 된 음절"), ("unlinked", "음표 연결 없는 음절"), ("lowconf", "정렬 신뢰도 낮음"),
-           ("review", "검토 필요한 줄"), ("stale", "다시 정렬 필요"))
+           ("review", "검토 필요한 줄"), ("stale", "다시 정렬 필요"), ("pron_check", "발음 불확실·변환 불가"),
+           ("pron_stale", "발음 재검토 필요"), ("melisma", "멜리스마"), ("mel_check", "멜리스마 판정 불확실·재확인"))
+PRON_HINT = "발음은 가사 텍스트에서 표준 발음 규칙으로 추정한 값입니다. 가수의 실제 발음을 인식한 것이 아닙니다."
+LENGTH_HINT = ("음절 구간 길이: 정렬된 시작~끝 (끝은 대부분 다음 음절·보컬 끊김으로 정한 추정값).\n"
+               "유성 가창 길이: 그 구간에서 피치(유성음)가 잡힌 시간. 무성 자음(ㅅ·ㅎ 등)은 빠지고, 보컬 분리에 남은 잔향은 들어갈 수 있습니다.")
 LOW_CONF = 0.1  # 실제 두 곡: 0.1 미만 음절의 오차율 8~9% vs 나머지 1~2% (약한 지표)
 
 
@@ -59,6 +65,8 @@ class LyricsPanel(QScrollArea):
     autoLinkRequested = Signal()
     syllableActionRequested = Signal(str, list)  # 가사 레인 메뉴와 같은 종류
     syllableActivated = Signal(str)  # 목록에서 고른 음절
+    pronunciationEdited = Signal(str, str, object)  # 음절 id, 발음, IPA(None이면 발음에서 만듦)
+    vocalActionRequested = Signal(str, list)  # 발음·멜리스마 동작, 음절 id 목록
     openModelFolderRequested = Signal()
     settingsChanged = Signal()
 
@@ -72,6 +80,8 @@ class LyricsPanel(QScrollArea):
         lay.setSpacing(10)
         self.setWidget(body)
         self._state = LyricsState()
+        self._groups: dict = {}  # 음절 id → vocal.VocalGroup
+        self._durations: dict = {}  # 음절 id → vocal.SyllableDuration
         self._selected: list[str] = []
         self._dirty_editor = False
         self._loading = False
@@ -200,6 +210,65 @@ class LyricsPanel(QScrollArea):
         f.addRow(row)
         lay.addWidget(g)
 
+        # --- 발음·길이·멜리스마 (STEP 4) ---
+        g = QGroupBox("발음 · 가창 길이 · 멜리스마")
+        f = QFormLayout(g)
+        f.setLabelAlignment(Qt.AlignmentFlag.AlignRight)
+        for key, label in (("pron", "발음"), ("ipa", "IPA"), ("pron_info", "발음 근거"), ("span", "음절 구간 길이"),
+                           ("voiced", "유성 가창 길이"), ("union", "연결 음표 구간"), ("mel", "멜리스마"),
+                           ("mel_pitch", "음높이 변화"), ("mel_info", "판정 근거")):
+            lab = _mono() if key in ("span", "voiced", "union") else QLabel("—")
+            lab.setWordWrap(True)
+            lab.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+            self.fields[key] = lab
+            f.addRow(label, lab)
+        hint = QLabel(PRON_HINT)
+        hint.setWordWrap(True)
+        hint.setProperty("role", "secondary")
+        f.addRow(hint)
+        self.pron_edit = QLineEdit()
+        self.pron_edit.setPlaceholderText("발음 (예: 가치). 비우면 '앞 음절과 합쳐 발음'")
+        self.ipa_edit = QLineEdit()
+        self.ipa_edit.setPlaceholderText("IPA (비우면 발음에서 만듦)")
+        f.addRow("발음 고치기", self.pron_edit)
+        f.addRow("IPA 고치기", self.ipa_edit)
+        row = QHBoxLayout()
+        self.btn_pron_apply = QPushButton("발음 적용")
+        self.btn_pron_apply.setProperty("accent", True)
+        self.btn_pron_confirm = QPushButton("지금 발음 확정")
+        self.btn_pron_reset = QPushButton("기본 발음으로")
+        for b in (self.btn_pron_apply, self.btn_pron_confirm, self.btn_pron_reset):
+            row.addWidget(b)
+        f.addRow(row)
+        row = QHBoxLayout()
+        self.btn_pron_regen = QPushButton("선택 음절 다시 생성")
+        self.btn_pron_regen_all = QPushButton("전체 다시 생성")
+        self.btn_pron_regen_all.setToolTip("자동 발음만 지금 규칙으로 다시 만듭니다. 직접 고치거나 확정한 발음은 그대로 둡니다.")
+        row.addWidget(self.btn_pron_regen)
+        row.addWidget(self.btn_pron_regen_all)
+        f.addRow(row)
+        len_hint = QLabel(LENGTH_HINT)
+        len_hint.setWordWrap(True)
+        len_hint.setProperty("role", "secondary")
+        f.addRow(len_hint)
+        row = QHBoxLayout()
+        self.btn_mel_set = QPushButton("멜리스마로 확정")
+        self.btn_mel_set.setToolTip("피아노 롤에서 음표를 2개 이상 골랐으면 그 음표로, 아니면 연결된 음표로 확정합니다.")
+        self.btn_mel_not = QPushButton("멜리스마 아님")
+        self.btn_mel_clear = QPushButton("자동 판정으로")
+        for b in (self.btn_mel_set, self.btn_mel_not, self.btn_mel_clear):
+            row.addWidget(b)
+        f.addRow(row)
+        row = QHBoxLayout()
+        self.btn_mel_add = QPushButton("선택 음표 추가")
+        self.btn_mel_remove = QPushButton("선택 음표 빼기")
+        self.btn_mel_ok = QPushButton("판정 확인")
+        self.btn_mel_ok.setToolTip("음표가 바뀌어 '재확인 필요'가 붙은 사용자 판정을 확인했다고 표시합니다.")
+        for b in (self.btn_mel_add, self.btn_mel_remove, self.btn_mel_ok):
+            row.addWidget(b)
+        f.addRow(row)
+        lay.addWidget(g)
+
         # --- 목록 ---
         g = QGroupBox("확인할 음절")
         v = QVBoxLayout(g)
@@ -228,6 +297,14 @@ class LyricsPanel(QScrollArea):
         self.btn_confirm.clicked.connect(lambda: self.syllableActionRequested.emit("confirm", list(self._selected)))
         self.btn_link.clicked.connect(lambda: self.syllableActionRequested.emit("link_replace", list(self._selected)))
         self.btn_unlink.clicked.connect(lambda: self.syllableActionRequested.emit("unlink", list(self._selected)))
+        self.btn_pron_apply.clicked.connect(self._apply_pron)
+        self.pron_edit.returnPressed.connect(self._apply_pron)
+        for btn, kind in ((self.btn_pron_confirm, "pron_confirm"), (self.btn_pron_reset, "pron_reset"),
+                          (self.btn_pron_regen, "pron_regen"), (self.btn_pron_regen_all, "pron_regen_all"),
+                          (self.btn_mel_set, "mel_set"), (self.btn_mel_not, "mel_not"), (self.btn_mel_clear, "mel_clear"),
+                          (self.btn_mel_add, "mel_add"), (self.btn_mel_remove, "mel_remove"),
+                          (self.btn_mel_ok, "mel_reviewed")):
+            btn.clicked.connect(lambda _c=False, k=kind: self.vocalActionRequested.emit(k, list(self._selected)))
         self.filter.currentIndexChanged.connect(lambda _i: self._fill_list())
         self.listing.itemActivated.connect(self._on_item)
         self.listing.itemClicked.connect(self._on_item)
@@ -356,6 +433,7 @@ class LyricsPanel(QScrollArea):
             for lab in f.values():
                 lab.setText("—")
             f["note"].setText("가사 레인이나 목록에서 음절을 고르세요")
+            self._show_vocal(None)
             return
         ly = self._state
         if len(self._selected) > 1:
@@ -363,6 +441,7 @@ class LyricsPanel(QScrollArea):
                 lab.setText("—")
             f["text"].setText(" ".join(ly.text.syllable(s).text for s in self._selected[:20]))
             f["note"].setText(f"음절 {len(self._selected)}개 선택")
+            self._show_vocal(None)
             return
         sid = self._selected[0]
         s = ly.text.syllable(sid)
@@ -397,6 +476,92 @@ class LyricsPanel(QScrollArea):
         f["rel"].setText(rel + (f" + 접근음 {n_app}" if n_app else ""))
         line = ly.text.lines[li]
         f["note"].setText("; ".join(x for x in (s.note, line.review) if x) or "—")
+        self._show_vocal(sid)
+
+    # --- 발음·길이·멜리스마 (STEP 4) ------------------------------------------------
+
+    def set_vocal(self, groups: dict, durations: dict) -> None:
+        self._groups, self._durations = groups, durations
+        self.show_syllables(self._selected)
+        if self.filter.currentData() in ("pron_check", "pron_stale", "melisma", "mel_check"):
+            self._fill_list()
+
+    def _apply_pron(self) -> None:
+        if len(self._selected) != 1:
+            return
+        ipa = self.ipa_edit.text().strip()
+        self.pronunciationEdited.emit(self._selected[0], self.pron_edit.text(), ipa or None)
+
+    def _vocal_buttons(self, one: bool, any_sel: bool) -> None:
+        for b in (self.btn_pron_apply, self.btn_mel_set, self.btn_mel_not, self.btn_mel_add, self.btn_mel_remove):
+            b.setEnabled(one)
+        for b in (self.btn_pron_confirm, self.btn_pron_reset, self.btn_pron_regen, self.btn_mel_clear, self.btn_mel_ok):
+            b.setEnabled(any_sel)
+        self.pron_edit.setEnabled(one)
+        self.ipa_edit.setEnabled(one)
+
+    def _show_vocal(self, sid: str | None) -> None:
+        f = self.fields
+        keys = ("pron", "ipa", "pron_info", "span", "voiced", "union", "mel", "mel_pitch", "mel_info")
+        self._vocal_buttons(sid is not None, bool(self._selected))
+        if sid is None:
+            for k in keys:
+                f[k].setText("—")
+            return
+        e = self._state.pronunciation.get(sid)
+        if e is None:
+            f["pron"].setText("없음")
+            f["ipa"].setText("—")
+            f["pron_info"].setText("—")
+            self.pron_edit.setText("")
+            self.ipa_edit.setText("")
+        else:
+            badge = [pron.SOURCE_LABELS.get(e.source, e.source) if e.user_edited else pron.STATUS_LABELS.get(e.status, e.status)]
+            if e.stale:
+                badge.append("재검토 필요")
+            shown = e.text if e.text else ("(앞 음절과 합쳐 발음)" if e.user_edited else "—")
+            units = f" · 발음 {e.units}음절" if e.units != 1 and e.user_edited else ""
+            f["pron"].setText(f"[{shown}]  {' · '.join(badge)}{units}")
+            f["ipa"].setText(f"/{e.ipa}/" if e.ipa else "— (만들 수 없음)")
+            info = list(e.rules)
+            if e.user_edited and e.auto_text != e.text:
+                info.append(f"자동 발음은 [{e.auto_text or '—'}]")
+            info.extend(e.notes)
+            f["pron_info"].setText("; ".join(info) or "규칙 변화 없음 (글자대로)")
+            self.pron_edit.setText(e.text)
+            self.ipa_edit.setText(e.ipa if e.ipa_edited else "")
+        d = self._durations.get(sid)
+        if d is None:
+            for k in ("span", "voiced", "union"):
+                f[k].setText("—")
+        else:
+            f["span"].setText("—  (" + vocal.SPAN_STATUS_LABELS[d.span_status] + ")" if d.span is None else
+                              f"{d.span * 1000:.0f} ms  ({vocal.SPAN_STATUS_LABELS[d.span_status]})")
+            f["voiced"].setText(f"미측정 — {d.voiced_reason}" if d.voiced is None else
+                                f"{d.voiced * 1000:.0f} ms  ({d.voiced_reason})")
+            f["union"].setText("—" if d.note_union is None else f"{d.note_union * 1000:.0f} ms  (겹친 부분은 한 번만)")
+        g = self._groups.get(sid)
+        if g is None:
+            f["mel"].setText("연결된 음표 없음")
+            f["mel_pitch"].setText("—")
+            f["mel_info"].setText("—")
+            return
+        if g.user_kind:
+            head = ("멜리스마" if g.is_melisma else "멜리스마 아님") + " (사용자 확정)"
+            if g.kind != ("melisma" if g.is_melisma else g.kind):
+                head += f" · 자동 판정: {vocal.KIND_LABELS[g.kind]}"
+        else:
+            head = f"{vocal.KIND_LABELS[g.kind]} (자동 판정, 규칙 점수 {g.confidence:.2f})"
+        if g.needs_review:
+            head += " · 재확인 필요"
+        f["mel"].setText(head)
+        if g.pitch_sequence:
+            dur = "" if g.duration is None else f", {g.start:.3f}~{g.end:.3f} s · {g.duration * 1000:.0f} ms"
+            f["mel_pitch"].setText(f"{' → '.join(g.pitch_sequence)}  (음표 {g.note_count}개, 범위 {g.pitch_range}반음, "
+                                   f"{vocal.DIRECTION_LABELS[g.direction]}{dur})")
+        else:
+            f["mel_pitch"].setText("—")
+        f["mel_info"].setText("; ".join(g.reasons) or "—")
 
     def _fill_list(self) -> None:
         kind = self.filter.currentData()
@@ -417,6 +582,16 @@ class LyricsPanel(QScrollArea):
                 if kind == "lowconf" and not (t.confidence is not None and t.start_source == "model" and t.confidence < LOW_CONF):
                     continue
                 if kind == "stale" and not t.stale:
+                    continue
+                e = ly.pronunciation.get(s.id)
+                if kind == "pron_check" and not (e is not None and not e.user_edited and e.status != "valid"):
+                    continue
+                if kind == "pron_stale" and not (e is not None and e.stale):
+                    continue
+                g = self._groups.get(s.id)
+                if kind == "melisma" and not (g is not None and g.is_melisma):
+                    continue
+                if kind == "mel_check" and not (g is not None and (g.needs_review or (g.kind == "uncertain" and not g.user_kind))):
                     continue
                 li = ly.text.index[s.id][0]
                 when = f"{t.start:7.2f}s" if t.aligned else "   —   "

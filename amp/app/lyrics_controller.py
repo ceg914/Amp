@@ -538,6 +538,9 @@ class LyricsController(QObject):
             self._push(lambda s: ops.shift_times(s, None, ms / 1000.0, duration=dur), "가사 전체 시간 보정")
 
     def on_syllable_action(self, kind: str, ids: list) -> None:
+        if kind.startswith(("pron_", "mel_")):  # STEP 4: 발음·멜리스마는 VocalDetailController가 맡는다
+            self.w.vocal.on_action(kind, ids)
+            return
         ids = [i for i in ids if i in self.doc.lyrics.text.index]
         if not ids:
             self.w._show_status_error("음절을 먼저 고르세요.")
