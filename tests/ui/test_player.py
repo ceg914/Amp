@@ -115,3 +115,78 @@ def test_teardown_keeps_device_alive_until_sink_is_deleted(qtbot):
     dev.readAll()
     assert dev.isOpen() and dev.finished and len(dev.read(64)) == 0
     p.stop()
+
+
+# --- STEP 3.5: 재생 중 출력 장치 바뀜 ---------------------------------------------------------------
+
+def _pulse_null_sink(name):
+    import shutil
+    import subprocess
+
+    if not shutil.which("pactl") or subprocess.run(["pactl", "info"], capture_output=True).returncode != 0:
+        pytest.skip("PulseAudio(pactl)가 없어 가상 출력 장치를 만들 수 없다")
+    r = subprocess.run(["pactl", "load-module", "module-null-sink", f"sink_name={name}",
+                        f"sink_properties=device.description={name}"], capture_output=True, text=True)
+    return r.stdout.strip()
+
+
+def test_playback_moves_to_new_default_output_and_survives_unplug(qtbot):
+    import subprocess
+
+    old_default = subprocess.run(["pactl", "get-default-sink"], capture_output=True, text=True).stdout.strip() \
+        if AudioPlayer.output_available() else ""
+    a_mod = _pulse_null_sink("amp_test_a")
+    b_mod = _pulse_null_sink("amp_test_b")
+    try:
+        subprocess.run(["pactl", "set-default-sink", "amp_test_a"], check=True)
+        qtbot.waitUntil(lambda: b"amp_test_a" in bytes(__import__("PySide6.QtMultimedia", fromlist=["QMediaDevices"])
+                                                         .QMediaDevices.defaultAudioOutput().id()), timeout=5000)
+        p = AudioPlayer()
+        errors = []
+        p.errorOccurred.connect(errors.append)
+        sr = 8000
+        y = (0.1 * np.sin(2 * np.pi * 220 * np.arange(sr * 20) / sr)).astype(np.float32)
+        p.set_audio(AudioData(np.stack([y, y], 1), sr))
+        p.play()
+        qtbot.wait(300)
+        assert p._sink_device_id == b"amp_test_a"
+        subprocess.run(["pactl", "set-default-sink", "amp_test_b"], check=True)  # 기본 장치 바꿈
+        qtbot.waitUntil(lambda: p._sink_device_id == b"amp_test_b", timeout=5000)
+        assert p.state is PlaybackState.PLAYING and p.device_switches == 1
+        subprocess.run(["pactl", "unload-module", b_mod], check=True)  # 쓰던 장치를 뺌 (헤드폰 뽑기)
+        b_mod = ""
+        qtbot.waitUntil(lambda: p.device_switches == 2, timeout=5000)
+        assert p.state is PlaybackState.PLAYING and p._sink_device_id != b"amp_test_b" and errors == []
+        p.shutdown()
+    finally:
+        for m in (a_mod, b_mod):
+            if m:
+                subprocess.run(["pactl", "unload-module", m])
+        if old_default:
+            subprocess.run(["pactl", "set-default-sink", old_default])
+
+
+def test_no_output_left_stops_with_message(qapp, monkeypatch):
+    from PySide6.QtMultimedia import QAudioDevice
+
+    p = AudioPlayer()
+    p.set_audio(AudioData(np.zeros((1000, 1), np.float32), 100))
+
+    class Sink:
+        def processedUSecs(self):
+            return 500_000
+
+        def stop(self):
+            pass
+
+        def deleteLater(self):
+            pass
+
+    p._sink, p._sink_device_id, p._state, p._base = Sink(), b"gone", PlaybackState.PLAYING, 1.0
+    monkeypatch.setattr("amp.app.player.QMediaDevices.defaultAudioOutput", staticmethod(lambda: QAudioDevice()))
+    monkeypatch.setattr("amp.app.player.QMediaDevices.audioOutputs", staticmethod(lambda: []))
+    errors = []
+    p.errorOccurred.connect(errors.append)
+    p._on_outputs_changed()
+    assert p.state is PlaybackState.STOPPED and abs(p.position() - 1.5) < 1e-9
+    assert errors and "출력 장치가 없어" in errors[0]

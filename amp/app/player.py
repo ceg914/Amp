@@ -104,6 +104,11 @@ class AudioPlayer(QObject):
         self._timer = QTimer(self)
         self._timer.setInterval(30)
         self._timer.timeout.connect(self._tick)
+        self._sink_device_id = b""  # 지금 재생 출력이 쓰는 장치 id
+        self.device_switches = 0  # 출력 장치가 바뀌어 다시 연 횟수 (진단용)
+        # 재생 중 기본 출력 장치가 바뀌거나(헤드폰 연결·해제) 쓰던 장치가 사라지면 새 장치로 다시 연다
+        self._devices = QMediaDevices(self)
+        self._devices.audioOutputsChanged.connect(self._on_outputs_changed)
 
     # --- 조회 --------------------------------------------------------------
 
@@ -277,6 +282,7 @@ class AudioPlayer(QObject):
         # stateChanged 시그널은 PySide6 6.12에서 QAudio::State 인자 변환에 실패한다.
         # 대신 _tick 타이머(30ms)에서 sink.state()를 확인한다.
         self._sink, self._device = sink, pcm
+        self._sink_device_id = bytes(device.id())
         self._base = conv.seconds_at(conv.out_frame_at(position))
         sink.start(pcm)
         if sink.error() != _QtAudio.Error.NoError:
@@ -295,6 +301,36 @@ class AudioPlayer(QObject):
         if sink is not None:
             sink.stop()
             sink.deleteLater()  # 자식인 장치도 이때 함께 지워진다
+
+    def _on_outputs_changed(self) -> None:
+        """출력 장치 목록이 바뀌었다. 재생 중이고 쓰던 장치가 기본 장치가 아니게 됐거나 사라졌으면 같은 위치에서 다시 연다."""
+        if self._sink is None or self._state is PlaybackState.STOPPED:
+            return
+        default = QMediaDevices.defaultAudioOutput()
+        present = any(bytes(d.id()) == self._sink_device_id for d in QMediaDevices.audioOutputs())
+        if present and not default.isNull() and bytes(default.id()) == self._sink_device_id:
+            return
+        was_playing = self._state is PlaybackState.PLAYING
+        pos = self.position()
+        log.info("출력 장치가 바뀌어 재생 출력을 다시 엽니다 (%.2f초, 기본 장치: %s)", pos,
+                 "없음" if default.isNull() else default.description())
+        self._teardown()
+        self._pos = pos
+        if default.isNull():
+            self._set_state(PlaybackState.STOPPED)
+            self.positionChanged.emit(pos)
+            self.errorOccurred.emit("오디오 출력 장치가 없어 재생을 멈췄습니다. 장치를 연결한 뒤 다시 재생하세요.")
+            return
+        self.device_switches += 1
+        if not was_playing:  # 일시정지 중이면 다음 재생 때 새 장치로 연다
+            self._set_state(PlaybackState.STOPPED)
+            self._play_from = pos
+            self.positionChanged.emit(pos)
+            return
+        if self._start_sink(pos):
+            self._timer.start()
+        else:
+            self._set_state(PlaybackState.STOPPED)
 
     def _check_sink(self) -> None:
         if self._sink is None:
