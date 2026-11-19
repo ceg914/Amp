@@ -365,3 +365,29 @@ def test_save_conflict_when_files_changed_elsewhere(wav_src, tmp_path):
     mine.save(p_mine, force=True)  # 사용자가 덮어쓰기를 고른 경우
     assert folder.paths.notes_json.read_bytes() != theirs
     assert mine.conflicting_files() == []
+
+
+def test_step3_alignment_v1_is_backed_up_before_upgrade(wav_src, tmp_path):
+    """STEP 3.5: alignment.json v1 → v2. 덮어쓰기 전에 v1 원본을 backup/에 남긴다 (이전 빌드로 열 수 있게)."""
+    from amp.lyrics import linking, ops
+
+    folder = create_project(wav_src, tmp_path / "P", "곡", COPY)
+    project = _filled_project(folder)
+    st = ops.apply_text(project.lyrics, "가")
+    sid = st.text.syllables[0].id
+    st = linking.auto_link(ops.set_times(st, {sid: (0.95, 1.0)}, source="model"), project.score.notes())
+    project.lyrics = st
+    folder.save(project)
+    ali = json.loads(folder.paths.alignment_json.read_text(encoding="utf-8"))
+    assert ali["schema_version"] == 2
+    ali["schema_version"] = 1  # STEP 3이 쓴 파일처럼 (역할 없음)
+    for row in ali["syllables"]:
+        for lk in row["links"]:
+            lk.pop("role", None)
+    folder.paths.alignment_json.write_text(json.dumps(ali), encoding="utf-8")
+    reopened, _ = open_folder(folder.root)
+    p2, rep = reopened.load_project()
+    assert "alignment.json" in rep.migrated
+    assert p2.lyrics.alignment.links == st.alignment.links and st.alignment.links[sid]
+    backups = list((folder.root / "backup").glob("*alignment.json"))
+    assert len(backups) == 1 and json.loads(backups[0].read_text(encoding="utf-8"))["schema_version"] == 1

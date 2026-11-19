@@ -341,6 +341,13 @@ class ProjectFolder:
                 report.warnings.append(f"마이그레이션 전 notes.json 백업을 만들지 못했습니다: {e}")
         duration = analysis.duration if analysis is not None else (self.meta.original.duration or None)
         lyrics = load_lyrics_files(self.paths, report, [n.id for n in score.notes()], duration)
+        for name, path, label in (("lyrics.json", self.paths.lyrics_json, "before-upgrade"),
+                                  ("alignment.json", self.paths.alignment_json, "before-step3.5")):
+            if name in report.migrated and path.exists():
+                try:  # 새 형식(alignment v2 등)으로 덮어쓰기 전에 원본을 남긴다 (이전 빌드로 열 수 있게)
+                    backup_file(self, path, label)
+                except OSError as e:
+                    report.warnings.append(f"마이그레이션 전 {name} 백업을 만들지 못했습니다: {e}")
         self._analysis_written = analysis
         self._known_state = self._disk_state()
         return Project(audio=self.audio_ref(), analysis=analysis, score=score, lyrics=lyrics), report

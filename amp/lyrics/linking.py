@@ -246,6 +246,7 @@ def reconcile(state: LyricsState, removed: Sequence[Note], added: Sequence[Note]
     if not affected:
         return state
     added_sorted = sorted(added, key=lambda n: n.start)
+    known = {n.id: n for n in added}
     updates: dict[str, tuple[NoteLink, ...]] = {}
     for sid, links in affected.items():
         t = al.timing(sid)
@@ -267,6 +268,12 @@ def reconcile(state: LyricsState, removed: Sequence[Note], added: Sequence[Note]
                     out.append(NoteLink(a.id, lk.confidence, src, lk.confirmed))
         if out and all(x.role == "approach" for x in out):
             out = [replace(x, role="") for x in out]
+        # 확정하지 않은 자동 연결이고 연결 음표를 모두 알면, 새 음표 기준으로 접근음을 다시 판정한다
+        # (음표만 다시 검출하면 음표 id가 모두 바뀌어 역할이 사라지던 문제)
+        if out and not _protected(out) and all(x.note_id in known for x in out):
+            ns = sorted((known[x.note_id] for x in out), key=lambda n: (n.start, n.id))
+            app = _approach_note(sid, ns, t if t.aligned else None)
+            out = [replace(x, role="approach" if x.note_id == app else "") for x in out]
         updates[sid] = tuple(out)
     return replace(state, alignment=al.with_links(updates))
 

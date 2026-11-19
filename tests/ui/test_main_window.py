@@ -344,3 +344,17 @@ def test_no_vocal_dialog_parses_and_rejects_bad_rows(qtbot, monkeypatch):
     dlg.table.setItem(1, 1, QTableWidgetItem("0:39"))  # 끝이 시작보다 앞
     dlg.accept()
     assert shown and "끝" in shown[0]
+
+
+def test_event_loop_stall_is_logged_with_running_task(qtbot, window, caplog):
+    import time
+
+    window._stall_clock.restart()
+    time.sleep(0.7)  # 화면 스레드를 막음
+    with caplog.at_level("WARNING"):
+        window._check_stall()
+    assert window.stalls and window.stalls[-1][0] >= 500 and window.stalls[-1][1] == "작업 없음"
+    assert any("멈췄습니다" in r.message for r in caplog.records)
+    window._stall_clock.restart()
+    window._check_stall()  # 정상 간격이면 남기지 않는다
+    assert len(window.stalls) == 1

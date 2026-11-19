@@ -822,6 +822,19 @@ def test_note_edits_reset_approach_role_on_remapped_notes():
     assert [(lk.note_id, lk.role) for lk in out2.alignment.links[ids[0]]] == [("a", "approach"), ("b1", ""), ("b2", "")]
 
 
+def test_redetected_notes_get_approach_role_again():
+    st, ids = _timed("가", [(1.0, 1.6)])
+    a, b = note("a", 1.0, 1.12, 62), note("b", 1.12, 1.6, 64)
+    st = linking.auto_link(st, [a, b])
+    a2, b2 = note("a2", 1.0, 1.12, 62), note("b2", 1.12, 1.6, 64)  # 다시 검출: 같은 음, 새 id
+    out = linking.reconcile(st, [a, b], [a2, b2])
+    assert [(lk.note_id, lk.role) for lk in out.alignment.links[ids[0]]] == [("a2", "approach"), ("b2", "")]
+    # 확정한 연결은 자동으로 역할을 다시 붙이지 않는다
+    conf = linking.confirm_links(st, ids)
+    out2 = linking.reconcile(conf, [a, b], [a2, b2])
+    assert all(lk.role == "" and lk.confirmed for lk in out2.alignment.links[ids[0]])
+
+
 def test_alignment_v2_saves_roles_and_reads_v1(tmp_path):
     st, ids = _timed("가", [(1.0, 1.6)])
     st = linking.auto_link(st, [note("a", 1.0, 1.12, 62), note("b", 1.12, 1.6, 64)])

@@ -279,6 +279,8 @@ python scripts/compare_runs.py "SONATLAS Projects\노래 이름" --list
 - 분리 결과 WAV는 24bit라서 ±1을 넘는 값은 잘립니다(드묾).
 - 가사(STEP 3): 한국어 실제 곡 2개에서 Whisper turbo 글자 오류율 0.11~0.18(빔 탐색·다시 듣기 적용), MMS 정렬 음절 시작이 악보와 ±200ms 안에 96~97%.
   음절 끝은 추정값이고, 영어·일본어 실제 곡과 Windows·GPU 실행은 확인하지 못했습니다. 자세한 내용은 STEP_3_IMPLEMENTATION_REPORT.md.
+- STEP 3.5: 끌어올림 합치기·접근음 연결로 두 곡의 가사 글자 위치 정확도 0.853→0.904, 0.883→0.982(두 곡은 규칙을 정할 때도 본 곡이라 독립 검증 아님).
+  실제 모델 F6 연속 실행은 CPU로만 확인했고, GPU·Windows 재생은 `gpu_check.bat`·`playback_check.bat` 결과가 필요합니다. 자세한 내용은 STEP_3_5_VALIDATION_REPORT.md.
 
 ## 문제 해결
 

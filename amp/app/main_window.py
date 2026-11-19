@@ -14,7 +14,7 @@ import logging
 import os
 from pathlib import Path
 
-from PySide6.QtCore import QSettings, Qt, QTimer, QUrl
+from PySide6.QtCore import QElapsedTimer, QSettings, Qt, QTimer, QUrl
 from PySide6.QtGui import QAction, QCloseEvent, QDesktopServices, QKeySequence
 from PySide6.QtWidgets import (
     QComboBox,
@@ -63,6 +63,8 @@ from amp.project.layout import PROJECT_FILE, is_project_folder
 from amp.storage.project_file import PROJECT_EXTENSION, load_project
 
 log = logging.getLogger(__name__)
+STALL_TICK_MS = 100
+STALL_LOG_MS = 500
 
 AUDIO_FILTER = "오디오 파일 (" + " ".join(f"*{e}" for e in SUPPORTED_EXTENSIONS) + ")"
 OPEN_FILTER = f"SONATLAS 프로젝트 ({PROJECT_FILE});;이전 형식 프로젝트 (*{PROJECT_EXTENSION})"
@@ -109,6 +111,15 @@ class MainWindow(QMainWindow):
         self.player = AudioPlayer(self)
         self.session = ProjectSession(self.doc, self.player, self.runner, self.settings, projects_root, self)
         self.autosave = AutosaveManager(self.doc, recovery_dir, autosave_interval_ms, self)
+        # 화면 멈춤 감시 (진단용): 이벤트 루프가 0.5초 넘게 멈추면 그때 돌던 작업과 함께 로그 파일에 남긴다.
+        # 실제 곡 F6 실행 중 한 번 0.75초 멈춤이 있었고 원인을 찾지 못해, 사용자 PC 로그로 잡으려는 것
+        self._stall_clock = QElapsedTimer()
+        self._stall_clock.start()
+        self.stalls: list[tuple[int, str]] = []
+        self._stall_timer = QTimer(self)
+        self._stall_timer.setInterval(STALL_TICK_MS)
+        self._stall_timer.timeout.connect(self._check_stall)
+        self._stall_timer.start()
         self._time = 0.0
         self._tracked: list[TaskHandle] = []
         self._player_error_shown = False
@@ -683,6 +694,14 @@ class MainWindow(QMainWindow):
         if not self._player_error_shown:
             self._player_error_shown = True
             QMessageBox.warning(self, "재생 오류", message)
+
+    def _check_stall(self) -> None:
+        late = int(self._stall_clock.restart()) - STALL_TICK_MS
+        if late >= STALL_LOG_MS:
+            what = self.progress_label.text() if self._tracked else "작업 없음"
+            self.stalls.append((late, what))
+            del self.stalls[:-20]
+            log.warning("화면 이벤트 루프가 %dms 멈췄습니다 (진행 중: %s)", late, what)
 
     # --- 백그라운드 작업 표시 ----------------------------------------------------------
 
