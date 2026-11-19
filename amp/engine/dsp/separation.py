@@ -18,6 +18,7 @@ from typing import Callable
 import numpy as np
 
 DEMUCS_MODELS = ("htdemucs",)
+ROFORMER_MODELS = ("mel_roformer",)  # 사용자가 고른 체크포인트 파일로 실행 (amp/engine/dsp/roformer.py)
 TEST_MODELS = ("_identity", "_sleep", "_crash")
 MODEL_RATE = 44100
 # demucs는 shifts마다 0~0.5초 임의 이동을 쓴다. 같은 곡을 다시 분리해도 같은 결과가 나오도록 시드를 고정한다.
@@ -141,11 +142,18 @@ def separate(
     model_name: str = "htdemucs",
     device: str = "auto",
     progress: Callable[[float, str], None] | None = None,
+    model_files: dict | None = None,
 ) -> tuple[np.ndarray, np.ndarray, dict]:
-    """(frames, channels) → (vocals, accompaniment, info). 출력은 입력과 같은 sr·프레임 수다."""
+    """(frames, channels) → (vocals, accompaniment, info). 출력은 입력과 같은 sr·프레임 수다.
+
+    model_files: RoFormer용 {"checkpoint": 경로, "config": .yaml 경로 또는 ""}.
+    """
     report = progress or (lambda f, m: None)
-    if model_name not in DEMUCS_MODELS and model_name not in TEST_MODELS:
+    if model_name not in DEMUCS_MODELS + ROFORMER_MODELS + TEST_MODELS:
         raise SeparationError("internal", f"알 수 없는 분리 모델: {model_name}")
+    files = model_files or {}
+    if model_name in ROFORMER_MODELS and not files.get("checkpoint"):
+        raise SeparationError("model_file", "RoFormer 모델 파일(.ckpt)을 고르지 않았습니다. 분석 설정에서 모델 파일을 지정하세요.")
     frames, in_ch = samples.shape
     wav = samples.T.astype(np.float32)  # (ch, frames)
     if in_ch == 1:
@@ -161,6 +169,10 @@ def separate(
         vocals = np.zeros_like(wav)
         info["silent_input"] = True
         report(1.0, "무음 입력 — 분리를 건너뜀")
+    elif model_name in ROFORMER_MODELS:  # 정규화 없이 원래 크기로 (참조 구현과 같게). 반주 = 원본 − 보컬
+        vocals, dev_info = _run_roformer(wav, files, device, report)
+        info.update(dev_info)
+        accompaniment = (wav - vocals).astype(np.float32)
     else:
         norm = (wav - mean) / std
         if model_name in TEST_MODELS:
@@ -201,6 +213,19 @@ def _run_test_model(name: str, norm: np.ndarray, report) -> dict:
             report(i / 600, "시험용 모델 실행 중")
     report(1.0, "시험용 모델 완료")
     return {"vocals": norm.copy(), "other": np.zeros_like(norm)}  # 반주는 0, 보컬은 입력 그대로
+
+
+def _run_roformer(wav: np.ndarray, files: dict, device: str, report) -> tuple[np.ndarray, dict]:
+    import importlib.util
+
+    if importlib.util.find_spec("torch") is None:
+        raise SeparationError("missing_dependency", "PyTorch가 설치되어 있지 않습니다. install_separation.bat을 실행하세요.")
+    from amp.engine.dsp import roformer
+
+    try:
+        return roformer.run(wav, files["checkpoint"], files.get("config") or None, device, report)
+    except roformer.RoformerError as e:
+        raise SeparationError(e.code, str(e)) from e
 
 
 def _run_demucs(model_name: str, norm: np.ndarray, device: str, report) -> tuple[dict, dict]:

@@ -536,3 +536,67 @@ def test_stem_import_dialog_validates_files(qtbot, tmp_path):
     d.tool.setText(" UVR ")
     d._accept()
     assert d.result() == 1 and d.values() == (str(f), None, "UVR")
+
+
+def _tiny_roformer(tmp_path):
+    torch = pytest.importorskip("torch")
+    pytest.importorskip("librosa")
+    from amp.engine.dsp import roformer as R
+
+    torch.manual_seed(0)
+    m = R.build_model(R.RoformerConfig(dim=16, depth=1, num_bands=16, heads=2, dim_head=8, mlp_expansion_factor=1,
+                                       mask_estimator_depth=1, ff_mult=2))
+    path = tmp_path / "tiny_roformer.ckpt"
+    torch.save(m.state_dict(), str(path))
+    return str(path)
+
+
+def test_roformer_model_file_choice_check_and_analysis(qtbot, window, song, monkeypatch, tmp_path):
+    """RoFormer: 모델 파일 행은 RoFormer를 골랐을 때만 보이고, 파일을 고르면 작업 프로세스에서 확인하고,
+    파일 없이 분석하려 하면 먼저 고르게 하고, 고른 파일로 분리·분석한다(무작위 가중치 — 품질이 아니라 경로 시험)."""
+    ckpt = _tiny_roformer(tmp_path)
+    panel = window.inspector.analysis
+    assert not panel._model_row.isVisibleTo(panel)
+    panel.separation.setCurrentIndex(panel.separation.findData("mel_roformer"))
+    assert panel._model_row.isVisibleTo(panel) and "고르지 않았습니다" in panel.model_file_info.text()
+    folder = create(qtbot, window, song)
+
+    # 파일 없이 분석 → 고르는 창이 뜨고, 취소하면 분석하지 않는다
+    asked = []
+    monkeypatch.setattr(dialogs.RoformerModelDialog, "exec", lambda self: (asked.append(1), 0)[1])
+    window.run_analysis()
+    assert asked == [1] and not window.session.busy and window.doc.project.analysis is None
+
+    # 고르면 저장하고 작업 프로세스에서 확인한다
+    def choose(self):
+        self.checkpoint.setText(ckpt)
+        return 1
+
+    monkeypatch.setattr(dialogs.RoformerModelDialog, "exec", choose)
+    assert window.choose_model_files()
+    assert window.session.model_files == {"checkpoint": ckpt, "config": ""}
+    assert window.settings.value("separation/roformer")["checkpoint"] == ckpt
+    qtbot.waitUntil(lambda: "확인됨" in panel.model_file_info.text(), timeout=120_000)
+    assert "대역 16개" in panel.model_file_info.text()
+
+    # 분석: 실제 작업 프로세스에서 RoFormer로 분리
+    window.run_analysis()
+    qtbot.waitUntil(lambda: window.doc.project.analysis is not None and not window.session.busy, timeout=300_000)
+    assert window.errors == []
+    m = window.session.manifest
+    assert m.model == "mel_roformer" and m.model_info["checkpoint"] == "tiny_roformer.ckpt"
+    assert m.model_info["checkpoint_identity"]["size"] == os.path.getsize(ckpt)
+    assert window.doc.project.analysis.models["separation"].name == "mel_roformer"
+    assert "RoFormer (tiny_roformer.ckpt)" in window.tracks.rows["vocals"].info.text()
+    assert (folder.paths.stems / "vocals.wav").is_file()
+
+
+def test_roformer_bad_model_file_shows_reason(qtbot, window, tmp_path):
+    bad = tmp_path / "bad.ckpt"
+    bad.write_bytes(b"not a checkpoint")
+    window._set_model_files({"checkpoint": str(bad), "config": ""}, "확인 중…")
+    window._check_model_files(window.session.model_files)
+    panel = window.inspector.analysis
+    qtbot.waitUntil(lambda: panel.model_file_info.text().count("⚠") == 1, timeout=120_000)
+    assert "읽지 못했습니다" in panel.model_file_info.text()
+    assert window.errors and "읽지 못했습니다" in window.errors[0]

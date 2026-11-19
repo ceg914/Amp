@@ -16,8 +16,9 @@ SENSITIVITIES = ("simple", "standard", "precise")
 SENSITIVITY_LABELS = {"simple": "단순", "standard": "표준", "precise": "정밀"}
 DEVICES = ("auto", "cpu", "cuda")
 DEVICE_LABELS = {"auto": "자동 (GPU가 있으면 GPU)", "cpu": "CPU", "cuda": "GPU (CUDA)"}
-SEPARATIONS = ("htdemucs", "none")
-SEPARATION_LABELS = {"htdemucs": "분리함 (Demucs htdemucs · 가져온 결과가 있으면 그것)", "none": "분리 안 함 (무반주 음원)"}
+SEPARATIONS = ("htdemucs", "mel_roformer", "none")
+SEPARATION_LABELS = {"htdemucs": "Demucs htdemucs", "mel_roformer": "Mel-Band RoFormer (모델 파일 지정)",
+                     "none": "분리 안 함 (무반주 음원)"}
 
 # 민감도별 사용자 노출 기본값: (최소 음표 길이 ms, 음높이 변화 기준 반음)
 _PRESET_USER = {

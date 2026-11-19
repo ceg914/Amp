@@ -436,3 +436,62 @@ class StemImportDialog(QDialog):
             self.error.setText("보컬과 반주에 같은 파일을 골랐습니다.")
             return
         self.accept()
+
+
+class RoformerModelDialog(QDialog):
+    """Mel-Band RoFormer 모델 파일 지정: 체크포인트(필수), 설정 .yaml(선택)."""
+
+    def __init__(self, files: dict | None = None, parent=None) -> None:
+        super().__init__(parent)
+        files = files or {}
+        self.setWindowTitle("RoFormer 모델 파일")
+        self.setMinimumWidth(560)
+        lay = QVBoxLayout(self)
+        lay.addWidget(_title("Mel-Band RoFormer 모델 파일"))
+        lay.addWidget(_hint(
+            "직접 받은 Mel-Band RoFormer 보컬 모델의 체크포인트(.ckpt·.pth)를 고르세요. SONATLAS는 모델을 포함하거나 "
+            "내려받지 않습니다. 모델마다 가중치 라이선스가 다르니 받은 곳에서 확인하세요. "
+            "층 수·대역 수는 파일에서 읽고, STFT 설정이 기본값(n_fft 2048, hop 441, 44.1kHz)과 다른 모델이면 "
+            "함께 받은 .yaml 설정 파일도 고르세요. 파일은 텐서만 읽습니다(파일 안의 코드를 실행하지 않음)."))
+        form = QFormLayout()
+        self.checkpoint = QLineEdit(files.get("checkpoint", ""))
+        self.config = QLineEdit(files.get("config", ""))
+        self.config.setPlaceholderText("비우면 기본 설정 (Kimberley Jensen 보컬 모델과 같은 값)")
+        for label, edit, filt in (("체크포인트", self.checkpoint, "PyTorch 체크포인트 (*.ckpt *.pth *.pt *.safetensors);;모든 파일 (*)"),
+                                  ("설정 (선택)", self.config, "YAML 설정 (*.yaml *.yml);;모든 파일 (*)")):
+            row = QHBoxLayout()
+            row.addWidget(edit, 1)
+            b = QPushButton("찾아보기…")
+            b.clicked.connect(lambda _c=False, e=edit, f=filt: self._browse(e, f))
+            row.addWidget(b)
+            form.addRow(label, row)
+        lay.addLayout(form)
+        self.error = QLabel("")
+        self.error.setProperty("role", "warning")
+        self.error.setWordWrap(True)
+        lay.addWidget(self.error)
+        bb = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
+        bb.button(QDialogButtonBox.StandardButton.Ok).setText("확인")
+        bb.button(QDialogButtonBox.StandardButton.Cancel).setText("취소")
+        bb.accepted.connect(self._accept)
+        bb.rejected.connect(self.reject)
+        lay.addWidget(bb)
+
+    def _browse(self, edit: QLineEdit, filt: str) -> None:
+        start = edit.text() or self.checkpoint.text()
+        path, _ = QFileDialog.getOpenFileName(self, "파일 고르기", os.path.dirname(start) if start else "", filt)
+        if path:
+            edit.setText(path)
+
+    def values(self) -> dict:
+        return {"checkpoint": self.checkpoint.text().strip(), "config": self.config.text().strip()}
+
+    def _accept(self) -> None:
+        v = self.values()
+        if not v["checkpoint"] or not os.path.isfile(v["checkpoint"]):
+            self.error.setText("체크포인트 파일을 고르세요.")
+            return
+        if v["config"] and not os.path.isfile(v["config"]):
+            self.error.setText("설정 파일을 찾을 수 없습니다.")
+            return
+        self.accept()

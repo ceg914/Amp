@@ -112,6 +112,11 @@ class NoteInfo(QGroupBox):
         return f"{hz:.2f} Hz ({cents:+.0f}c)"
 
 
+def _file_name(path: str) -> str:
+    """경로의 파일 이름 (\\, / 모두 구분자로 본다)."""
+    return path.replace("\\", "/").rsplit("/", 1)[-1] if path else ""
+
+
 class AnalysisPanel(QGroupBox):
     runRequested = Signal()
     redetectRequested = Signal()
@@ -119,6 +124,7 @@ class AnalysisPanel(QGroupBox):
     clearCacheRequested = Signal()
     probeRequested = Signal()
     noVocalEditRequested = Signal()
+    modelFilesRequested = Signal()
     settingsChanged = Signal(object)  # AnalysisSettings
 
     def __init__(self, parent=None) -> None:
@@ -148,6 +154,14 @@ class AnalysisPanel(QGroupBox):
         self.separation = QComboBox()
         for s in SEPARATIONS:
             self.separation.addItem(SEPARATION_LABELS[s], s)
+        self.separation.setToolTip("다른 프로그램의 분리 결과를 가져왔으면(분석 > 외부 분리 결과 가져오기) 이 설정과 관계없이 "
+                                   "그 결과를 씁니다. '분리 다시 실행'을 누르면 여기서 고른 방식으로 다시 분리합니다.")
+        self.model_file_info = QLabel("")
+        self.model_file_info.setWordWrap(True)
+        self.model_file_btn = QPushButton("모델 파일…")
+        self.model_file_btn.setToolTip("Mel-Band RoFormer 체크포인트(.ckpt)와, 있으면 함께 받은 설정(.yaml)을 고릅니다. "
+                                       "SONATLAS는 모델을 내려받거나 포함하지 않습니다.")
+        self._model_files: dict = {}
         self.device = QComboBox()
         for d in DEVICES:
             self.device.addItem(DEVICE_LABELS[d], d)
@@ -177,7 +191,7 @@ class AnalysisPanel(QGroupBox):
         self.redetect = QPushButton("음표만 다시 검출")
         self.reseparate = QPushButton("분리 다시 실행")
         self.redetect.setToolTip("보컬 분리·피치 추출 결과를 그대로 쓰고 음표 검출만 다시 합니다.")
-        self.reseparate.setToolTip("기존 분리 결과를 쓰지 않고 htdemucs를 다시 실행합니다.")
+        self.reseparate.setToolTip("기존 분리 결과를 쓰지 않고 '보컬 분리'에서 고른 방식으로 다시 분리합니다.")
 
         form = QFormLayout()
         form.setLabelAlignment(Qt.AlignmentFlag.AlignRight)
@@ -191,6 +205,13 @@ class AnalysisPanel(QGroupBox):
         rng.addWidget(self.high)
         form.addRow("분석 음역", rng)
         form.addRow("보컬 분리", self.separation)
+        mf = QHBoxLayout()
+        mf.addWidget(self.model_file_info, 1)
+        mf.addWidget(self.model_file_btn)
+        self._model_row = QWidget()
+        self._model_row.setLayout(mf)
+        mf.setContentsMargins(0, 0, 0, 0)
+        form.addRow("", self._model_row)
         form.addRow("처리 장치", self.device)
         nv = QHBoxLayout()
         nv.addWidget(self.no_vocal_info, 1)
@@ -229,10 +250,13 @@ class AnalysisPanel(QGroupBox):
         self.clear_cache.clicked.connect(self.clearCacheRequested)
         self.probe.clicked.connect(self.probeRequested)
         self.no_vocal_edit.clicked.connect(self.noVocalEditRequested)
+        self.model_file_btn.clicked.connect(self.modelFilesRequested)
+        self.separation.currentIndexChanged.connect(self._update_model_row)
         for combo in (self.sensitivity, self.low, self.high, self.separation, self.device):
             combo.setSizeAdjustPolicy(QComboBox.SizeAdjustPolicy.AdjustToMinimumContentsLengthWithIcon)
             combo.setMinimumContentsLength(6)
         self.set_settings(AnalysisSettings())
+        self.set_model_files({})
 
     @staticmethod
     def _note_combo() -> QComboBox:
@@ -292,6 +316,26 @@ class AnalysisPanel(QGroupBox):
             self._set_no_vocal(s.no_vocal_ranges)
         finally:
             self._updating = False
+
+    def set_model_files(self, files: dict, status: str = "") -> None:
+        """RoFormer 모델 파일 표시. status: 확인 결과 문구(없으면 파일 이름만)."""
+        self._model_files = dict(files or {})
+        ckpt = self._model_files.get("checkpoint", "")
+        if ckpt:
+            name = _file_name(ckpt)
+            cfg = _file_name(self._model_files.get("config", "")) or "설정: 기본값"
+            self.model_file_info.setText(f"{name} · {cfg}" + (f"\n{status}" if status else ""))
+            self.model_file_info.setProperty("role", "warning" if status.startswith("⚠") else "secondary")
+        else:
+            self.model_file_info.setText("모델 파일을 고르지 않았습니다")
+            self.model_file_info.setProperty("role", "warning")
+        self.model_file_info.setToolTip(ckpt)
+        self.model_file_info.style().unpolish(self.model_file_info)
+        self.model_file_info.style().polish(self.model_file_info)
+        self._update_model_row()
+
+    def _update_model_row(self, *_args) -> None:
+        self._model_row.setVisible(self.separation.currentData() == "mel_roformer")
 
     def _set_no_vocal(self, ranges) -> None:
         self._no_vocal = tuple(ranges)

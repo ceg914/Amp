@@ -15,7 +15,8 @@ amp/
 ├── engine/                     분석 엔진 (Qt 없음)
 │   ├── worker.py               분석 작업 프로세스 (separate · pitch · tempo · probe · asr · emissions · ctc_align)
 │   ├── worker_client.py        작업 프로세스 실행·진행률·취소·오류 코드 → 한국어 메시지
-│   ├── dsp/separation.py       Demucs htdemucs 실행, 시간 정렬, GPU→CPU 재시도
+│   ├── dsp/separation.py       Demucs htdemucs·Mel-Band RoFormer 실행, 시간 정렬, GPU→CPU 재시도
+│   ├── dsp/roformer.py         Mel-Band RoFormer 추론(MIT 구현을 torch만으로 옮김), 체크포인트 안전 읽기·구조 추론, 조각 추론
 │   ├── dsp/pitch.py            librosa pYIN (16kHz, 100fps, 30초 청크) + 온셋(32ms 창)·RMS(64ms·20ms)
 │   ├── dsp/tempo.py            BPM 추정, 2배·절반 후보, 박 간격 직선 보정
 │   ├── pitch_post.py           에너지·틈 게이트, 옥타브·튐 보정, 재발음 지표
@@ -101,6 +102,12 @@ run.bat, install_separation.bat, install_lyrics.bat   Windows 실행·설치
    같은 디코더로 읽기 → 샘플레이트가 다르면 `resample_poly` → 채널 맞춤 → 8kHz 교차 상관(±2초)으로 어긋남을 찾고 원래 샘플레이트에서
    ±8샘플로 다듬기 → 옮기고 원본 프레임 수에 맞춤. 검사: 반주가 있으면 (원본 − 보컬 − 반주)가 원본보다 6dB 넘게 작아야 하고(−20dB 위면 경고),
    보컬만 있으면 원본과 상관 0.08 이상. 반주가 없으면 원본 − 보컬. `stems_id`에 가져온 파일 해시를 넣어 다시 가져오면 피치 캐시가 바뀝니다.
+   **Mel-Band RoFormer**(`model: "mel_roformer"`): 작업 프로세스가 사용자가 고른 체크포인트를 `torch.load(weights_only=True)`로 읽고,
+   텐서 모양에서 dim·층 수·대역 수·머리 수(게이트가 없으면 회전 주파수 개수로)·마스크 깊이를 읽어 모델을 만든 뒤 모든 이름·모양이 맞는지 검사합니다.
+   STFT·샘플레이트는 텐서로 알 수 없어 멜 대역별 입력 크기를 다시 계산해 비교하고, 다르면 .yaml을 요구합니다. 정규화 없이 44.1kHz에서
+   조각(기본 8초, 겹침 2)을 반사 패딩·선형 페이드 창으로 이어 붙이고(창 합으로 나눠 항등 모델이면 오차 1e-5 미만), 반주 = 원본 − 보컬.
+   재사용 조건: stems.json의 `checkpoint_identity`(경로·크기·수정 시각)와 설정 파일 이름이 지금 설정과 같을 때. 모델 파일 경로는 QSettings
+   `separation/roformer`에 두고 `TranscriptionRequest.model_files`로 넘깁니다.
 2. **시간 정렬**: 작업 프로세스도 GUI와 같은 디코더로 원본을 읽습니다. 44.1kHz로 바꿀 때와 되돌릴 때 `resample_poly`(지연 없는 필터)를
    쓰고, 원본 프레임 수에 맞춰 자르거나 채웁니다. stems.json에 `offset_frames: 0`을 기록합니다.
    시험: 48kHz 입력의 길이 일치·지연 0 샘플, 실제 htdemucs에서 원래 목소리와 상관 0.998·지연 0 샘플.
@@ -201,6 +208,7 @@ run.bat, install_separation.bat, install_lyrics.bat   Windows 실행·설치
 | `test_tempo_estimation.py` | 96·120BPM 클릭, 2배·절반 후보, 첫 박, 짧은/무음 기본값 |
 | `test_transcription.py` | 단계 재사용·캐시 끄기·강제 재분리·원본 변경 무효화·취소 정리·음표만 재검출, 실제 작업 프로세스, 비브라토 곡 × 민감도 3단계, 실제 htdemucs(`AMP_TEST_DEMUCS=1`) |
 | `test_worker_and_stems.py` | 작업 프로세스 길이·지연 0, 취소, 오류 코드, 무음 입력, stems.json 검증(해시·크기·손상) |
+| `test_roformer.py` | RoFormer 이식: 출력 길이, 마스크 1이면 입력 복원, 회전 인코딩 = 복소수 회전, 멜 대역 덮기, 파라미터 이름 형태(참조 구현과 같음), 체크포인트 감싸기·접두어, 옛 형식(게이트·출력 정규화 없음), 모노 모델, 코드 객체가 든 파일 거부, 손상·다른 모델 파일, STFT 불일치 → .yaml 요구, 조각 추론 항등성, 분리 결과 합 = 원본, 작업 프로세스 확인 명령, 파이프라인 재사용·모델 파일 변경 시 재분리 |
 | `test_stem_import.py` | 외부 분리 결과: 같은 파일·앞 무음·앞 잘림 보정(샘플 단위), 48kHz·모노, 원본 − 보컬, 다른 곡·길이 차이 거부, 음량 변경 경고, stems.json 기록, 분석이 분리를 건너뛰고 가져온 보컬 사용 |
 | `test_project_folder.py` | SONATLAS 요구 1~12: 생성(복사·연결), 중복 이름, stems 저장, WAV/MP3·일괄 내보내기, 저장·재열기, 폴더 이동, 재연결, 다른 이름으로 저장, 캐시 삭제 후 보존, 저장 실패 시 기존 파일 보존, 손상 파일 .bak 복구, 한글·특수문자 경로, 마이그레이션, .ampproj 변환 |
 | `test_cache_settings_merge.py` | 캐시 원자성·한글 경로, 설정 프리셋, 재분석 병합 규칙(요구 7) |

@@ -158,6 +158,7 @@ def main(argv: list[str] | None = None) -> int:
             print("[SONATLAS] GPU판을 설치했는데 GPU를 인식하지 못합니다. GPU 드라이버를 업데이트한 뒤 다시 실행해 보세요.")
         print("[SONATLAS] 설치를 마쳤습니다. 프로그램의 분석 설정 패널에서 [GPU 확인]으로 확인할 수 있습니다.")
         print("[SONATLAS] 처음 분석할 때 htdemucs 모델(약 80MB)을 내려받습니다.")
+        print("[SONATLAS] Mel-Band RoFormer는 모델 파일을 직접 받아 분석 설정의 [모델 파일…]에서 고르면 씁니다(자동으로 받지 않음).")
     return 0
 
 

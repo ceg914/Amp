@@ -36,7 +36,14 @@ from PySide6.QtWidgets import (
 from amp import APP_DISPLAY_NAME, __version__
 from amp.app import theme
 from amp.app.autosave import AutosaveManager, RecoveryEntry
-from amp.app.dialogs import ExportDialog, NewProjectDialog, NoVocalRangesDialog, ReanalysisDialog, StemImportDialog
+from amp.app.dialogs import (
+    ExportDialog,
+    NewProjectDialog,
+    NoVocalRangesDialog,
+    ReanalysisDialog,
+    RoformerModelDialog,
+    StemImportDialog,
+)
 from amp.app.document import ProjectDocument
 from amp.app.lyrics_controller import LyricsController
 from amp.app.vocal_controller import VocalDetailController
@@ -60,7 +67,7 @@ from amp.core.errors import AmpError, EditError, ProjectFormatError
 from amp.core.model import AnalysisResult
 from amp.core.tempo import MAX_BPM, MIN_BPM, TempoMap
 from amp.engine.merge import KEEP_EDITS, REPLACE_ALL, plan_reanalysis, summarize
-from amp.engine.settings import AnalysisSettings, normalize_ranges
+from amp.engine.settings import SEPARATION_LABELS, AnalysisSettings, normalize_ranges
 from amp.project.layout import PROJECT_FILE, is_project_folder
 from amp.storage.project_file import PROJECT_EXTENSION, load_project
 
@@ -72,6 +79,7 @@ AUDIO_FILTER = "오디오 파일 (" + " ".join(f"*{e}" for e in SUPPORTED_EXTENS
 OPEN_FILTER = f"SONATLAS 프로젝트 ({PROJECT_FILE});;이전 형식 프로젝트 (*{PROJECT_EXTENSION})"
 SNAP_CHOICES = (("스냅 끔", 0.0), ("1/4", 1.0), ("1/8", 0.5), ("1/16", 0.25), ("1/32", 0.125))
 SETTINGS_KEY = "analysis/settings"
+MODEL_FILES_KEY = "separation/roformer"  # 컴퓨터마다 다른 모델 파일 경로 (프로젝트에는 저장하지 않음)
 
 HELP_TEXT = """<h3>조작 방법</h3>
 <ul>
@@ -138,6 +146,7 @@ class MainWindow(QMainWindow):
         self._build_log_dock()
         self._connect()
         self.inspector.analysis.set_settings(AnalysisSettings.from_dict(self._stored_settings()))
+        self._set_model_files(self._stored_model_files())
         self._update_title()
         self._update_actions()
         self._sync_tempo_widgets()
@@ -469,6 +478,7 @@ class MainWindow(QMainWindow):
         a.clearCacheRequested.connect(self.clear_cache)
         a.probeRequested.connect(self.probe_gpu)
         a.noVocalEditRequested.connect(self.edit_no_vocal_ranges)
+        a.modelFilesRequested.connect(self.choose_model_files)
         a.settingsChanged.connect(self._on_analysis_settings_changed)
         self.view.noVocalRangeRequested.connect(self.mark_no_vocal)
 
@@ -630,7 +640,12 @@ class MainWindow(QMainWindow):
                     row.set_available(False, "오디오 없음", "—", "muted")
             elif audio is not None:
                 m = s.manifest
-                if m is not None and m.model == "external":
+                if m is not None and m.model == "mel_roformer":
+                    dev = str(m.model_info.get("device", ""))
+                    info = (f"stems/{name}.wav\n{audio.duration:.1f}s · RoFormer ({m.model_info.get('checkpoint', '')})"
+                            f" · {dev.upper()}")
+                    row.set_available(True, info, "✓ 분리됨", "ok")
+                elif m is not None and m.model == "external":
                     src = m.model_info.get("tool") or m.model_info.get(f"{name}_file") or m.model_info.get("vocals_file", "")
                     if name == "instrumental" and m.model_info.get("instrumental") == "original_minus_vocals":
                         src = "원본 − 가져온 보컬"
@@ -1012,17 +1027,80 @@ class MainWindow(QMainWindow):
     # --- 분석 -----------------------------------------------------------------
 
     def run_analysis(self) -> None:
-        self.session.run_analysis(self.inspector.analysis.settings())
+        s = self.inspector.analysis.settings()
+        if self._ensure_model_files(s, force=False):
+            self.session.run_analysis(s)
 
     def reseparate(self) -> None:
-        text = ("기존 분리 결과(stems/)를 쓰지 않고 htdemucs를 다시 실행합니다. "
-                "새 결과가 완성된 뒤에 기존 파일을 바꿉니다.")
+        s = self.inspector.analysis.settings()
+        if s.separation == "none":
+            QMessageBox.information(self, "보컬 분리 다시 실행", "분석 설정의 보컬 분리가 '분리 안 함'입니다. "
+                                    "Demucs나 RoFormer를 고른 뒤 다시 실행하세요.")
+            return
+        if not self._ensure_model_files(s, force=True):
+            return
+        label = SEPARATION_LABELS.get(s.separation, s.separation)
+        text = f"기존 분리 결과(stems/)를 쓰지 않고 {label}(으)로 다시 분리합니다. 새 결과가 완성된 뒤에 기존 파일을 바꿉니다."
+        if s.separation == "mel_roformer":
+            text += " RoFormer는 Demucs보다 오래 걸립니다(GPU 권장)."
         manifest = self.session.manifest
         if manifest is not None and manifest.model == "external":
             text += " 지금 쓰는 결과는 다른 프로그램에서 가져온 것이라, 바꾸기 전에 backup/ 폴더에 복사해 둡니다."
         answer = QMessageBox.question(self, "보컬 분리 다시 실행", text + " 계속할까요?")
         if answer == QMessageBox.StandardButton.Yes:
-            self.session.run_analysis(self.inspector.analysis.settings(), force_separation=True)
+            self.session.run_analysis(s, force_separation=True)
+
+    # --- RoFormer 모델 파일 ------------------------------------------------------
+
+    def _stored_model_files(self) -> dict:
+        v = self.settings.value(MODEL_FILES_KEY)
+        return {k: str(v.get(k) or "") for k in ("checkpoint", "config")} if isinstance(v, dict) else {}
+
+    def _set_model_files(self, files: dict, status: str = "") -> None:
+        files = {k: str(files.get(k) or "") for k in ("checkpoint", "config")} if files else {}
+        self.session.model_files = files
+        self.settings.setValue(MODEL_FILES_KEY, files)
+        ckpt = files.get("checkpoint", "")
+        if ckpt and not status and not os.path.isfile(ckpt):
+            status = "⚠ 파일이 없습니다. 다시 고르세요."
+        self.inspector.analysis.set_model_files(files, status)
+
+    def choose_model_files(self) -> bool:
+        dlg = RoformerModelDialog(self.session.model_files, self)
+        if dlg.exec() != QDialog.DialogCode.Accepted:
+            return False
+        files = dlg.values()
+        self._set_model_files(files, "확인 중… (모델 파일을 읽는 데 몇 초 걸립니다)")
+        self._check_model_files(files)
+        return True
+
+    def _check_model_files(self, files: dict) -> None:
+        handle = self.session.check_model_files(files)
+        panel = self.inspector.analysis
+
+        def done(info: dict) -> None:
+            if self.session.model_files != files:
+                return
+            c = info.get("config") or {}
+            parts = [f"✓ 확인됨: 파라미터 {info.get('params', 0) / 1e6:.1f}M", "스테레오" if c.get("stereo") else "모노",
+                     f"대역 {c.get('num_bands')}개", f"{int(c.get('chunk_size') or 0) / 44100:.0f}초 조각"]
+            panel.set_model_files(files, " · ".join(parts + list(info.get("notes") or [])))
+
+        def failed(message: str, _detail: str) -> None:
+            if self.session.model_files == files:
+                panel.set_model_files(files, f"⚠ {message}")
+
+        handle.finished.connect(done)
+        handle.failed.connect(failed)
+
+    def _ensure_model_files(self, s: AnalysisSettings, force: bool) -> bool:
+        """RoFormer로 새로 분리해야 하는데 모델 파일이 없으면 고르게 한다. 고르지 않으면 False."""
+        if s.separation != "mel_roformer" or self.session.model_files.get("checkpoint"):
+            return True
+        m = self.session.manifest
+        if not force and m is not None and m.model in ("mel_roformer", "external"):
+            return True  # 있는 분리 결과를 쓰므로 모델 파일이 필요 없다
+        return self.choose_model_files()
 
     def import_stems_dialog(self) -> None:
         folder = self.session.folder
@@ -1044,7 +1122,7 @@ class MainWindow(QMainWindow):
         settings = self.inspector.analysis.settings()
         if settings.separation == "none":
             text += ("\n\n분석 설정의 보컬 분리가 '분리 안 함'이라 지금은 가져온 보컬이 분석에 쓰이지 않습니다. "
-                     "'분리함'으로 바꾸면 Demucs를 다시 돌리지 않고 가져온 결과를 씁니다.")
+                     "Demucs나 RoFormer로 바꾸면 분리를 다시 하지 않고 가져온 결과를 씁니다.")
         if self.doc.project.analysis is None and settings.separation != "none":
             QMessageBox.information(self, "분리 결과를 가져왔습니다",
                                     text + "\n\n보컬 분석 실행(F5)을 하면 가져온 보컬로 피치·음표를 계산합니다.")
@@ -1187,7 +1265,7 @@ class MainWindow(QMainWindow):
         QMessageBox.about(self, "정보", f"<b>{APP_DISPLAY_NAME}</b> {__version__}<br>"
                           "Python + PySide6 보컬 분리·자동 채보 편집기 (개발 중)<br><br>"
                           "글꼴: Pretendard, JetBrains Mono (SIL OFL 1.1) · 아이콘: Lucide (ISC)<br>"
-                          "보컬 분리: Demucs htdemucs (MIT) · 피치·BPM: librosa (ISC)<br>"
+                          "보컬 분리: Demucs htdemucs (MIT), Mel-Band RoFormer 계산 코드(MIT, 가중치 미포함) · 피치·BPM: librosa (ISC)<br>"
                           "가사 인식: OpenAI Whisper (MIT) · 가사 정렬: MMS_FA 가중치 (CC-BY-NC 4.0, 비상업적 이용)")
 
     def closeEvent(self, event: QCloseEvent) -> None:  # noqa: N802

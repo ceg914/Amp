@@ -1,2 +1,4 @@
 # 보컬 분리(htdemucs). PyTorch는 scripts/install_separation.py 가 GPU에 맞는 빌드로 먼저 설치한다.
 demucs>=4.1,<5
+# Mel-Band RoFormer 설정 파일(.yaml) 읽기 (demucs도 쓰므로 보통 이미 설치됨). RoFormer 계산 자체는 PyTorch만 쓴다.
+pyyaml>=6

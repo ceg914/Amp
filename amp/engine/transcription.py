@@ -18,6 +18,7 @@ from __future__ import annotations
 import dataclasses
 import json
 import logging
+import os
 import shutil
 import tempfile
 import time
@@ -68,6 +69,8 @@ class TranscriptionRequest:
     numba_cache_dir: str | None = None
     # 정렬한 가사의 음절 시작(초). 접근음 흡수가 다음 음절의 음을 대상으로 삼지 않게 한다 (설정에는 저장하지 않음)
     syllable_starts: tuple = ()
+    # RoFormer 모델 파일 {"checkpoint", "config"}. 컴퓨터마다 다른 경로라 프로젝트가 아니라 프로그램 설정에 둔다
+    model_files: dict = field(default_factory=dict)
 
 
 @dataclass
@@ -98,10 +101,26 @@ class _Progress:
         return lambda f, m: self.report(base + span * min(max(f, 0.0), 1.0), m)
 
 
+def _same_model_file(manifest: stem_store.StemManifest, req: TranscriptionRequest) -> bool:
+    """RoFormer 결과는 같은 모델 파일(경로·크기·수정 시각)로 만든 것일 때만 다시 쓴다. 파일을 지정하지 않았으면 있는 결과를 쓴다."""
+    if manifest.model != "mel_roformer" or not req.model_files.get("checkpoint"):
+        return True
+    from amp.engine.dsp.roformer import file_identity
+
+    try:
+        now = file_identity(req.model_files["checkpoint"])
+    except OSError:
+        return True  # 지정한 파일이 없어졌으면 다시 분리할 수도 없다. 있는 결과를 쓴다
+    old = manifest.model_info.get("checkpoint_identity") or {}
+    same_cfg = os.path.basename(req.model_files.get("config") or "") == manifest.model_info.get("config", "")
+    return old == now and same_cfg
+
+
 class TranscriptionPipeline:
-    def __init__(self, runner: Runner = run_worker, separation_model: str = SEPARATION_MODEL) -> None:
+    def __init__(self, runner: Runner = run_worker, separation_model: str | None = None) -> None:
         self.runner = runner
-        self.separation_model = separation_model  # 분리 모델 교체 지점 (작업 프로세스가 아는 이름)
+        # 분리 모델을 고정할 때만 준다 (시험용 _identity 등). None이면 설정의 분리 방식(htdemucs / mel_roformer)
+        self.separation_model = separation_model
         self.resources: dict[str, dict] = {}
 
     def _call(self, command: str, args: dict, progress: ProgressFn, token: CancelToken, numba_cache_dir) -> dict:
@@ -115,7 +134,7 @@ class TranscriptionPipeline:
         token = token or CancelToken()
         report = progress or (lambda f, m: None)
         st = req.settings
-        separate = st.separation == "htdemucs"
+        separate = st.separation != "none"
         prog = _Progress(report, {"sep": 0.6, "pitch": 0.3, "tempo": 0.07, "notes": 0.03} if separate
                          else {"pitch": 0.75, "tempo": 0.2, "notes": 0.05})
         warnings: list[str] = []
@@ -222,7 +241,8 @@ class TranscriptionPipeline:
     def _separation(self, req: TranscriptionRequest, stems_dir: Path, report: ProgressFn, token: CancelToken):
         manifest = stem_store.read_manifest(stems_dir) if stems_dir.exists() else None
         ok, reason = stem_store.validate(stems_dir, manifest, req.source_sha256)
-        reusable = manifest is not None and manifest.model in (self.separation_model, EXTERNAL)
+        model = self.separation_model or req.settings.separation
+        reusable = manifest is not None and manifest.model in (model, EXTERNAL) and _same_model_file(manifest, req)
         if ok and reusable and not req.force_separation:
             # 사용자가 가져온 외부 분리 결과(model='external')도 그대로 쓴다. Demucs로 덮어쓰지 않는다
             report(1.0, "가져온 분리 결과 사용" if manifest.model == EXTERNAL else "기존 분리 결과 사용")
@@ -233,8 +253,13 @@ class TranscriptionPipeline:
         tmp = stems_dir / f".tmp-{uuid.uuid4().hex[:8]}"
         tmp.mkdir()
         try:
-            self._call("separate", {"input": req.source_path, "out_dir": str(tmp), "model": self.separation_model,
-                                     "device": req.settings.device}, report, token, req.numba_cache_dir)
+            args = {"input": req.source_path, "out_dir": str(tmp), "model": model, "device": req.settings.device}
+            if model == "mel_roformer":
+                if not req.model_files.get("checkpoint"):
+                    raise AnalysisError("Mel-Band RoFormer 모델 파일(.ckpt)을 고르지 않았습니다. 분석 설정의 보컬 분리에서 "
+                                        "[모델 파일…]로 지정하세요.")
+                args["model_files"] = dict(req.model_files)
+            self._call("separate", args, report, token, req.numba_cache_dir)
             manifest = stem_store.commit(tmp, stems_dir, req.source_sha256, {"device": req.settings.device})
         finally:
             shutil.rmtree(tmp, ignore_errors=True)  # 성공이면 이미 비었고, 실패·취소면 임시 파일을 지운다

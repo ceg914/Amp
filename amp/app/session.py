@@ -92,6 +92,7 @@ class ProjectSession(QObject):
         self.peaks: dict[str, WaveformPeaks] = {}
         self.manifest: stem_store.StemManifest | None = None
         self.stems_reason = "분리 전"
+        self.model_files: dict = {}  # RoFormer {"checkpoint", "config"} (프로그램 설정에서 채운다)
         self.original: OriginalStatus | None = None
         self.analysis_handle: TaskHandle | None = None
         self._lock: ProjectLock | None = None
@@ -501,7 +502,7 @@ class ProjectSession(QObject):
             audio=self.audio, source_path=str(self.original.path), source_sha256=self.folder.meta.original.sha256,
             settings=settings, stems_dir=str(self.folder.paths.stems), cache_root=str(self.folder.paths.cache),
             force_separation=force_separation, numba_cache_dir=app_data_dir("numba"),
-            syllable_starts=self.syllable_starts(),
+            syllable_starts=self.syllable_starts(), model_files=dict(self.model_files),
         )
 
     def syllable_starts(self) -> tuple[float, ...]:
@@ -735,6 +736,11 @@ class ProjectSession(QObject):
 
     def probe(self) -> TaskHandle:
         return self._submit("GPU 확인", lambda p, t: run_worker("probe", {}, p, t))
+
+    def check_model_files(self, files: dict) -> TaskHandle:
+        """RoFormer 모델 파일을 작업 프로세스에서 읽어 구조를 확인한다 (GUI 프로세스는 torch를 불러오지 않는다)."""
+        args = {"checkpoint": files.get("checkpoint", ""), "config": files.get("config", "")}
+        return self._submit("모델 파일 확인", lambda p, t: run_worker("check_model", args, p, t))
 
     # --- 내보내기 --------------------------------------------------------------
 

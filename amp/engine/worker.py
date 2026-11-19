@@ -11,7 +11,9 @@ GUI가 ``python -m amp.engine.worker <명령> --args-file <JSON 파일>`` 로 �
 
 명령
     probe      PyTorch·Demucs·CUDA 설치 상태
-    separate   {"input", "out_dir", "model", "device"} → out_dir/vocals.wav, instrumental.wav, info.json
+    check_model {"checkpoint", "config"} → RoFormer 모델 파일 구조 확인 (분리하지 않음)
+    separate   {"input", "out_dir", "model", "device", "model_files"} → out_dir/vocals.wav, instrumental.wav, info.json
+               (model_files: RoFormer 체크포인트·설정 경로)
     pitch      {"input", "out_dir", "fmin", "fmax"} → out_dir/pitch.npz, meta.json
     tempo      {"input", "out_dir"} → out_dir/tempo.json
     asr        {"input", "out_dir", "model", "language", "device", "download_root", "no_vocal_ranges"}
@@ -76,7 +78,7 @@ def cmd_separate(args: dict) -> dict:
     audio = _load(args["input"])
     _progress(0.02, "오디오 디코딩 완료")
     vocals, instrumental, info = separate(audio.samples, audio.sample_rate, args.get("model", "htdemucs"),
-                                          args.get("device", "auto"), _progress)
+                                          args.get("device", "auto"), _progress, args.get("model_files"))
     out = args["out_dir"]
     _write_wav(os.path.join(out, "vocals.wav"), vocals, audio.sample_rate)
     _write_wav(os.path.join(out, "instrumental.wav"), instrumental, audio.sample_rate)
@@ -247,13 +249,32 @@ def cmd_ctc_align(args: dict) -> dict:
             "released": [units[i].syllable_id for i in released]}
 
 
+def cmd_check_model(args: dict) -> dict:
+    """RoFormer 모델 파일 확인: 텐서만 읽어 구조를 맞춰 보고 요약을 돌려준다 (분리는 하지 않음)."""
+    from amp.engine.dsp import roformer
+    from amp.engine.dsp.separation import SeparationError
+
+    _progress(0.1, "모델 파일 읽는 중")
+    try:
+        model, cfg, notes = roformer.load_model(args["checkpoint"], args.get("config") or None)
+    except roformer.RoformerError as e:
+        raise SeparationError(e.code, str(e)) from e
+    _progress(0.9, "확인 완료")
+    return {"params": int(sum(p.numel() for p in model.parameters())), "notes": notes,
+            "config": {k: v for k, v in cfg.to_dict().items() if k in (
+                "dim", "depth", "num_bands", "num_stems", "stereo", "sample_rate", "stft_n_fft", "stft_hop_length",
+                "chunk_size", "num_overlap", "target")},
+            "identity": roformer.file_identity(args["checkpoint"])}
+
+
 def cmd_probe(args: dict) -> dict:
     from amp.engine.dsp.separation import probe
 
     return probe()
 
 
-COMMANDS = {"separate": cmd_separate, "pitch": cmd_pitch, "tempo": cmd_tempo, "probe": cmd_probe, "asr": cmd_asr,
+COMMANDS = {"separate": cmd_separate, "pitch": cmd_pitch, "tempo": cmd_tempo, "probe": cmd_probe,
+            "check_model": cmd_check_model, "asr": cmd_asr,
             "emissions": cmd_emissions, "ctc_align": cmd_ctc_align}
 
 
