@@ -860,3 +860,46 @@ def test_alignment_v2_saves_roles_and_reads_v1(tmp_path):
 
     with pytest.raises(ProjectFormatError):
         schema.migrate(schema.ALIGNMENT, dict(d, schema_version=3))
+
+
+# --- Windows 명령줄 한도 (사용자 보고: [WinError 206] 파일 이름이나 확장명이 너무 깁니다) ---------------------------
+
+def test_long_alignment_args_do_not_go_on_the_command_line(tmp_path, monkeypatch):
+    """음절 수백 개를 정렬하는 ctc_align 인자는 3만 자를 넘는다. 명령줄에는 파일 경로만 넣고, 끝나면 그 파일을 지운다."""
+    import subprocess
+    import tempfile
+
+    from amp.engine import worker_client
+
+    st = ops.apply_text(LyricsState(), "\n".join(["사랑해 너를 정말로 오늘도 내일도"] * 80))  # 1040음절
+    sylls = st.text.syllables
+    readings = [s.reading for s in sylls]
+    seconds = 0.25 * len(sylls) + 2.0
+    starts = [1.0 + 0.25 * i for i in range(len(sylls))]
+    em = tmp_path / "emissions.npz"
+    _fake_emissions(em, readings, starts, seconds)
+    units = [{"id": s.id, "reading": s.reading, "line": st.text.index[s.id][0]} for s in sylls]
+    args = {"emissions": str(em), "units": units, "anchors": [], "soft_anchors": [], "no_vocal_ranges": []}
+    assert len(json.dumps(args)) > 32767  # 이전 방식이면 Windows에서 시작하지 못하는 길이
+
+    seen = []
+    real_popen = subprocess.Popen
+
+    def popen(cmd, *a, **k):
+        seen.append(list(cmd))
+        return real_popen(cmd, *a, **k)
+
+    monkeypatch.setattr(worker_client.subprocess, "Popen", popen)
+    before = set(Path(tempfile.gettempdir()).glob("sonatlas-args-*"))
+    out = worker_client.run_worker("ctc_align", args)
+    assert len(out["results"]) == len(sylls)
+    assert len(subprocess.list2cmdline(seen[0])) < 2000 and "--args-file" in seen[0]
+    assert set(Path(tempfile.gettempdir()).glob("sonatlas-args-*")) == before  # 임시 파일을 남기지 않는다
+    got = {r["id"]: r["start"] for r in out["results"]}
+    assert [got[s.id] for s in sylls[:3]] == pytest.approx(starts[:3], abs=0.05)
+
+
+def test_worker_still_accepts_args_json():
+    from amp.engine import worker
+
+    assert worker.main(["ctc_align", "--args-json", "{}"]) == 1  # 인자가 비어 오류로 끝나지만, 옛 방식 옵션은 받는다

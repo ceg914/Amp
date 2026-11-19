@@ -13,6 +13,7 @@ import os
 import queue
 import subprocess
 import sys
+import tempfile
 import threading
 from collections import deque
 from pathlib import Path
@@ -65,8 +66,15 @@ def run_worker(
     python: str | None = None,
 ) -> dict:
     report = progress or (lambda f, m: None)
-    cmd = [python or sys.executable, "-m", "amp.engine.worker", command, "--args-json",
-           json.dumps(args, ensure_ascii=True)]
+    # 인자는 임시 파일로 넘긴다. 명령줄에 JSON을 그대로 붙이면 가사 정렬(음절 수백 개의 읽기·고정점)이
+    # Windows 명령줄 한도(32,767자)를 넘어 "[WinError 206] 파일 이름이나 확장명이 너무 깁니다"로 시작조차 못 했다.
+    try:
+        fd, args_path = tempfile.mkstemp(prefix="sonatlas-args-", suffix=".json")
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            json.dump(args, f, ensure_ascii=True)
+    except OSError as e:
+        raise AnalysisError(f"분석 프로세스에 넘길 임시 파일을 만들지 못했습니다 (디스크 공간을 확인하세요): {e}") from e
+    cmd = [python or sys.executable, "-m", "amp.engine.worker", command, "--args-file", args_path]
     flags = getattr(subprocess, "CREATE_NO_WINDOW", 0) if os.name == "nt" else 0
     try:
         proc = subprocess.Popen(
@@ -74,6 +82,7 @@ def run_worker(
             env=worker_env(numba_cache_dir), creationflags=flags, encoding="utf-8", errors="replace",
         )
     except OSError as e:
+        _remove(args_path)
         raise AnalysisError(f"분석 프로세스를 시작하지 못했습니다: {e}") from e
 
     events: queue.Queue = queue.Queue()
@@ -124,6 +133,7 @@ def run_worker(
             _terminate(proc)
         for t in readers:
             t.join(timeout=2)
+        _remove(args_path)
 
     if error is not None:
         log.error("분석 프로세스 오류 (명령 %s, 코드 %s): %s\n%s", command, error.get("code"), error.get("message"),
@@ -138,6 +148,13 @@ def run_worker(
                           f"분석 프로세스가 비정상 종료했습니다 (종료 코드 {code}).", tail)
     result.pop("event", None)
     return result
+
+
+def _remove(path: str) -> None:
+    try:
+        os.remove(path)
+    except OSError:
+        pass  # 남아도 임시 폴더라 다음 정리 때 지워진다
 
 
 def _terminate(proc: subprocess.Popen) -> None:

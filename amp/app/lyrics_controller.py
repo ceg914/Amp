@@ -374,7 +374,7 @@ class LyricsController(QObject):
                     "(가사 레인의 점선 테두리). 정렬부터 다시 하려면 [전체 정렬](F7).")
         else:
             text = (f"음표 연결이 {reason}. 시간 정렬 결과는 반영했습니다. 다시 하려면 [음표 자동 연결].")
-        log.info("가사 연속 작업 멈춤 (%s): %s", stage, reason)
+        log.info("가사 연속 작업 멈춤 (%s): %s", stage, text)
         self._chain_info(text)
         self.w.statusBar().showMessage(text, 20000)
 

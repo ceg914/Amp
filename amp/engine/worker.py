@@ -1,6 +1,6 @@
 """분석 작업 프로세스.
 
-GUI가 ``python -m amp.engine.worker <명령> --args-json <JSON>`` 으로 실행한다.
+GUI가 ``python -m amp.engine.worker <명령> --args-file <JSON 파일>`` 로 실행한다 (``--args-json <JSON>`` 도 받는다).
 보컬 분리(PyTorch)·피치 추출(pYIN)·BPM 추정(librosa)은 계산 중 GIL을 오래 잡거나(측정: pYIN 30초 처리 중
 다른 스레드가 최대 0.78초 멈춤) Qt와 DLL 충돌을 일으킬 수 있어 GUI 프로세스 밖에서 돌린다.
 
@@ -262,11 +262,18 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="amp.engine.worker")
     parser.add_argument("command", choices=sorted(COMMANDS))
     parser.add_argument("--args-json", default="{}")
+    # 인자가 길면(가사 정렬: 음절 수백 개) Windows 명령줄 한도(32,767자)를 넘으므로 GUI는 파일로 넘긴다
+    parser.add_argument("--args-file", default=None)
     ns = parser.parse_args(argv)
     _PROTO = sys.stdout
     sys.stdout = sys.stderr  # 라이브러리가 print해도 프로토콜 줄을 망치지 않게
     try:
-        result = COMMANDS[ns.command](json.loads(ns.args_json))
+        if ns.args_file:
+            with open(ns.args_file, encoding="utf-8") as f:
+                args = json.load(f)
+        else:
+            args = json.loads(ns.args_json)
+        result = COMMANDS[ns.command](args)
     except Exception as e:  # noqa: BLE001 - 모든 오류를 코드와 함께 부모에게 알린다
         code, message = _classify(e)
         emit("error", code=code, message=message, detail=traceback.format_exc()[-4000:])
