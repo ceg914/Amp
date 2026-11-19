@@ -26,3 +26,21 @@ def test_summary_wording_for_outcomes():
     assert G.summarize({"runs": [rep["runs"][0]]}, "cuda")["gpu"] == "GPU 인식 안 됨"
     md = G.markdown({"created": "t", "env": {}, "summary": s, **rep})
     assert "None" not in md.split("## 요약")[0]
+
+
+def test_report_shows_slowest_window_and_decode_calls():
+    st = {"load_s": 31.5, "transcribe_s": 281.0, "decode_calls": 14, "fallback_segments": 2,
+          "windows": [["가사 인식 중", 0.0, 30.0, 6.0, 1], ["가사 인식 중", 30.0, 53.0, 5.0, 1], ["가사 인식 중", 53.0, 60.0, 268.0, 12]]}
+    rep = {"created": "t", "env": {}, "summary": {}, "runs": [
+        {"model_requested": "large-v3", "ok": True, "asr": {"device": "cuda", "model": "large-v3", "stats": st}}]}
+    md = G.markdown(rep)
+    assert "디코딩 14번" in md and "53.0~60.0초 268.0초" in md and "디코딩 12번" in md
+
+
+def test_nearly_full_gpu_is_mentioned():
+    rep = {"env": {"gpu_total_mb": 8192}, "runs": [
+        {"model_requested": "large-v3", "ok": True, "gpu_used_peak_mb": 7514.0, "gpu_released": True,
+         "asr": {"device": "cuda", "stats": {"load_s": 31.5, "transcribe_s": 281.0}}}]}
+    assert "거의 참" in G.summarize(rep, "cuda")["large-v3"]
+    rep["runs"][0]["gpu_used_peak_mb"] = 5000.0
+    assert "거의 참" not in G.summarize(rep, "cuda")["large-v3"]

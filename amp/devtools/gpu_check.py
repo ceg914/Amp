@@ -28,6 +28,7 @@ from pathlib import Path
 
 MB = 2**20
 RELEASE_TOL_MB = 200  # 작업이 끝난 뒤 GPU 사용량이 작업 전보다 이만큼 넘게 많으면 '반환 안 됨'
+NEARLY_FULL = 0.9  # 작업 중 GPU 전체 사용량이 이 비율을 넘으면 '거의 참'으로 적는다
 
 _PROBE = r"""
 import json, sys
@@ -316,6 +317,11 @@ def summarize(rep: dict, device: str) -> dict:
             s[m] = f"실패 ({r.get('error_code')}): {str(r.get('error'))[:200]}"
         if r.get("gpu_released") is False:
             s[m] += " · 작업 뒤 GPU 메모리가 돌아오지 않음"
+        total = (rep.get("env") or {}).get("gpu_total_mb")
+        peak = r.get("gpu_used_peak_mb")
+        if total and peak and peak >= NEARLY_FULL * total:
+            s[m] += (f" · GPU 메모리가 거의 참({peak:,.0f}/{total:,}MB, 다른 프로그램 포함). Windows가 GPU 메모리 일부를 시스템 메모리로 "
+                     "옮기면 크게 느려질 수 있으니, 다른 GPU 프로그램을 닫고 다시 재 보세요")
     c = rep.get("cancel")
     if c:
         s["cancel"] = ("취소됨 · GPU 메모리 " + ("반환됨" if c.get("gpu_released") else "확인 못 함" if c.get("gpu_released") is None
@@ -367,6 +373,13 @@ def markdown(rep: dict) -> str:
                          f"{_v(st.get('transcribe_s'), '초')} | {_v(st.get('audio_s'), '초')} | {_mb(st.get('gpu_peak_load_bytes'))} | "
                          f"{_mb(st.get('gpu_peak_bytes'))} | {_v(r.get('gpu_used_increase_peak_mb'), 'MB')} | "
                          f"{_v(st.get('peak_rss_mb'), 'MB')} | {_v(r.get('gpu_released'))} |")
+        for r in rep["runs"]:
+            st = (r.get("asr") or {}).get("stats") or {}
+            if st.get("windows"):
+                slow = st.get("slowest_window") or max(st["windows"], key=lambda w: w[3])
+                lines += ["", f"{r['model_requested']}: 디코딩 {st.get('decode_calls', '—')}번 · 온도를 올려 다시 디코딩한 구간 "
+                              f"{st.get('fallback_segments', '—')}개 · 가장 오래 걸린 창 {slow[1]}~{slow[2]}초 {slow[3]}초 "
+                              f"(디코딩 {slow[4]}번, {slow[0]})"]
         for r in rep["runs"]:
             if not r.get("ok"):
                 lines += ["", f"**{r['model_requested']} 오류**: {r.get('error')}"]

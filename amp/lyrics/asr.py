@@ -67,8 +67,8 @@ def model_downloaded(name: str, root: str) -> bool:
     return bool(url) and os.path.isfile(os.path.join(root, os.path.basename(url)))
 
 
-def _patch_progress(report: Callable[[float, str], None], label: Callable[[float, float], str]):
-    """whisper가 쓰는 tqdm을 진행률 보고로 바꾼다 (작업 프로세스 안에서만)."""
+def _patch_progress(report: Callable[[float, str], None], label: Callable[[float, float], str], on_update=None):
+    """whisper가 쓰는 tqdm을 진행률 보고로 바꾼다 (작업 프로세스 안에서만). on_update(n, total)로 진행 위치도 알린다."""
     import tqdm
 
     class _Bar:
@@ -84,6 +84,8 @@ def _patch_progress(report: Callable[[float, str], None], label: Callable[[float
 
         def update(self, n=1):
             self.n += n
+            if on_update is not None:
+                on_update(self.n, self.total)
             if self.total > 0:
                 report(min(1.0, self.n / self.total), label(self.n, self.total))
 
@@ -199,7 +201,8 @@ def _segments(out: dict) -> list[dict]:
                   "probability": float(w.get("probability", 0.0))} for w in s.get("words") or ()]
         segs.append({"start": float(s["start"]), "end": float(s["end"]), "text": str(s.get("text", "")).strip(),
                      "avg_logprob": float(s.get("avg_logprob", 0.0)), "no_speech_prob": float(s.get("no_speech_prob", 0.0)),
-                     "compression_ratio": float(s.get("compression_ratio", 0.0)), "words": words})
+                     "compression_ratio": float(s.get("compression_ratio", 0.0)),
+                     "temperature": float(s.get("temperature", 0.0) or 0.0), "words": words})
     return segs
 
 
@@ -491,11 +494,32 @@ def _run_model(y16, report, torch, whisper, name, actual, language, download_roo
     opts = dict(DEFAULT_OPTIONS)
     opts.update({k: v for k, v in (options or {}).items() if k in TUNABLE})  # 평가용 조정
 
+    # 진단용: 구간(30초 창)마다 걸린 시간과 디코딩 호출 수(온도를 올려 다시 디코딩한 횟수 포함)를 남긴다.
+    # 사용자 PC에서 같은 60초를 두 번 돌렸을 때 large-v3 인식이 18.7초와 281초로 달랐고, 시간 대부분이 마지막 7초 창에서 걸렸다.
+    stats.setdefault("windows", [])
+    stats.setdefault("decode_calls", 0)
+    if hasattr(model, "decode"):
+        decode = model.decode
+
+        def counted(*a, **k):
+            stats["decode_calls"] += 1
+            return decode(*a, **k)
+
+        model.decode = counted
+
     def run(m, fp16: bool, clip=None, override: dict | None = None, span=(0.18, 0.85), label="가사 인식 중"):
         a, b = span
         report(a, f"{label} ({actual.upper()}, {name})")
+        mark = {"t": time.monotonic(), "n": 0.0, "calls": stats["decode_calls"]}
+
+        def on_update(n, total):
+            now = time.monotonic()
+            stats["windows"].append([label, round(mark["n"] / 100, 1), round(n / 100, 1), round(now - mark["t"], 2),
+                                     stats["decode_calls"] - mark["calls"]])
+            mark.update(t=now, n=n, calls=stats["decode_calls"])
+
         restore2 = _patch_progress(lambda f, msg: report(a + (b - a) * f, msg),
-                                   lambda n, t: f"{label} ({actual.upper()}, {name}) {n / 100:.0f}/{t / 100:.0f}초")
+                                   lambda n, t: f"{label} ({actual.upper()}, {name}) {n / 100:.0f}/{t / 100:.0f}초", on_update)
         try:
             o = dict(opts)
             for k, v in (override or {}).items():
@@ -512,6 +536,9 @@ def _run_model(y16, report, torch, whisper, name, actual, language, download_roo
         finally:
             restore2()
 
+    # 다시 디코딩할 때(온도 > 0) 쓰는 표본 추출을 고정해, 같은 입력이면 같은 결과가 나오게 한다
+    torch.manual_seed(0)
+    np.random.seed(0)
     try:
         out = run(model, actual == "cuda")
         segments = _segments(out)
@@ -530,6 +557,9 @@ def _run_model(y16, report, torch, whisper, name, actual, language, download_roo
         del model
     stats["transcribe_s"] = round(time.monotonic() - t1, 2)
     stats["audio_s"] = round(len(y16) / 16000.0, 2)
+    stats["fallback_segments"] = sum(1 for sg in segments if sg.get("temperature", 0.0) > 0)
+    if stats["windows"]:
+        stats["slowest_window"] = max(stats["windows"], key=lambda w: w[3])
     stats["device"] = actual
     stats["model"] = name
     return segments, gaps, language, lang_prob, opts
