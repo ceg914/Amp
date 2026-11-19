@@ -4,7 +4,7 @@ MP3·WAV에서 보컬을 분리하고, 음높이·음 길이·BPM을 분석해 �
 Windows용 데스크톱 프로그램입니다. Python과 PySide6로 만들고 있습니다. 저장소 이름은 `Amp`, 파이썬 패키지 이름은 `amp`입니다.
 
 **현재 버전: 0.3.0** — STEP 1(편집기), STEP 2(보컬 분리·자동 채보), 음원별 프로젝트 폴더 관리, STEP 2.5(안정화·검증 도구·음표 검출 v2)에
-STEP 3(가사 인식·입력·음절 정렬·음표 연결)을 더한 상태입니다. STEP 3 구현·검증 결과는 [STEP_3_IMPLEMENTATION_REPORT.md](STEP_3_IMPLEMENTATION_REPORT.md),
+STEP 3(가사 인식·입력·음절 정렬·음표 연결)을 더한 상태입니다. STEP 3 구현·검증 결과는 [STEP_3_IMPLEMENTATION_REPORT.md](STEP_3_IMPLEMENTATION_REPORT.md), 그 뒤 사용자 보고 4건의 수정은 [STEP_3_FOLLOWUP_REPORT.md](STEP_3_FOLLOWUP_REPORT.md),
 STEP 2.5 검증 결과는 [STEP_2_5_VALIDATION_REPORT.md](STEP_2_5_VALIDATION_REPORT.md)에 있습니다.
 실제 곡 4개(분리·같은 음 반복·잔향·Windows/GPU·악보 대비 오차) 평가는 [REAL_SONG_EVALUATION_REPORT.md](REAL_SONG_EVALUATION_REPORT.md)에 정리했습니다.
 
