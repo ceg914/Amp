@@ -20,7 +20,7 @@ from amp.app.document import ProjectDocument
 from amp.app.player import PlaybackState
 from amp.core.errors import EditError
 from amp.lyrics import engine as lyr_engine
-from amp.lyrics import linking, ops
+from amp.lyrics import linking, ops, review
 
 log = logging.getLogger(__name__)
 TXT_MAX_BYTES = 2 * 2**20
@@ -273,12 +273,14 @@ class LyricsController(QObject):
         flagged = sum(1 for s in rec.segments if s.review)
         summary = (f"인식 구간 {len(rec.segments)}개, 검토 필요 {flagged}개 · 모델 {rec.model} · 언어 {rec.language}"
                    f" · 장치 {rec.device.upper()}" + (" · 캐시 재사용" if reused else ""))
-        if not any(seg.text.strip() for seg in rec.segments):
+        skipped = [seg for seg in rec.segments if review.excluded(seg)]
+        if not any(seg.text.strip() for seg in rec.segments if not review.excluded(seg)):
             # 빈 인식 결과로 가사를 지우지 않는다. 인식 원본(빈 것)만 보관한다
             if self.doc.push_lyrics(lyr_engine.text_from_recognition(state, rec, replace_text=False), "인식 원본 보관"):
                 self._count_push(chain)
-            self._chain_stopped(chain, "recognize", "결과가 비어 있습니다 (보컬이 거의 없거나 '보컬 없는 구간'에 덮였을 수 있습니다)",
-                                error=False)
+            why = (f"결과가 비어 있습니다 (자막·인사 문구 {len(skipped)}줄만 나와 가사에 넣지 않았습니다)" if skipped else
+                   "결과가 비어 있습니다 (보컬이 거의 없거나 '보컬 없는 구간'에 덮였을 수 있습니다)")
+            self._chain_stopped(chain, "recognize", why, error=False)
             return
         replaced = False
         if state.text.is_empty:
@@ -308,6 +310,9 @@ class LyricsController(QObject):
         if replaced:
             self._count_push(chain)
         msg = summary
+        if skipped and replaced:
+            msg += (f" · 노래와 상관없는 자막·인사 문구 {len(skipped)}줄(" + ", ".join(f"'{x.text}'" for x in skipped[:2])
+                    + ")은 가사에 넣지 않았습니다 (인식 원본에는 남아 있음)")
         if rec.warnings:
             msg += " · " + " ".join(rec.warnings)
         if replaced and not self.panel.align_after.isChecked():

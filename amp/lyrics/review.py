@@ -42,6 +42,18 @@ STANDALONE_PHRASES = ("감사합니다", "고맙습니다", "아멘", "thank you
                       "おやすみなさい", "you")
 
 
+# 이 사유가 붙은 구간은 편집용 가사에 넣지 않는다(인식 원본에는 남긴다).
+# 자막 제작자 표시('한글자막 by …')·'시청해 주셔서 감사합니다'·구간 전체가 '감사합니다'뿐인 줄 등은 영상 자막으로 학습한
+# 인식 모델이 노래가 없거나 흐린 곳에 지어내는 말이다. 개발 중 실제 두 곡에서 이 사유가 붙은 줄 10여 개는 모두 환각이었고
+# 실제 가사는 하나도 없었다. 그대로 넣으면 시간 정렬이 그 글자를 노래 어딘가에 억지로 맞춰 이웃 음절까지 어긋난다.
+EXCLUDE_REASONS = (R_PHRASE,)
+
+
+def excluded(segment: AsrSegment) -> bool:
+    """편집용 가사에 넣지 않을 인식 구간인가 (환각으로 보는 문구)."""
+    return any(r in EXCLUDE_REASONS for r in segment.review)
+
+
 def _norm(s: str) -> str:
     return re.sub(r"[\s\W_]+", "", s.lower())
 

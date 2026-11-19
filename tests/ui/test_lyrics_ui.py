@@ -454,3 +454,25 @@ def test_chain_existing_and_user_edited_lyrics_are_protected(qtbot, analysed, mo
     w.doc.undo_stack.undo()
     w.doc.undo_stack.undo()
     assert w.doc.lyrics.text == user_state.text and w.doc.lyrics.alignment == user_state.alignment
+
+
+def test_chain_leaves_out_subtitle_hallucinations(qtbot, analysed):
+    w, _folder, notes, runner = analysed
+    end = notes[-1].end
+    runner(segments=[_seg("한글자막 by 한효주", 0.0, 0.3), _seg("미솔라", 0.3, end), _seg("감사합니다.", end, end + 0.5)])
+    w.lyrics.recognize()
+    qtbot.waitUntil(lambda: w.lyrics.chain is None and not w.session.busy, timeout=60_000)
+    ly = w.doc.lyrics
+    assert [ln.text for ln in ly.text.lines] == ["미솔라"] and len(ly.recognition.segments) == 3
+    assert "✕" in w.lyrics_panel.rec_view.toPlainText() and "가사에 넣지 않음" in w.lyrics_panel.rec_view.toPlainText()
+
+
+def test_chain_with_only_hallucinations_keeps_existing_lyrics(qtbot, analysed):
+    w, _folder, _notes, runner = analysed
+    w.lyrics_panel.applyTextRequested.emit("내 가사")
+    before = w.doc.lyrics.text
+    fake = runner(segments=[_seg("한글자막 by 한효주", 0.0, 1.0), _seg("감사합니다.", 2.0, 3.0)])
+    w.lyrics.recognize()
+    qtbot.waitUntil(lambda: w.lyrics.chain is None and not w.session.busy, timeout=20_000)
+    assert w.doc.lyrics.text == before and "emissions" not in fake.calls
+    assert "비어" in w.lyrics_panel.align_info.text()

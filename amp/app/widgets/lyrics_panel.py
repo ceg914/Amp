@@ -30,7 +30,7 @@ from PySide6.QtWidgets import (
 )
 
 from amp.app import theme
-from amp.lyrics import linking
+from amp.lyrics import linking, review
 from amp.lyrics.asr import LANGUAGES, MODELS
 from amp.lyrics.model import SOURCE_LABELS, LyricsState
 
@@ -293,8 +293,11 @@ class LyricsPanel(QScrollArea):
         else:
             parts = [f"[{rec.model} · {rec.language} · {rec.device}] 구간 {len(rec.segments)}개"]
             for s in rec.segments:
-                mark = "⚠ " if s.review else ""
-                why = f"   ← {', '.join(s.review)}" if s.review else ""
+                if review.excluded(s):
+                    mark, why = "✕ ", f"   ← {', '.join(s.review)} · 가사에 넣지 않음"
+                else:
+                    mark = "⚠ " if s.review else ""
+                    why = f"   ← {', '.join(s.review)}" if s.review else ""
                 parts.append(f"{mark}{s.start:6.1f}s  {s.text}{why}")
             parts.extend(f"참고: {w}" for w in rec.warnings)
             self.rec_view.setPlainText("\n".join(parts))

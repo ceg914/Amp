@@ -134,21 +134,23 @@ def test_3_project_without_lyrics_writes_no_lyrics_files(tmp_path):
 def _recognition():
     seg1 = AsrSegment("seg0", 1.0, 2.0, "사랑해 너를", -0.3, 0.9, 1.1, (),
                       (AsrWord(" 사랑해", 1.0, 1.6, 0.9), AsrWord(" 너를", 1.6, 2.0, 0.8)))
-    seg2 = AsrSegment("seg1", 5.0, 6.0, "시청해 주셔서 감사합니다", -1.2, 0.95, 1.0, (review.R_PHRASE, review.R_LOW_CONF), ())
-    return Recognition("turbo", "20250625", "ko", 0.98, "cpu", "t", {}, "stems-x", (seg1, seg2))
+    seg2 = AsrSegment("seg1", 5.0, 6.0, "그대 없는 밤", -1.2, 0.95, 1.0, (review.R_LOW_CONF,), ())
+    seg3 = AsrSegment("seg2", 8.0, 9.0, "시청해 주셔서 감사합니다", -1.2, 0.95, 1.0, (review.R_PHRASE, review.R_LOW_CONF), ())
+    return Recognition("turbo", "20250625", "ko", 0.98, "cpu", "t", {}, "stems-x", (seg1, seg2, seg3))
 
 
 def test_4_edit_recognized_lyrics_keeps_raw_and_unchanged_syllables():
     rec = _recognition()
     st = engine.text_from_recognition(LyricsState(), rec)
-    assert [ln.origin for ln in st.text.lines] == ["asr", "asr"]
-    assert st.text.lines[0].review == "" and "환각" in st.text.lines[1].review  # 검토 필요 표시 (지우지 않음)
+    assert [ln.origin for ln in st.text.lines] == ["asr", "asr"]  # 자막·인사 환각 문구 줄은 넣지 않는다 (STEP 3.5)
+    assert st.text.lines[0].review == "" and "확신이 낮음" in st.text.lines[1].review  # 다른 검토 사유는 표시만 (지우지 않음)
+    assert [ln.text for ln in st.text.lines] == ["사랑해 너를", "그대 없는 밤"] and len(st.recognition.segments) == 3
     t = [st.alignment.timing(s.id) for s in st.text.lines[0].syllables]
     assert (t[0].start, t[0].start_source) == (1.0, "asr_word")  # 단어 첫 음절은 인식 모델의 단어 시각
     assert t[1].start_source == "estimated"  # 단어 안 경계는 나눈 추정값 (검출값으로 표시하지 않음)
     assert t[2].end == pytest.approx(1.6) and t[2].end_source == "asr_word"
     ids = [s.id for s in st.text.syllables]
-    # 오타 고치기 + 환각 줄 지우기
+    # 오타 고치기 + 검토한 줄 지우기
     edited = ops.apply_text(st, "사랑해 너만")
     assert texts(edited) == ["사", "랑", "해", "너", "만"]
     assert [s.id for s in edited.text.syllables] == ids[:5]  # 같은 자리 음절은 id(시간·연결)를 잇는다
@@ -903,3 +905,23 @@ def test_worker_still_accepts_args_json():
     from amp.engine import worker
 
     assert worker.main(["ctc_align", "--args-json", "{}"]) == 1  # 인자가 비어 오류로 끝나지만, 옛 방식 옵션은 받는다
+
+
+# --- 자막·인사 환각 문구는 가사에 넣지 않는다 (사용자 보고: "한글자막 by 한효주"를 왜 자꾸 넣나) ---------------------
+
+def test_subtitle_and_greeting_hallucinations_stay_out_of_lyrics():
+    segs = [_seg_raw("한글자막 by 한효주", 0.5, 3.0), _seg_raw("사랑해 너를", 10.0, 12.0),
+            _seg_raw("감사합니다.", 200.0, 201.0), _seg_raw("시청해 주셔서 감사합니다", 203.0, 205.0)]
+    rec = engine.recognition_from_raw({"model": "turbo", "language": "ko", "device": "cuda", "segments": segs}, None, {})
+    assert [review.excluded(s) for s in rec.segments] == [True, False, True, True]
+    st = engine.text_from_recognition(LyricsState(), rec)
+    assert [ln.text for ln in st.text.lines] == ["사랑해 너를"]  # 가사에는 실제 노래 줄만
+    assert len(st.recognition.segments) == 4  # 인식 원본에는 모두 남는다
+    assert "환각 문구 3줄 제외" in st.history[-1].detail
+    # 정렬 대상 시간도 실제 줄만
+    assert set(st.alignment.timings) == {s.id for s in st.text.syllables}
+
+
+def _seg_raw(text, a, b):
+    return {"start": a, "end": b, "text": text, "avg_logprob": -0.3, "no_speech_prob": 0.2, "compression_ratio": 1.1,
+            "activity": 0.9, "level_db": -5.0, "words": [{"text": text, "start": a, "end": b, "probability": 0.8}]}

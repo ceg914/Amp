@@ -219,7 +219,10 @@ def text_from_recognition(state: LyricsState, rec: Recognition, *, replace_text:
         return state.with_history("자동 인식 결과 받음", f"{rec.model}, 구간 {len(rec.segments)}개")
     lines: list[LyricLine] = []
     timings: dict[str, SyllableTiming] = {}
+    skipped = [seg for seg in rec.segments if review.excluded(seg)]
     for seg in rec.segments:
+        if review.excluded(seg):  # 자막 문구 등 환각: 인식 원본에만 남기고 가사에는 넣지 않는다
+            continue
         line = ops.make_line(seg.text, "asr", "; ".join(seg.review), seg.id)
         lines.append(line)
         timings.update(_word_timings(line, seg))
@@ -230,7 +233,10 @@ def text_from_recognition(state: LyricsState, rec: Recognition, *, replace_text:
                    {"source": "asr_words"})
     out = replace(state, text=text, alignment=al)
     flagged = sum(1 for ln in lines if ln.review)
-    return out.with_history("자동 인식 결과로 가사 만들기", f"{len(lines)}줄, 검토 필요 {flagged}줄")
+    detail = f"{len(lines)}줄, 검토 필요 {flagged}줄"
+    if skipped:
+        detail += f", 환각 문구 {len(skipped)}줄 제외(" + ", ".join(repr(x.text) for x in skipped[:3]) + ")"
+    return out.with_history("자동 인식 결과로 가사 만들기", detail)
 
 
 def _word_timings(line: LyricLine, seg: AsrSegment) -> dict[str, SyllableTiming]:
