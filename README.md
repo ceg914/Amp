@@ -255,7 +255,7 @@ python scripts/validate_audio.py --self-check
 gpu_check.bat --audio "%USERPROFILE%\Documents\SONATLAS Projects\노래 이름\stems\vocals.wav"
 ```
 
-재생 경고 반복 점검 (결과: `playback_check_reports\…\playback_check.md`, 20초 동안 직접 출력 장치를 바꿔 보려면 `--device-change 20`을 주고 그동안 Windows 소리 설정에서 출력 장치를 바꿨다가 되돌립니다):
+재생 경고 반복 점검 (결과: `playback_check_reports\…\playback_check.md`). `--device-change 20`을 주면 마지막에 Enter를 누르고 20초 동안 Windows 소리 설정에서 출력 장치를 바꿨다가 되돌립니다. 도구가 Windows·Qt·재생기가 각각 본 기본 장치를 시간순으로 적고 판정합니다. 장치 바꾸기만 하려면 `--rounds 0`:
 
 ```bash
 playback_check.bat --rounds 3 --device-change 20
