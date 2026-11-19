@@ -332,7 +332,7 @@ def prune(state: LyricsState, note_ids: Iterable[str]) -> tuple[LyricsState, int
 
 
 def relation_kind(state: LyricsState, sid: str) -> str:
-    """'none' / '1:1' / '1:N' (멜리스마) / 'N:1' (여러 음절이 한 음표) / 'N:M'."""
+    """'none' / '1:1' / '1:N' (음표 여러 개, 멜리스마 여부는 vocal.analyze) / 'N:1' (여러 음절이 한 음표) / 'N:M'."""
     links = state.alignment.links.get(sid, ())
     if not links:
         return "none"

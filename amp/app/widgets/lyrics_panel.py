@@ -470,7 +470,7 @@ class LyricsPanel(QScrollArea):
                                      f"{', 접근음' if lk.role == 'approach' else ''}"
                                      f"{'' if lk.confidence is None else f', {lk.confidence:.2f}'})" for lk in links) or "없음")
         kind = linking.relation_kind(ly, sid)
-        rel = {"none": "연결 없음", "1:1": "1:1", "1:N": "1:N (멜리스마)", "N:1": "N:1 (여러 음절이 한 음표)",
+        rel = {"none": "연결 없음", "1:1": "1:1", "1:N": "1:N (음표 여러 개 — 멜리스마 여부는 아래 판정)", "N:1": "N:1 (여러 음절이 한 음표)",
                "N:M": "여러 음표·여러 음절"}[kind]
         n_app = sum(1 for lk in links if lk.role == "approach")
         f["rel"].setText(rel + (f" + 접근음 {n_app}" if n_app else ""))

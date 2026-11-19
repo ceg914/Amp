@@ -27,15 +27,19 @@ amp/
 │   ├── merge.py                재분석 반영 계획 (사용자 편집 보호)
 │   ├── settings.py             분석 설정·민감도 프리셋
 │   ├── interfaces.py, pipeline.py, registry.py, backends/sample.py   STEP 1 메모리 기반 단계와 샘플 백엔드
-├── lyrics/                     가사 (STEP 3, Qt 없음)
-│   ├── model.py                LyricsText(줄·단어·음절, 고유 id) · Alignment(음절 시간·출처·연결) · Recognition(인식 원본) · LyricsState
+├── lyrics/                     가사 (STEP 3·4, Qt 없음)
+│   ├── model.py                LyricsText(줄·단어·음절, 고유 id) · Alignment(음절 시간·출처·연결·사용자 멜리스마 판정) · Recognition(인식 원본) · PronEntry(음절별 발음) · LyricsState
 │   ├── text.py                 음절 분리(한글·영어 규칙·가나 박·한자·숫자), 정규화, 정렬용 로마자(uroman 호환 자모 표)
 │   ├── ops.py                  텍스트 반영(바뀐 줄만, id 유지), 줄 교체·반복, 음절 나누기·합치기, 시간 수정·검사
 │   ├── linking.py              자동 연결(1:1·1:N·N:1, 신뢰도), 순서대로 연결, 사용자 연결, 음표 변경 뒤 재연결(reconcile)
 │   ├── asr.py · review.py      Whisper 인식(작업 프로세스 안), 환각 의심 '검토 필요' 규칙
 │   ├── mms.py · ctc.py         MMS_FA wav2vec2(PyTorch로 직접 구현) · numpy CTC 강제 정렬(고정점·보컬 활동·끝 추정)
 │   ├── engine.py               인식·정렬 실행, 캐시(asr·mms), 결과 반영(사용자 수정값 보호)
-│   └── io.py                   lyrics.json · alignment.json ↔ 객체, STEP 1 형식 옮기기
+│   ├── io.py                   lyrics.json(v2: 발음) · alignment.json(v3: 멜리스마 판정) ↔ 객체, STEP 1 형식 옮기기
+│   ├── pronunciation/          발음 엔진 (STEP 4): 언어별 변환기 선택, 생성·동기화(사용자 값 보호·재검토 표시)·확정·되돌리기
+│   │   ├── korean.py           표준 발음법 규칙(제5·9~29항)을 줄 단위 문맥으로 적용 → 발음 한글, 간략 IPA
+│   │   └── japanese.py         가나 박 → 가타카나·IPA (한자는 변환 불가)
+│   └── vocal.py                음절 구간·유성 가창 길이, 멜리스마 판정(종류 + 근거 속성), 사용자 판정 편집·음표 변경 뒤 옮기기
 ├── project/                    프로젝트 폴더 (Qt 없음)
 │   ├── layout.py               폴더 구조, Windows 이름 규칙, 중복 이름 처리
 │   ├── schema.py               파일 종류·스키마 버전·마이그레이션
@@ -56,6 +60,7 @@ amp/
     ├── session.py              ProjectSession: 프로젝트 수명 주기·잠금·분석·내보내기 (컨트롤러)
     ├── document.py             편집 API, QUndoStack, ApplyAnalysisCommand, SetLyricsCommand (음표 교체 명령이 가사 연결도 함께 되돌림)
     ├── lyrics_controller.py    가사 탭·가사 레인·피아노 롤 강조·재생 연동·가사 메뉴
+    ├── vocal_controller.py     STEP 4: 발음·길이·멜리스마 판정 캐시, 편집 동작(실행 취소 가능), 가사·발음 표시 방식
     ├── player.py               QAudioSink 재생, 트랙 믹서(솔로·음소거·음량)
     ├── workers.py              TaskRunner (QThreadPool)
     ├── autosave.py             자동 저장·비정상 종료 복구

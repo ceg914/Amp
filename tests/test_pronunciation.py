@@ -187,3 +187,20 @@ def test_converter_version_change_regenerates_only_generated_entries(monkeypatch
     st2 = pron.regenerate(st2)[0]
     assert all(e.version == "999" for k, e in st2.pronunciation.items() if k != sid)
     assert st2.pronunciation[sid].text == "티"
+
+
+def test_fixes_found_by_comparing_real_lyrics_with_g2pk2():
+    """실제 가사 두 곡을 g2pk2(공개 규칙 변환기)와 비교하다 찾은 것. 이 비교 뒤에 고쳤으므로 독립 검증이 아니다."""
+    # 연음으로 첫소리가 생긴 '의'는 [ㅢ]를 두고 허용 발음([에]·[이])을 알린다 (협의[혀븨/혀비]와 같은 경우)
+    got, es = _say("추억의")
+    assert got == "추어긔" and es[2].status == "uncertain"
+    assert _say("희망")[0] == "히망"  # 원래 첫소리가 자음이면 [ㅣ]
+    # 띄어 쓴 경계의 연음은 따로 표시한다 (제15항: 꽃 위[꼬뒤])
+    _got, es = _say("꽃 위")
+    assert korean.R_LINK_SPACE in es[1].rules and korean.R_LINK not in es[1].rules
+    # 관형사형 -ㄹ 뒤 된소리는 품사를 몰라 바꾸지 않되 불확실로 알린다
+    got, es = _say("갈 곳")
+    assert got == "갈 곧" and es[1].status == "uncertain" and korean.U_MOD_SPACE in es[1].notes
+    # ㄴ 첨가로 추정한 곳은 앞 음절도 불확실 (만일[마닐]처럼 틀릴 수 있다)
+    _got, es = _say("만일")
+    assert es[0].status == "uncertain" and es[1].status == "uncertain"

@@ -26,6 +26,7 @@ JONG = ("", "ㄱ", "ㄲ", "ㄳ", "ㄴ", "ㄵ", "ㄶ", "ㄷ", "ㄹ", "ㄺ", "ㄻ"
 
 R_REP = "받침 대표음(제9~11항)"
 R_LINK = "연음(제13~15항)"
+R_LINK_SPACE = "연음(어절 경계, 제15항)"
 R_ASP = "거센소리되기(제12항)"
 R_H_DROP = "ㅎ 탈락(제12항)"
 R_H_N = "ㅎ+ㄴ→ㄴ(제12항)"
@@ -50,6 +51,7 @@ U_NI = "합성어면 ㄴ이 덧나 발음합니다(제29항, 예: 꽃잎[꼰닙]
 U_LIQ_EXC = "'-란·-량·-력·-론' 같은 한자어 접미사면 [ㄴㄴ]으로 발음합니다(제20항 예외, 예: 의견란[의견난])."
 U_UI_PARTICLE = "조사 '의'는 [에]로, 첫음절 아닌 '의'는 [이]로도 발음할 수 있습니다(제5항 허용)."
 U_SAM = "'삶'이 명사면 예사소리, 용언 '삶다'면 된소리입니다."
+U_MOD_SPACE = "앞말이 관형사형 '-ㄹ'(예: 갈 곳[갈꼳], 녹일 빛[노길삗])이면 된소리입니다(제27항). 품사를 알 수 없어 그대로 두었습니다."
 
 NIEUN_HEADS = {"잎", "일", "입", "엿", "약", "윷", "옆"}  # 합성어 뒷말로 흔한 ㄴ 첨가 형태소 (제29항 예)
 BOUND_NOUNS = {"거", "것", "게", "걸", "수", "줄", "데", "바", "적", "지", "듯", "뻔"}  # 관형사형 -ㄹ 뒤 된소리 (제27항)
@@ -219,6 +221,7 @@ def _palatal_and_insert(a: _Syl, b: _Syl, bd: str) -> None:
         b.cho = "ㄴ"
         b.rule(R_N_INSERT)
         b.note(U_NI)
+        a.note(U_NI)  # 앞 음절 받침도 바뀐다 (꽃잎[꼰닙]의 '꼰', 만일[마닐]이면 '마')
 
 
 def _liaison(a: _Syl, b: _Syl, bd: str) -> None:
@@ -234,8 +237,9 @@ def _liaison(a: _Syl, b: _Syl, bd: str) -> None:
     else:
         a.jong, b.cho = "", j
     b.moved = True
-    a.rule(R_LINK)
-    b.rule(R_LINK)
+    rule = R_LINK_SPACE if bd == "space" else R_LINK
+    a.rule(rule)
+    b.rule(rule)
 
 
 def _neutralize(s: _Syl, nxt: _Syl | None) -> None:
@@ -280,7 +284,9 @@ def _tensify(a: _Syl, b: _Syl, bd: str, after_b: _Syl | None) -> None:
         elif bd == "word" and b.orig == "수" and after_b is not None and after_b.orig == "록" and after_b.word == b.word:
             tense, rule = True, R_TENSE_MOD  # 할수록[할쑤록]
         elif bd == "space" and b.orig in BOUND_NOUNS:
-            tense, rule = True, R_TENSE_MOD  # 할 수[할쑤], 갈 곳은 (BOUND_NOUNS 밖이면 그대로)
+            tense, rule = True, R_TENSE_MOD  # 할 수[할쑤]
+        elif bd == "space":
+            b.note(U_MOD_SPACE)  # 갈 곳[갈꼳] / 하늘 가득[하늘가득]
         elif bd == "word" and b.cho in ("ㄷ", "ㅅ", "ㅈ") and b.orig not in ENDINGS:
             b.note(U_SINO)  # 갈등[갈뜽] / 알지
     elif bd == "word" and a.jong in ("ㄴ", "ㅁ", "ㅇ", "ㄹ") and b.orig not in ENDINGS:
@@ -311,11 +317,11 @@ def _nasal_liquid(a: _Syl, b: _Syl, bd: str) -> None:
 
 def _vowels(s: _Syl, prev: _Syl | None) -> None:
     if s.jung == "ㅢ":
-        if s.cho != "ㅇ":
-            s.jung = "ㅣ"  # 희망[히망] (제5항 다만 3)
+        if decompose(s.orig)[0] != "ㅇ":
+            s.jung = "ㅣ"  # 희망[히망] (제5항 다만 3: 원래 첫소리가 자음인 음절)
             s.rule(R_UI)
-        elif prev is not None and prev.word == s.word:
-            s.note(U_UI_PARTICLE)  # 나의[나의/나에], 주의[주의/주이]
+        elif prev is not None and (prev.word == s.word or s.moved):
+            s.note(U_UI_PARTICLE)  # 나의[나의/나에], 주의[주의/주이], 추억의[추어긔/추어게], 협의[혀븨/혀비]
     if s.cho in ("ㅈ", "ㅉ", "ㅊ") and s.jung == "ㅕ":
         s.jung = "ㅓ"  # 가져[가저] (제5항 다만 1)
         s.rule(R_YEO)

@@ -12,7 +12,7 @@
 막대 모양(색만으로 구분하지 않음)
 - 실선 테두리: 모델이 시작을 검출 / 점선: 추정값(인식 단어 시각을 나눔 등) / 굵은 테두리: 사용자 지정
 - 주황 점선 + '↻': 텍스트가 바뀌어 다시 정렬 필요 / 주황 '!': 정렬 신뢰도 낮음
-- 흐린 글자 + 밑줄 없음: 음표 연결 없음 / 아래 민트 점: 음표 여러 개(멜리스마)
+- 흐린 글자 + 밑줄 없음: 음표 연결 없음 / 아래 점: 멜리스마 판정(민트 = 멜리스마, 회색 = 판정 불확실)
 """
 
 from __future__ import annotations
@@ -418,7 +418,7 @@ class LyricLane(QWidget):
         if t.stale:
             parts.append("가사가 바뀌어 다시 정렬이 필요합니다")
         kind = linking.relation_kind(ly, sid)
-        parts.append({"none": "음표 연결 없음", "1:1": "음표 1개", "1:N": "음표 여러 개 (멜리스마)",
+        parts.append({"none": "음표 연결 없음", "1:1": "음표 1개", "1:N": "음표 여러 개",
                       "N:1": "다른 음절과 한 음표를 나눠 씀", "N:M": "여러 음표·여러 음절"}[kind])
         if s.note:
             parts.append(s.note)
@@ -438,7 +438,7 @@ class LyricLane(QWidget):
         add("이 구간 반복 재생", "loop", bool(sel))
         menu.addSeparator()
         add("선택한 음표로 연결 바꾸기", "link_replace", one)
-        add("선택한 음표를 연결에 더하기 (멜리스마)", "link_add", one)
+        add("선택한 음표를 연결에 더하기", "link_add", one)
         add("음표와 순서대로 연결 (선택 음절 ↔ 선택 음표)", "link_sequential", bool(sel))
         n_links = len(ly.alignment.links.get(sel[0], ())) if one else 0
         first_is_approach = one and any(lk.role == "approach" for lk in ly.alignment.links.get(sel[0], ()))
