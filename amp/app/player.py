@@ -15,6 +15,7 @@ from PySide6 import QtMultimedia
 from PySide6.QtCore import QIODevice, QObject, QTimer, Signal
 from PySide6.QtMultimedia import QAudioFormat, QAudioSink, QMediaDevices
 
+from amp.audio import windows_output
 from amp.audio.data import AudioData
 from amp.audio.pcm import PcmMixer, SampleFormat
 
@@ -133,6 +134,35 @@ class AudioPlayer(QObject):
     @staticmethod
     def output_available() -> bool:
         return not QMediaDevices.defaultAudioOutput().isNull()
+
+    _os_lookup_failed = False
+
+    @classmethod
+    def default_output(cls):
+        """지금 쓸 기본 출력 장치.
+
+        Windows에서는 Core Audio에 직접 물은 기본 장치와 id가 같은 Qt 장치를 쓴다. Qt의 '기본 장치' 표시는 장치를 바꾼 뒤
+        Windows와 달라질 수 있어서다(7.4절). Windows가 아니거나, 묻지 못했거나, 그 id가 Qt 목록에 없으면 Qt의 기본 장치를 쓴다.
+        """
+        qt_default = QMediaDevices.defaultAudioOutput()
+        if cls._os_lookup_failed:
+            return qt_default
+        try:
+            os_id = windows_output.default_output_id()
+        except Exception as e:  # noqa: BLE001 - 조회 실패는 Qt 기본 장치로 물러난다
+            cls._os_lookup_failed = True
+            log.warning("Windows 기본 출력 장치를 묻지 못해 Qt의 기본 장치를 씁니다: %s", e)
+            return qt_default
+        if not os_id:
+            return qt_default
+        want = os_id.encode("utf-8")
+        for d in QMediaDevices.audioOutputs():
+            if bytes(d.id()) == want:
+                if qt_default.isNull() or bytes(qt_default.id()) != want:
+                    log.info("Qt 기본 장치(%s) 대신 Windows 기본 장치(%s)를 씁니다",
+                             "없음" if qt_default.isNull() else qt_default.description(), d.description())
+                return d
+        return qt_default
 
     # --- 제어 --------------------------------------------------------------
 
@@ -260,7 +290,7 @@ class AudioPlayer(QObject):
 
     def _start_sink(self, position: float) -> bool:
         assert self._audio is not None
-        device = QMediaDevices.defaultAudioOutput()
+        device = self.default_output()
         if device.isNull():
             self.errorOccurred.emit("오디오 출력 장치를 찾을 수 없습니다. 스피커나 헤드폰 연결을 확인해 주세요.")
             return False
@@ -306,7 +336,7 @@ class AudioPlayer(QObject):
         """출력 장치 목록이 바뀌었다. 재생 중이고 쓰던 장치가 기본 장치가 아니게 됐거나 사라졌으면 같은 위치에서 다시 연다."""
         if self._sink is None or self._state is PlaybackState.STOPPED:
             return
-        default = QMediaDevices.defaultAudioOutput()
+        default = self.default_output()
         present = any(bytes(d.id()) == self._sink_device_id for d in QMediaDevices.audioOutputs())
         if present and not default.isNull() and bytes(default.id()) == self._sink_device_id:
             return

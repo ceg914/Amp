@@ -11,7 +11,7 @@ amp/
 │   ├── editing.py              이동·길이·분할·병합 순수 함수
 │   ├── fileio.py               원자적 쓰기(+.bak), 긴 경로, 디스크 부족·권한 오류 메시지
 │   └── errors.py               사용자 메시지를 담는 예외 계층
-├── audio/                      디코딩, 파형 요약, PCM 변환·믹서 (Qt 없음)
+├── audio/                      디코딩, 파형 요약, PCM 변환·믹서, Windows 기본 출력 조회 (Qt 없음)
 ├── engine/                     분석 엔진 (Qt 없음)
 │   ├── worker.py               분석 작업 프로세스 (separate · pitch · tempo · probe · asr · emissions · ctc_align)
 │   ├── worker_client.py        작업 프로세스 실행·진행률·취소·오류 코드 → 한국어 메시지

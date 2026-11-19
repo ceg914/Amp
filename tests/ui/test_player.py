@@ -166,6 +166,58 @@ def test_playback_moves_to_new_default_output_and_survives_unplug(qtbot):
             subprocess.run(["pactl", "set-default-sink", old_default])
 
 
+def test_player_follows_os_default_when_qt_flag_is_stale(qtbot, monkeypatch):
+    """Windows 점검에서 Qt가 본 기본 장치가 첫 장치에 머문 기록이 있다(보고서 7.4절).
+    운영체제에 물은 기본 장치가 Qt 표시와 다르면 운영체제 쪽을 따른다. 여기서는 Windows 조회를 바꿔 끼워 흉내 낸다."""
+    import subprocess
+
+    from PySide6.QtMultimedia import QMediaDevices
+
+    from amp.audio import windows_output
+
+    old_default = subprocess.run(["pactl", "get-default-sink"], capture_output=True, text=True).stdout.strip() \
+        if AudioPlayer.output_available() else ""
+    a_mod = _pulse_null_sink("amp_os_a")
+    b_mod = _pulse_null_sink("amp_os_b")
+    monkeypatch.setattr(AudioPlayer, "_os_lookup_failed", False)
+    os_says = {"id": "amp_os_a"}
+    monkeypatch.setattr(windows_output, "default_output_id", lambda: os_says["id"])
+    try:
+        subprocess.run(["pactl", "set-default-sink", "amp_os_a"], check=True)
+        qtbot.waitUntil(lambda: bytes(QMediaDevices.defaultAudioOutput().id()) == b"amp_os_a", timeout=5000)
+        p = AudioPlayer()
+        errors = []
+        p.errorOccurred.connect(errors.append)
+        sr = 8000
+        y = (0.1 * np.sin(2 * np.pi * 220 * np.arange(sr * 20) / sr)).astype(np.float32)
+        p.set_audio(AudioData(np.stack([y, y], 1), sr))
+        p.play()
+        qtbot.wait(200)
+        assert p._sink_device_id == b"amp_os_a"
+        os_says["id"] = "amp_os_b"  # Windows는 b로 바뀌었는데 Qt는 여전히 a를 기본으로 표시
+        assert bytes(QMediaDevices.defaultAudioOutput().id()) == b"amp_os_a"
+        p._on_outputs_changed()  # Qt 장치 변경 알림
+        assert p._sink_device_id == b"amp_os_b" and p.device_switches == 1 and p.state is PlaybackState.PLAYING
+        p._on_outputs_changed()  # 같은 상태에서 알림이 또 와도 다시 열지 않는다
+        assert p.device_switches == 1
+        os_says["id"] = "없는 장치 id"  # Qt 목록에 없는 id면 Qt 기본 장치(a)로
+        assert bytes(AudioPlayer.default_output().id()) == b"amp_os_a"
+
+        def boom():
+            raise OSError("COM 실패")
+
+        monkeypatch.setattr(windows_output, "default_output_id", boom)  # 조회가 실패하면 그 뒤로는 Qt만 쓴다
+        assert bytes(AudioPlayer.default_output().id()) == b"amp_os_a" and AudioPlayer._os_lookup_failed
+        assert errors == []
+        p.shutdown()
+    finally:
+        for m in (a_mod, b_mod):
+            if m:
+                subprocess.run(["pactl", "unload-module", m])
+        if old_default:
+            subprocess.run(["pactl", "set-default-sink", old_default])
+
+
 def test_no_output_left_stops_with_message(qapp, monkeypatch):
     from PySide6.QtMultimedia import QAudioDevice
 
