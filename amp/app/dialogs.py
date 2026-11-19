@@ -140,7 +140,7 @@ class ExportJob:
 
 class ExportDialog(QDialog):
     def __init__(self, project_name: str, available: dict[str, bool], out_dir: str, preselect: list[str],
-                 parent=None) -> None:
+                 parent=None, no_vocal_ranges: int = 0) -> None:
         super().__init__(parent)
         self.setWindowTitle("오디오 내보내기")
         self.setMinimumWidth(520)
@@ -150,6 +150,9 @@ class ExportDialog(QDialog):
         lay = QVBoxLayout(self)
         lay.addWidget(_title("오디오 내보내기"))
         lay.addWidget(_hint("이미 만든 분리 결과를 형식만 바꿔 저장합니다. 보컬 분리를 다시 실행하지 않습니다."))
+        if no_vocal_ranges:
+            lay.addWidget(_hint(f"보컬 없는 구간 {no_vocal_ranges}곳은 보컬에서 비우고 그 소리를 반주에 더해 내보냅니다. "
+                                "끄려면 분석 설정의 '보컬 트랙에서도 비우기'를 해제하세요."))
         form = QFormLayout()
         for track, label in TRACK_LABELS.items():
             cb = QCheckBox(f"{label} ({TRACK_HINTS[track]})")

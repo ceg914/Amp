@@ -168,6 +168,10 @@ class AnalysisPanel(QGroupBox):
         self.no_vocal_info.setProperty("role", "secondary")
         self.no_vocal_edit = QPushButton("편집…")
         self.no_vocal_edit.setToolTip("보컬이 없는 구간(전주·간주 등)을 지정하면 그 구간에서는 음표를 만들지 않습니다.")
+        self.mute_no_vocal = QCheckBox("보컬 트랙에서도 비우기 (재생·내보내기)")
+        self.mute_no_vocal.setChecked(True)
+        self.mute_no_vocal.setToolTip("보컬 없는 구간에서 보컬 트랙을 무음으로 만들고, 뺀 소리는 반주 트랙에 더합니다"
+                                      "(보컬 + 반주 = 원래 합). 경계는 0.02초 페이드. 분리 결과 파일(stems/)은 바꾸지 않습니다.")
         self.run = QPushButton("보컬 분석 실행")
         self.run.setProperty("primary", True)
         self.redetect = QPushButton("음표만 다시 검출")
@@ -192,6 +196,7 @@ class AnalysisPanel(QGroupBox):
         nv.addWidget(self.no_vocal_info, 1)
         nv.addWidget(self.no_vocal_edit)
         form.addRow("보컬 없는 구간", nv)
+        form.addRow("", self.mute_no_vocal)
         lay = QVBoxLayout(self)
         lay.addLayout(form)
         lay.addWidget(self.merge_approach)
@@ -217,6 +222,7 @@ class AnalysisPanel(QGroupBox):
             w.currentIndexChanged.connect(self._emit)
         self.use_cache.toggled.connect(self._emit)
         self.merge_approach.toggled.connect(self._emit)
+        self.mute_no_vocal.toggled.connect(self._emit)
         self.run.clicked.connect(self.runRequested)
         self.redetect.clicked.connect(self.redetectRequested)
         self.reseparate.clicked.connect(self.reseparateRequested)
@@ -266,7 +272,7 @@ class AnalysisPanel(QGroupBox):
             pitch_change_semitones=float(self.change.value()), pitch_low=int(low), pitch_high=int(high),
             device=self.device.currentData(), use_cache=self.use_cache.isChecked(),
             separation=self.separation.currentData(), no_vocal_ranges=self._no_vocal,
-            merge_approach=self.merge_approach.isChecked(),
+            merge_approach=self.merge_approach.isChecked(), mute_no_vocal=self.mute_no_vocal.isChecked(),
         )
 
     def set_settings(self, s: AnalysisSettings) -> None:
@@ -282,6 +288,7 @@ class AnalysisPanel(QGroupBox):
             self.device.setCurrentIndex(max(0, self.device.findData(s.device)))
             self.use_cache.setChecked(s.use_cache)
             self.merge_approach.setChecked(s.merge_approach)
+            self.mute_no_vocal.setChecked(s.mute_no_vocal)
             self._set_no_vocal(s.no_vocal_ranges)
         finally:
             self._updating = False

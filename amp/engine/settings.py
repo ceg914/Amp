@@ -111,6 +111,8 @@ class AnalysisSettings:
     no_vocal_ranges: tuple = ()
     # 음 시작에서 낮은 데서 올라가는 짧은 구간(끌어올림)을 목표 음에 합친다. 끄면 STEP 3까지와 같은 결과.
     merge_approach: bool = True
+    # 보컬 없는 구간을 보컬 트랙에도 적용한다(재생·파형·내보내기에서 보컬을 비우고 그 소리를 반주에 더함). 분석에는 영향 없음
+    mute_no_vocal: bool = True
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "no_vocal_ranges", normalize_ranges(self.no_vocal_ranges))

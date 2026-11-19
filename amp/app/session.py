@@ -20,6 +20,7 @@ from amp.app.workers import TaskHandle, TaskRunner
 from amp.audio.data import AudioData
 from amp.audio.decoder import load_audio
 from amp.audio.peaks import WaveformPeaks
+from amp.audio.mask import apply_no_vocal
 from amp.core.errors import AmpError, AnalysisError, SaveConflictError
 from amp import __version__
 from amp.engine import stems as stem_store
@@ -83,7 +84,10 @@ class ProjectSession(QObject):
         self._root_override = projects_root
         self.folder: ProjectFolder | None = None
         self.audio: AudioData | None = None
-        self.stems: dict[str, AudioData] = {}
+        self.stems: dict[str, AudioData] = {}  # 재생·내보내기에 쓰는 스템 (보컬 없는 구간 적용본)
+        self.raw_stems: dict[str, AudioData] = {}  # 분리 결과 그대로 (stems/*.wav와 같음)
+        self.mask_ranges: tuple = ()  # 스템에 적용할 보컬 없는 구간 (끄면 빈 값)
+        self._applied_mask: tuple = ()
         self.peaks: dict[str, WaveformPeaks] = {}
         self.manifest: stem_store.StemManifest | None = None
         self.stems_reason = "분리 전"
@@ -226,6 +230,8 @@ class ProjectSession(QObject):
         self.player.set_audio(None)
         self.audio = None
         self.stems = {}
+        self.raw_stems = {}
+        self._applied_mask = ()
         self.peaks = {}
         self.manifest = None
         self.original = None
@@ -277,27 +283,63 @@ class ProjectSession(QObject):
         if not ok:
             self._set_stems({})
             return None
-        folder, seq = self.folder, self._seq
+        folder, seq, ranges = self.folder, self._seq, self.mask_ranges
 
         def job(progress, token):
-            stems = stem_store.load(folder.paths.stems, manifest)
-            return stems, {n: WaveformPeaks.build(a.mono(), a.sample_rate) for n, a in stems.items()}
+            raw = stem_store.load(folder.paths.stems, manifest)
+            eff = apply_no_vocal(raw, ranges)
+            return raw, eff, {n: WaveformPeaks.build(a.mono(), a.sample_rate) for n, a in eff.items()}, ranges
 
         handle = self._submit("분리 결과 불러오기", job)
-        handle.finished.connect(lambda r: seq == self._seq and self._set_stems(r[0], r[1]))
+        handle.finished.connect(lambda r: seq == self._seq and self._set_stems(*r))
         return handle
 
-    def _set_stems(self, stems: dict[str, AudioData], peaks: dict | None = None) -> None:
+    def _set_stems(self, raw: dict[str, AudioData], effective: dict[str, AudioData] | None = None,
+                   peaks: dict | None = None, applied: tuple = ()) -> None:
+        """raw: 분리 결과 그대로, effective: 보컬 없는 구간을 적용한 사본(재생·파형·내보내기용), applied: 적용한 구간."""
+        effective = raw if effective is None else effective
         for name in ("vocals", "instrumental"):
-            if name in stems and self.audio is not None:
-                self.player.set_track(name, stems[name])
+            if name in effective and self.audio is not None:
+                self.player.set_track(name, effective[name])
             else:
                 self.player.set_track(name, None)
-        self.stems = {n: a for n, a in stems.items() if n in self.player.tracks}
+        self.raw_stems = {n: a for n, a in raw.items() if n in self.player.tracks}
+        self.stems = {n: a for n, a in effective.items() if n in self.player.tracks}
+        self._applied_mask = tuple(applied) if self.stems else ()
         for name in ("vocals", "instrumental"):
             self.peaks.pop(name, None)
         self.peaks.update(peaks or {})
         self.tracksChanged.emit()
+        if self.raw_stems and self._applied_mask != self.mask_ranges:
+            self._remask()  # 작업 중에 구간이 바뀌었다
+
+    def set_no_vocal_mask(self, ranges) -> None:
+        """보컬 없는 구간을 보컬·반주 트랙(재생·파형·내보내기)에 적용한다. 빈 값이면 분리 결과 그대로."""
+        ranges = tuple(tuple(float(x) for x in r) for r in ranges)
+        if ranges == self.mask_ranges:
+            return
+        self.mask_ranges = ranges
+        if self.raw_stems and ranges != self._applied_mask:
+            self._remask()
+
+    def _remask(self) -> TaskHandle:
+        raw, ranges, seq = dict(self.raw_stems), self.mask_ranges, self._seq
+
+        def job(progress, token):
+            eff = apply_no_vocal(raw, ranges)
+            return raw, eff, {n: WaveformPeaks.build(a.mono(), a.sample_rate) for n, a in eff.items()}, ranges
+
+        def done(r) -> None:
+            if seq != self._seq:
+                return
+            self._set_stems(*r)
+            if ranges:
+                self.message.emit(f"보컬 없는 구간 {len(ranges)}곳을 보컬 트랙에서 비우고 그 소리를 반주에 더했습니다 "
+                                  "(재생·내보내기. 분리 결과 파일은 그대로).", 8000)
+
+        handle = self._submit("보컬 없는 구간 적용", job)
+        handle.finished.connect(done)
+        return handle
 
     def track_audio(self, name: str) -> AudioData | None:
         return self.audio if name == "original" else self.stems.get(name)
@@ -419,25 +461,26 @@ class ProjectSession(QObject):
         except AnalysisError as e:
             self.error.emit("분석할 수 없습니다", str(e), "")
             return None
-        audio, seq = self.audio, self._seq
+        audio, seq, ranges = self.audio, self._seq, self.mask_ranges
 
         def job(progress, token):
             out = TranscriptionPipeline().run(req, progress, token)
             # 파형 요약은 작업 스레드에서 만든다. 화면 스레드에서 만들면 5분 곡 스템 둘에 0.7초쯤 화면이 멈췄다
             # (사용자 Windows 로그: 분석 실행 직후 0.65~1.05초 멈춤)
-            return out, {name: WaveformPeaks.build(a.mono(), a.sample_rate) for name, a in out.stems.items()}
+            eff = apply_no_vocal(out.stems, ranges) if out.stems else {}
+            return out, eff, {name: WaveformPeaks.build(a.mono(), a.sample_rate) for name, a in eff.items()}
 
         handle = self._submit("보컬 분석", job)
         self._track_analysis(handle)
 
         def done(result) -> None:
-            out, peaks = result
+            out, eff, peaks = result
             if seq != self._seq or self.audio is not audio:
                 return
             self.manifest = out.manifest
             self.stems_reason = ""
             if out.stems:
-                self._set_stems(out.stems, peaks)
+                self._set_stems(out.stems, eff, peaks, ranges)
             reused = [k for k, v in out.reused.items() if v]
             if reused:
                 self.message.emit("재사용한 단계: " + ", ".join({"separation": "보컬 분리", "pitch": "피치 추출",

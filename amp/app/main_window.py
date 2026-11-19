@@ -812,6 +812,7 @@ class MainWindow(QMainWindow):
         else:  # 보컬 없는 구간은 곡마다 다르므로 이전 프로젝트 것을 가져오지 않는다
             panel.set_settings(dataclasses.replace(panel.settings(), no_vocal_ranges=()))
         self.view.roll.set_no_vocal_ranges(panel.settings().no_vocal_ranges)
+        self._sync_stem_mask(panel.settings())
         self._apply_ui_state(self._pending_ui)
         self._refresh_project_panel()
         self._refresh_tracks()
@@ -1018,6 +1019,11 @@ class MainWindow(QMainWindow):
         # 프로그램 기본 설정에는 곡마다 다른 보컬 없는 구간을 넣지 않는다 (프로젝트 저장 때 project.json에 남는다)
         self.settings.setValue(SETTINGS_KEY, {**s.to_dict(), "no_vocal_ranges": []})
         self.view.roll.set_no_vocal_ranges(s.no_vocal_ranges)
+        self._sync_stem_mask(s)
+
+    def _sync_stem_mask(self, s: AnalysisSettings) -> None:
+        """보컬 없는 구간을 보컬·반주 트랙(재생·파형·내보내기)에도 적용한다. 분석 결과에는 영향이 없다."""
+        self.session.set_no_vocal_mask(s.no_vocal_ranges if s.mute_no_vocal else ())
 
     def _apply_no_vocal(self, ranges) -> None:
         panel = self.inspector.analysis
@@ -1108,7 +1114,8 @@ class MainWindow(QMainWindow):
         if f is None:
             return
         available = {n: self.session.track_audio(n) is not None for n in TRACK_LABELS}
-        dlg = ExportDialog(f.name, available, str(f.paths.exports), preselect or ["vocals", "instrumental"], self)
+        dlg = ExportDialog(f.name, available, str(f.paths.exports), preselect or ["vocals", "instrumental"], self,
+                           no_vocal_ranges=len(self.session._applied_mask))
         if dlg.exec() != ExportDialog.DialogCode.Accepted:
             return
         jobs = dlg.jobs()

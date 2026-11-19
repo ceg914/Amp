@@ -144,6 +144,50 @@ def test_analysis_builds_stem_waveforms_off_the_ui_thread(qtbot, window, song, m
     assert folder.paths.stems.is_dir()
 
 
+def test_no_vocal_ranges_apply_to_vocal_track_playback_and_export(qtbot, window, song, monkeypatch, tmp_path):
+    """보컬 없는 구간을 보컬 트랙에도 적용: 재생·내보내기용 보컬은 비우고 그 소리는 반주에 더한다. stems/ 파일은 그대로."""
+    import hashlib
+
+    import numpy as np
+    import soundfile as sf
+
+    from amp.audio.mask import FADE_S
+    from amp.project.export import ExportOptions
+
+    monkeypatch.setattr("amp.app.session.TranscriptionPipeline", IdentityPipeline)
+    folder = create(qtbot, window, song)
+    window.run_analysis()
+    qtbot.waitUntil(lambda: window.doc.project.analysis is not None and not window.session.busy, timeout=120_000)
+    qtbot.waitUntil(lambda: "vocals" in window.session.stems, timeout=20_000)
+    s = window.session
+    raw_v = s.raw_stems["vocals"].samples.copy()
+    total = raw_v + s.raw_stems["instrumental"].samples
+    disk = {p.name: hashlib.sha256(p.read_bytes()).hexdigest() for p in folder.paths.stems.glob("*.wav")}
+    window.inspector.analysis.set_no_vocal_ranges([(1.0, 2.0)])
+    qtbot.waitUntil(lambda: s._applied_mask == ((1.0, 2.0),), timeout=10_000)
+    sr = s.stems["vocals"].sample_rate
+    a, b = int((1.0 + FADE_S) * sr), int((2.0 - FADE_S) * sr)
+    v = s.track_audio("vocals").samples
+    assert np.all(v[a:b] == 0) and np.array_equal(v[: int(sr * 0.99)], raw_v[: int(sr * 0.99)])
+    assert np.allclose(v + s.track_audio("instrumental").samples, total, atol=1e-6)
+    assert window.player.tracks["vocals"] is s.stems["vocals"]  # 재생도 비운 보컬
+    assert np.array_equal(s.raw_stems["vocals"].samples, raw_v)
+    # 내보내기 (WAV)
+    out = tmp_path / "v.wav"
+    h = s.export([("vocals", str(out))], ExportOptions("wav", wav_subtype="FLOAT"))
+    qtbot.waitSignal(h.ended, timeout=30_000)
+    qtbot.waitUntil(out.exists, timeout=10_000)
+    y, _ = sf.read(out, always_2d=True)
+    assert np.abs(y[a:b]).max() == 0 and np.abs(y[int(2.1 * sr):int(2.9 * sr)]).max() > 0
+    # 분리 결과 파일은 바꾸지 않는다
+    assert {p.name: hashlib.sha256(p.read_bytes()).hexdigest() for p in folder.paths.stems.glob("*.wav")} == disk
+    # 끄면 분리 결과 그대로
+    window.inspector.analysis.mute_no_vocal.setChecked(False)
+    qtbot.waitUntil(lambda: s._applied_mask == (), timeout=10_000)
+    assert np.array_equal(s.track_audio("vocals").samples, raw_v)
+    assert window.errors == []
+
+
 def test_analysis_tracks_export_and_edit_protection(qtbot, window, song, monkeypatch):
     monkeypatch.setattr("amp.app.session.TranscriptionPipeline", IdentityPipeline)
     folder = create(qtbot, window, song)

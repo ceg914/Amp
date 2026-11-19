@@ -159,3 +159,30 @@ def test_mono_matches_channel_mean_for_any_channel_count():
     m = AudioData(x, 44100).mono()
     m[:] = 0  # 돌려준 배열을 고쳐도 원본은 그대로 (복사본)
     assert np.any(x != 0)
+
+
+def test_no_vocal_mask_moves_vocals_into_instrumental_inside_ranges_only():
+    from amp.audio.mask import FADE_S, apply_no_vocal, keep_gain
+
+    sr = 1000
+    rng = np.random.default_rng(5)
+    voc = AudioData(rng.standard_normal((5000, 2)).astype(np.float32) * 0.3, sr)
+    ins = AudioData(rng.standard_normal((5000, 2)).astype(np.float32) * 0.3, sr)
+    out = apply_no_vocal({"vocals": voc, "instrumental": ins}, [(1.0, 2.0), (4.9, 9.0)])
+    v, i = out["vocals"].samples, out["instrumental"].samples
+    f = int(FADE_S * sr)
+    assert np.array_equal(v[:1000], voc.samples[:1000]) and np.array_equal(v[2000:4900], voc.samples[2000:4900])  # 구간 밖 그대로
+    assert np.all(v[1000 + f:2000 - f] == 0)  # 구간 안 무음
+    assert np.allclose(v + i, voc.samples + ins.samples, atol=1e-6)  # 보컬 + 반주 = 원래 합
+    gain = keep_gain(5000, sr, [(1.0, 2.0)])
+    assert gain[999] == 1.0 and 0 < gain[1000 + f // 2] < 1 and gain[1000 + f - 1] == 0  # 구간 안쪽으로 페이드 아웃
+    assert gain[2000 - f] == 0 and 0 < gain[2000 - f // 2] < 1 and gain[2000] == 1  # 페이드 인
+    assert np.allclose(v[1000:1000 + f], voc.samples[1000:1000 + f] * gain[1000:1000 + f, None])
+    g = keep_gain(5000, sr, [(4.9, 9.0)])
+    assert g[-1] == 0 and g[4899] == 1  # 끝을 넘는 구간은 잘라서
+    tiny = keep_gain(5000, sr, [(1.0, 1.01)])  # 페이드보다 짧은 구간
+    assert tiny[1000:1010].max() <= 1.0 and tiny[999] == 1 and tiny[1010] == 1
+    same = {"vocals": voc}
+    assert apply_no_vocal(same, []) is same and apply_no_vocal(same, [(9.0, 10.0)]) is same
+    only_v = apply_no_vocal({"vocals": voc}, [(1.0, 2.0)])  # 반주가 없으면 보컬만 비운다
+    assert set(only_v) == {"vocals"} and np.all(only_v["vocals"].samples[1000 + f:2000 - f] == 0)
