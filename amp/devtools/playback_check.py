@@ -345,7 +345,9 @@ def _device_change(player, audio, seconds: float, spin, rec: Recorder, probe=Non
           "qt_defaults": qt_seen, "qt_flagged": flagged_seen,
           "windows_defaults": win_seen if probe_state["ok"] else None,
           "windows_other_roles_changed": other_roles["changed"],
-          "windows_probe": probe_state["text"], "timeline": timeline}
+          "windows_probe": probe_state["text"], "timeline": timeline,
+          # 재생기가 장치를 고를 때 Windows 조회를 썼는지 (실패하면 Qt 기본 장치로 물러나 그 뒤로는 묻지 않음)
+          "player_os_lookup": "실패해 Qt 기본 장치 사용" if type(player)._os_lookup_failed else "실패 없음"}
     print("\n점검 끝. 아래 질문에 답해 주세요 (결과 파일에 함께 적습니다).", flush=True)
     dc["user_report"] = ask()
     dc["verdict"] = device_change_verdict(dc)
@@ -369,7 +371,7 @@ def _write(out: dict, rec: Recorder, errors: list, steps: list, out_root: Path) 
                   f"끝난 뒤 상태 {dc['state_after']}, 기본 장치 {dc['default_after']}",
                   f"- 판단: {dc.get('verdict', '')}",
                   f"- Qt 장치 목록 알림 점검 중 {dc.get('qt_signals', 0)}회(그 밖 {dc.get('qt_signals_outside', 0)}회) · "
-                  f"Windows 직접 확인: {dc.get('windows_probe', '')}",
+                  f"Windows 직접 확인: {dc.get('windows_probe', '')} · 재생기의 Windows 조회: {dc.get('player_os_lookup', '')}",
                   f"- Windows 기본 장치 변화: {dc.get('windows_defaults')} · Qt 기본 장치 변화: {dc.get('qt_defaults')} · "
                   f"Qt가 '기본'으로 표시한 장치: {dc.get('qt_flagged')}"]
         if dc.get("user_report"):

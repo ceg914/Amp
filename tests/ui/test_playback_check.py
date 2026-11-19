@@ -87,6 +87,7 @@ def test_device_change_window_records_os_qt_and_player(qapp, tmp_path):
     assert dc["qt_signals"] >= 2 and dc["qt_defaults"] == ["amp_pc_a", "amp_pc_b", "amp_pc_a"]
     assert dc["qt_flagged"] == [["amp_pc_a"], ["amp_pc_b"], ["amp_pc_a"]]
     assert dc["switches"] == 2 and dc["state_after"] == "playing"
+    assert dc["player_os_lookup"] == "실패 없음"
     assert dc["verdict"] == "새 기본 장치로 재생 출력을 다시 열었습니다 (2회)."
     assert dc["user_report"]["sound"] == "새 장치로 옮겨 감"
     sources = [e["source"] for e in dc["timeline"]]
