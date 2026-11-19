@@ -303,40 +303,109 @@ def transcribe(y16: np.ndarray, *, model_name: str, language: str, device: str, 
         stop.set()
 
 
+CPU_SLOW_NOTE = ("GPU(CUDA)를 쓸 수 없어 CPU로 인식합니다. GPU보다 여러 배 느립니다 "
+                 "(개발 환경 4코어 CPU에서 4분 36초 곡이 turbo로 약 6분 30초).")
+
+
+def _cuda(torch, fn: str, *args, default=None):
+    """torch.cuda 통계 함수를 안전하게 부른다 (CUDA가 없거나 시험용 대역이면 default)."""
+    try:
+        return getattr(torch.cuda, fn)(*args)
+    except Exception:  # noqa: BLE001
+        return default
+
+
 def _transcribe(y16, report, torch, whisper, choose_device, *, model_name, language, device, download_root, options):
+    """모델 고르기 → 불러오기 → 언어 감지 → 인식 → 빈 구간 다시 듣기. 단계별 시간·메모리를 stats에 남긴다.
+
+    GPU 메모리가 모자랄 때: 사용자가 large-v3·medium을 직접 골랐으면 CPU로 넘기지 않고 멈춘다(수십 분 걸려 멈춘 듯 보임).
+    '자동'이 large-v3를 골랐다가 모자라면 같은 GPU에서 turbo로 바꾼다. 가벼운 모델은 CPU로 넘기고 알린다.
+    """
     actual, note = choose_device(device)
+    auto = model_name in ("", "auto")
     free = _gpu_free_bytes() if actual == "cuda" else None
     name = resolve_model(model_name, actual, free)
-    os.makedirs(download_root, exist_ok=True)
+    notes = [note] if note else []
+    if actual == "cpu" and device in ("auto", "cuda") and not note:
+        notes.append(CPU_SLOW_NOTE)
+    stats: dict = {"requested_model": model_name or "auto", "requested_device": device, "fallbacks": []}
     if actual == "cuda":
-        if free is not None and free < GPU_NEED_GB.get(name, 0) * 2**30:
+        stats["gpu_name"] = _cuda(torch, "get_device_name", 0, default="")
+        info = _cuda(torch, "mem_get_info", default=None)
+        if info:
+            stats["gpu_free_before_bytes"], stats["gpu_total_bytes"] = int(info[0]), int(info[1])
+    stats["torch"] = getattr(torch, "__version__", "")
+    stats["cuda"] = getattr(getattr(torch, "version", None), "cuda", None)
+    os.makedirs(download_root, exist_ok=True)
+    if actual == "cuda" and free is not None and free < GPU_NEED_GB.get(name, 0) * 2**30:
+        if auto and name == "large-v3" and free >= GPU_NEED_GB["turbo"] * 2**30:
+            name = "turbo"
+        elif name in HEAVY_MODELS:
+            raise _oom_model_error(name, free)
+        else:
+            actual = "cpu"
+            notes.append(f"GPU 여유 메모리({free / 2**30:.1f}GB)가 부족해 CPU로 인식합니다.")
+            report(0.0, notes[-1])
+    for n in notes:
+        report(0.0, n)
+
+    while True:
+        try:
+            out = _run_model(y16, report, torch, whisper, name, actual, language, download_root, options, stats)
+            break
+        except Exception as e:  # noqa: BLE001
+            if not (actual == "cuda" and is_oom(e)):
+                raise
+            _cuda(torch, "empty_cache")
+            stats["fallbacks"].append(f"{name}@cuda: out of memory ({stats.get('stage', '')})")
+            if auto and name == "large-v3":
+                name = "turbo"
+                notes.append("GPU 메모리가 모자라 large-v3 대신 turbo로 인식했습니다 (모델 '자동').")
+                report(0.15, notes[-1])
+                continue
             if name in HEAVY_MODELS:
-                raise _oom_model_error(name, free)
-            actual, note = "cpu", f"GPU 여유 메모리({free / 2**30:.1f}GB)가 부족해 CPU로 인식합니다."
-            report(0.0, note)
+                raise _oom_model_error(name) from e
+            actual = "cpu"
+            notes.append("GPU 메모리가 부족해 CPU로 인식합니다 (시간이 더 걸립니다)."
+                         if stats.get("stage") == "load" else "GPU 메모리가 부족해 CPU로 다시 인식했습니다 (시간이 더 걸립니다).")
+            report(0.18, notes[-1])
+    segments, gaps, lang, lang_prob, opts = out
+    report(1.0, "가사 인식 완료")
+    stats.pop("stage", None)
+    return {"model": name, "model_version": getattr(whisper, "__version__", ""), "language": lang,
+            "language_probability": lang_prob, "device": actual, "note": " ".join(notes), "segments": segments,
+            "gaps": [list(g) for g in gaps], "options": {k: v for k, v in opts.items()}, "stats": stats}
+
+
+def _run_model(y16, report, torch, whisper, name, actual, language, download_root, options, stats):
+    import time
+
     if not model_downloaded(name, download_root):
         report(0.0, f"인식 모델({name}) 내려받는 중")
     restore = _patch_progress(lambda f, m: report(0.02 + 0.13 * f, m),
                               lambda n, t: f"인식 모델({name}) 내려받는 중 {n / 2**20:.0f}/{t / 2**20:.0f}MB")
+    stats["stage"] = "load"
     try:
         report(0.15, f"인식 모델({name}) 불러오는 중 ({actual.upper()})")
+        if actual == "cuda":
+            _cuda(torch, "reset_peak_memory_stats")
+        t0 = time.monotonic()
         try:
             model = load_model(name, actual, download_root)
         except Exception as e:  # noqa: BLE001
-            if actual == "cuda" and is_oom(e):
-                torch.cuda.empty_cache()
-                if name in HEAVY_MODELS:
-                    raise _oom_model_error(name) from e
-                actual, note = "cpu", "GPU 메모리가 부족해 CPU로 인식합니다 (시간이 더 걸립니다)."
-                report(0.15, note)
-                model = load_model(name, "cpu", download_root)
-            elif isinstance(e, (OSError, RuntimeError)) and not model_downloaded(name, download_root):
+            if isinstance(e, (OSError, RuntimeError)) and not is_oom(e) and not model_downloaded(name, download_root):
                 raise AsrError("model_download", f"인식 모델({name})을 내려받지 못했습니다: {e}") from e
-            else:
-                raise
+            raise
+        stats["load_s"] = round(time.monotonic() - t0, 2)
+        if actual == "cuda":
+            stats["gpu_peak_load_bytes"] = _cuda(torch, "max_memory_allocated", default=None)
+            stats["gpu_reserved_load_bytes"] = _cuda(torch, "max_memory_reserved", default=None)
+            stats["model_device"] = str(next(iter(model.parameters())).device) if hasattr(model, "parameters") else "cuda"
     finally:
         restore()
 
+    stats["stage"] = "transcribe"
+    t1 = time.monotonic()
     lang_prob = None
     if language in ("", "auto"):
         a, b = busiest_window(y16)
@@ -373,28 +442,22 @@ def _transcribe(y16, report, torch, whisper, choose_device, *, model_name, langu
 
     try:
         out = run(model, actual == "cuda")
-    except Exception as e:  # noqa: BLE001
-        if actual == "cuda" and is_oom(e):
-            del model
-            torch.cuda.empty_cache()
-            if name in HEAVY_MODELS:
-                raise _oom_model_error(name) from e
-            actual, note = "cpu", "GPU 메모리가 부족해 CPU로 다시 인식했습니다 (시간이 더 걸립니다)."
-            report(0.18, note)
-            model = load_model(name, "cpu", download_root)
-            out = run(model, False)
-        else:
-            raise
-    segments = _segments(out)
-    gaps: list[tuple[float, float]] = []
-    if (options or {}).get("gap_fill", True):
-        gaps = find_gaps(frame_activity(y16), segments)
-        if gaps:  # 1차와 다른 디코딩(빔 ↔ 탐욕)으로 그 구간만 다시 인식
-            alt = {"beam_size": None} if opts.get("beam_size") else {"beam_size": 5}
-            out2 = run(model, actual == "cuda", clip=gaps, override=alt, span=(0.85, 0.98),
-                       label=f"빈 구간 {len(gaps)}곳 다시 듣는 중")
-            segments = merge_second_pass(segments, _segments(out2))
-    report(1.0, "가사 인식 완료")
-    return {"model": name, "model_version": getattr(whisper, "__version__", ""), "language": language,
-            "language_probability": lang_prob, "device": actual, "note": note or "", "segments": segments,
-            "gaps": [list(g) for g in gaps], "options": {k: v for k, v in opts.items()}}
+        segments = _segments(out)
+        gaps: list[tuple[float, float]] = []
+        if (options or {}).get("gap_fill", True):
+            gaps = find_gaps(frame_activity(y16), segments)
+            if gaps:  # 1차와 다른 디코딩(빔 ↔ 탐욕)으로 그 구간만 다시 인식
+                alt = {"beam_size": None} if opts.get("beam_size") else {"beam_size": 5}
+                out2 = run(model, actual == "cuda", clip=gaps, override=alt, span=(0.85, 0.98),
+                           label=f"빈 구간 {len(gaps)}곳 다시 듣는 중")
+                segments = merge_second_pass(segments, _segments(out2))
+    finally:
+        if actual == "cuda":
+            stats["gpu_peak_bytes"] = _cuda(torch, "max_memory_allocated", default=None)
+            stats["gpu_reserved_peak_bytes"] = _cuda(torch, "max_memory_reserved", default=None)
+        del model
+    stats["transcribe_s"] = round(time.monotonic() - t1, 2)
+    stats["audio_s"] = round(len(y16) / 16000.0, 2)
+    stats["device"] = actual
+    stats["model"] = name
+    return segments, gaps, language, lang_prob, opts

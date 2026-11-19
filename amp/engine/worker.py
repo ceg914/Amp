@@ -170,6 +170,7 @@ def cmd_asr(args: dict) -> dict:
         seg["level_db"] = float(np.median(db[a:b]) - ref) if a < len(db) else -120.0
         seg["in_no_vocal"] = float(np.mean(blocked[a:b])) if a < len(blocked) else 0.0
     result["versions"] = _versions()
+    result.setdefault("stats", {}).update(_resources())  # 최대 RAM·GPU 메모리 (진단·실행 기록용)
     with open(os.path.join(args["out_dir"], "asr.json"), "w", encoding="utf-8") as f:
         json.dump(result, f, ensure_ascii=False)
     return {"segments": len(result["segments"]), "language": result["language"], "device": result["device"],
@@ -188,7 +189,12 @@ def cmd_emissions(args: dict) -> dict:
     actual, note = choose_device(args.get("device", "auto"))  # torch가 없으면 ImportError → 내려받기 전에 멈춘다
     if not mms.is_downloaded(model_dir):
         mms.download(model_dir, lambda f, m: _progress(0.02 + 0.3 * f, m))
+    import time
+
+    t0 = time.monotonic()
     model = mms.load(model_dir, actual)
+    load_s = time.monotonic() - t0
+    t1 = time.monotonic()
     try:
         lp = mms.emissions(model, y, actual, lambda f, m: _progress(0.35 + 0.63 * f, m))
     except Exception as e:  # noqa: BLE001
@@ -207,7 +213,9 @@ def cmd_emissions(args: dict) -> dict:
     np.savez_compressed(os.path.join(args["out_dir"], "emissions.npz"), logp=lp.astype(np.float16),
                         rms_db=rms_db.astype(np.float32), frame_s=np.float64(mms.HOP / mms.SAMPLE_RATE))
     info = {"model": mms.MODEL_NAME, "license": mms.LICENSE, "device": actual, "note": note or "",
-            "frames": int(len(lp)), "versions": _versions()}
+            "frames": int(len(lp)), "versions": _versions(),
+            "stats": {"load_s": round(load_s, 2), "emissions_s": round(time.monotonic() - t1, 2),
+                      "audio_s": round(len(y) / 16000.0, 2), **_resources()}}
     with open(os.path.join(args["out_dir"], "info.json"), "w", encoding="utf-8") as f:
         json.dump(info, f, ensure_ascii=False)
     _progress(1.0, "정렬 모델 계산 완료")

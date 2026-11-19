@@ -11,3 +11,5 @@ dist/
 htmlcov/
 *.part
 .sonatlas-*.tmp
+gpu_check_reports/
+playback_check_reports/

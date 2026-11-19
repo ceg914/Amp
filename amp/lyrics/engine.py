@@ -160,7 +160,7 @@ class LyricsEngine:
                          lambda f, m: progress(0.9 + 0.1 * f, m), token, req)
         model = {"name": info.get("model", "MMS_FA"), "license": info.get("license", ""),
                  "device": info.get("device", ""), "note": info.get("note", ""), "created": _now(),
-                 "emissions_reused": reused}
+                 "emissions_reused": reused, **({"stats": info["stats"]} if isinstance(info.get("stats"), dict) else {})}
         settings = {"mode": mode, "no_vocal_ranges": [list(r) for r in req.no_vocal_ranges]}
         results = out.get("results") or []
         released = set(out.get("released") or ())
@@ -195,8 +195,11 @@ def recognition_from_raw(raw: dict, req: LyricsRequest | None = None, params: di
                                s.get("no_speech_prob"), s.get("compression_ratio"), tuple(reasons), words))
     segs = review.mark_repeats(segs)
     warnings = (str(raw["note"]),) if raw.get("note") else ()
+    settings = dict(params or {})
+    if isinstance(raw.get("stats"), dict):  # 장치 이름·시간·최대 메모리 (진단용, 결과 판단에는 쓰지 않음)
+        settings["stats"] = dict(raw["stats"])
     return Recognition(str(raw.get("model", "")), str(raw.get("model_version", "")), str(raw.get("language", "")),
-                       raw.get("language_probability"), str(raw.get("device", "")), _now(), dict(params or {}),
+                       raw.get("language_probability"), str(raw.get("device", "")), _now(), settings,
                        req.input_id if req else "", tuple(segs), warnings)
 
 

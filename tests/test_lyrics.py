@@ -652,6 +652,38 @@ def test_light_model_falls_back_to_cpu_and_says_so(monkeypatch, tmp_path):
     assert loads == [("large-v3", "cuda")] and out["model"] == "large-v3"
 
 
+def test_auto_large_v3_out_of_memory_moves_to_turbo_on_gpu_not_cpu(monkeypatch, tmp_path):
+    asr, loads = _stub_asr(monkeypatch, free_gb=7.0, oom_on=())
+    orig = asr.load_model
+
+    def load(name, device, root):  # large-v3만 GPU에서 메모리 부족 (다른 프로그램이 그 사이 VRAM을 씀)
+        if name == "large-v3" and device == "cuda":
+            loads.append((name, device))
+            raise RuntimeError("CUDA out of memory. Tried to allocate 1.00 GiB")
+        return orig(name, device, root)
+
+    monkeypatch.setattr(asr, "load_model", load)
+    out, msgs = _run(asr, "auto", tmp_path)
+    assert loads == [("large-v3", "cuda"), ("turbo", "cuda")] and out["device"] == "cuda" and out["model"] == "turbo"
+    assert "turbo" in out["note"] and any("large-v3 대신 turbo" in m for m in msgs)
+    assert out["stats"]["fallbacks"] and out["stats"]["requested_model"] == "auto"
+    # 직접 large-v3를 골랐다면 바꾸지 않고 멈춘다 (위 시험)
+    asr2, loads2 = _stub_asr(monkeypatch, free_gb=4.0)
+    out2, _ = _run(asr2, "auto", tmp_path)  # 자동 + 여유 4GB → 처음부터 turbo
+    assert loads2 == [("turbo", "cuda")] and out2["model"] == "turbo"
+
+
+def test_cpu_only_pc_says_it_will_be_slow(monkeypatch, tmp_path):
+    asr, loads = _stub_asr(monkeypatch, free_gb=0.0)
+    from amp.engine.dsp import separation
+
+    monkeypatch.setattr(separation, "choose_device", lambda d: ("cpu", ""))
+    out, msgs = _run(asr, "auto", tmp_path)
+    assert loads == [("turbo", "cpu")] and out["device"] == "cpu"
+    assert "CPU로 인식" in out["note"] and "느립니다" in out["note"] and any("느립니다" in m for m in msgs)
+    assert out["stats"]["device"] == "cpu" and "transcribe_s" in out["stats"] and "load_s" in out["stats"]
+
+
 def test_progress_heartbeat_repeats_last_message_with_elapsed_time():
     from amp.lyrics.asr import _Progress
 

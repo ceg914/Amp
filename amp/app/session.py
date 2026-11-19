@@ -535,7 +535,14 @@ class ProjectSession(QObject):
             no_vocal_ranges=tuple(tuple(r) for r in analysis.no_vocal_ranges), use_cache=analysis.use_cache,
             numba_cache_dir=app_data_dir("numba"))
 
-    def run_recognition(self, lyric_settings: dict, analysis: AnalysisSettings) -> TaskHandle | None:
+    @staticmethod
+    def _staged(progress, stage: str):
+        """진행 메시지 앞에 연속 작업 단계('[1/3]')를 붙인다."""
+        if not stage:
+            return progress
+        return lambda f, msg="": progress(f, f"{stage} {msg}" if msg else stage)
+
+    def run_recognition(self, lyric_settings: dict, analysis: AnalysisSettings, stage: str = "") -> TaskHandle | None:
         if self.busy:
             return None
         try:
@@ -546,13 +553,14 @@ class ProjectSession(QObject):
         from amp.lyrics.engine import LyricsEngine
 
         seq = self._seq
-        handle = self._submit("가사 인식", lambda p, t: LyricsEngine().recognize(req, p, t))
+        handle = self._submit(f"{stage} 가사 인식".strip(),
+                              lambda p, t: LyricsEngine().recognize(req, self._staged(p, stage), t))
         self._track_analysis(handle)
         handle.finished.connect(lambda out: seq == self._seq and self.recognitionReady.emit(out[0], out[1]))
         return handle
 
     def run_alignment(self, lyric_settings: dict, analysis: AnalysisSettings, mode: str = "all",
-                      ids: list[str] | None = None) -> TaskHandle | None:
+                      ids: list[str] | None = None, stage: str = "") -> TaskHandle | None:
         if self.busy:
             return None
         state = self.doc.lyrics
@@ -568,9 +576,9 @@ class ProjectSession(QObject):
 
         seq = self._seq
         duration = self.audio.duration if self.audio else None
-        handle = self._submit("가사 시간 정렬",
+        handle = self._submit(f"{stage} 가사 시간 정렬".strip(),
                               lambda p, t: LyricsEngine().align(req, state, mode=mode, ids=ids, duration=duration,
-                                                                progress=p, token=t))
+                                                                progress=self._staged(p, stage), token=t))
         self._track_analysis(handle)
         handle.finished.connect(lambda out: seq == self._seq and self.alignmentReady.emit(out))
         return handle

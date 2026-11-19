@@ -265,3 +265,192 @@ def test_recognition_without_align_after_keeps_estimates_and_says_so(qtbot, wind
     w.session.recognitionReady.emit(rec, False)
     assert not w.session.busy  # 정렬을 시작하지 않았다
     assert "F7" in w.statusBar().currentMessage()
+
+
+# --- STEP 3.5: F6 한 번으로 인식 → 정렬 → 음표 연결 (가짜 모델) ------------------------------------------
+
+def _seg(text, a, b):
+    return {"start": a, "end": b, "text": text, "avg_logprob": -0.2, "no_speech_prob": 0.1, "compression_ratio": 1.0,
+            "activity": 0.9, "words": [{"text": text, "start": a, "end": b, "probability": 0.9}]}
+
+
+class _Blocking(FakeRunner):
+    """정해진 명령에서 취소될 때까지 기다린다 (작업 프로세스가 오래 걸리는 상황)."""
+
+    def __init__(self, *a, block: str, **kw):
+        super().__init__(*a, **kw)
+        self.block = block
+
+    def __call__(self, command, args, progress=None, token=None, numba=None):
+        if command == self.block:
+            self.calls.append(command)
+            import time
+
+            from amp.engine.context import AnalysisCancelled
+
+            while not token.cancelled:
+                time.sleep(0.01)
+            raise AnalysisCancelled("취소")
+        return super().__call__(command, args, progress, token, numba)
+
+
+@pytest.fixture
+def analysed(qtbot, make_window, song, monkeypatch):
+    """분석이 끝난 창과 '미솔라' 가짜 인식·정렬 대역."""
+    from amp.lyrics.model import LyricsState
+
+    monkeypatch.setattr("amp.app.session.TranscriptionPipeline", IdentityPipeline)
+    w = make_window("a")
+    folder = create(qtbot, w, song)
+    w.run_analysis()
+    qtbot.waitUntil(lambda: w.doc.project.analysis is not None and not w.session.busy, timeout=120_000)
+    assert w.save()  # 연속 작업 전 저장된 상태
+    notes = w.doc.score.notes()
+    readings = [s.reading for s in ops.apply_text(LyricsState(), "미솔라").text.syllables]
+    w.lyrics_panel.align_after.setChecked(True)
+    w.lyrics_panel.link_after.setChecked(True)
+
+    def runner(cls=FakeRunner, **kw):
+        r = cls(readings, [n.start for n in notes], 5.0, segments=kw.pop("segments", [_seg("미솔라", 0.0, notes[-1].end)]), **kw)
+        monkeypatch.setattr(engine, "run_worker", r)
+        return r
+
+    return w, folder, notes, runner
+
+
+def test_chain_full_run_shows_stages_saves_and_reopens(qtbot, analysed, make_window):
+    w, folder, notes, runner = analysed
+    fake = runner()
+    labels = []
+    w.session.taskStarted.connect(lambda h, label: labels.append(label))
+    w.lyrics.recognize()
+    qtbot.waitUntil(lambda: w.lyrics.chain is None and not w.session.busy, timeout=60_000)
+    assert fake.calls == ["asr", "emissions", "ctc_align"]  # 앞 단계가 끝난 뒤 다음 단계
+    assert labels == ["[1/3] 가사 인식", "[2/3] 가사 시간 정렬"]
+    info = w.lyrics_panel.align_info.text()
+    assert info.startswith("전체 작업 완료") and "인식" in info and "(CPU)" in info and "프로젝트 저장함" in info
+    ly = w.doc.lyrics
+    ids = [s.id for s in ly.text.syllables]
+    assert all(ly.alignment.timing(i).start_source == "model" for i in ids)
+    assert [ly.alignment.linked_notes(i) for i in ids] == [(n.id,) for n in notes]
+    assert not w.doc.is_dirty and folder.paths.alignment_json.exists()
+    root = str(folder.root)
+    w.doc.mark_saved(w.doc.file_path or "")
+    w.close()
+    w2 = make_window("b")
+    assert w2.open_project(os.path.join(root, "project.json"))
+    qtbot.waitUntil(lambda: w2.session.audio is not None, timeout=20_000)
+    ly2 = w2.doc.lyrics
+    assert [s.id for s in ly2.text.syllables] == ids and ly2.alignment.links == ly.alignment.links
+
+
+def test_chain_cancel_during_recognition_changes_nothing(qtbot, analysed):
+    w, _folder, notes, runner = analysed
+    fake = runner(_Blocking, block="asr")
+    before = (w.doc.lyrics, list(w.doc.score.notes()))
+    w.lyrics.recognize()
+    qtbot.waitUntil(lambda: "asr" in fake.calls, timeout=10_000)
+    w.session.cancel_analysis()
+    qtbot.waitUntil(lambda: not w.session.busy and w.lyrics.chain is None, timeout=20_000)
+    assert (w.doc.lyrics, list(w.doc.score.notes())) == before
+    assert "취소" in w.lyrics_panel.align_info.text() and "F6" in w.lyrics_panel.align_info.text()
+    assert "emissions" not in fake.calls
+
+
+def test_chain_cancel_during_alignment_keeps_text_and_marks_estimates(qtbot, analysed):
+    w, _folder, notes, runner = analysed
+    fake = runner(_Blocking, block="emissions")
+    w.lyrics.recognize()
+    qtbot.waitUntil(lambda: "emissions" in fake.calls, timeout=20_000)
+    w.session.cancel_analysis()
+    qtbot.waitUntil(lambda: not w.session.busy and w.lyrics.chain is None, timeout=20_000)
+    ly = w.doc.lyrics
+    assert [s.text for s in ly.text.syllables] == ["미", "솔", "라"]  # 인식 결과는 남는다
+    assert all(ly.alignment.timing(s.id).start_source in ("asr_word", "estimated") for s in ly.text.syllables)
+    assert not ly.alignment.links  # 추정 시간으로 연결하지 않는다
+    info = w.lyrics_panel.align_info.text()
+    assert "취소" in info and "추정값" in info and "F7" in info
+    assert w.doc.is_dirty  # 끝나지 않은 작업은 저장하지 않는다
+
+
+def test_chain_link_error_keeps_alignment(qtbot, analysed, monkeypatch):
+    w, _folder, _notes, runner = analysed
+    runner()
+
+    def boom(*a, **k):
+        raise RuntimeError("시험용 연결 오류")
+
+    monkeypatch.setattr(linking, "auto_link", boom)
+    w.lyrics.recognize()
+    qtbot.waitUntil(lambda: w.lyrics.chain is None and not w.session.busy, timeout=60_000)
+    ly = w.doc.lyrics
+    assert all(ly.alignment.timing(s.id).start_source == "model" for s in ly.text.syllables)
+    assert not ly.alignment.links
+    info = w.lyrics_panel.align_info.text()
+    assert "음표 연결" in info and "시험용 연결 오류" in info and "음표 자동 연결" in info
+
+
+def test_chain_gpu_out_of_memory_stops_with_cause(qtbot, analysed):
+    from amp.engine.worker_client import WorkerError
+
+    w, _folder, _notes, runner = analysed
+    msg = "GPU 여유 메모리가 4.1GB라 large-v3 모델(약 5GB 필요)을 GPU로 돌릴 수 없습니다. 가사 탭에서 모델을 turbo로 바꿔 다시 실행하세요."
+    runner(fail=("asr", WorkerError("oom_model", msg)))
+    before = w.doc.lyrics
+    w.lyrics.recognize()
+    qtbot.waitUntil(lambda: w.lyrics.chain is None and not w.session.busy, timeout=20_000)
+    assert w.doc.lyrics == before
+    assert any("turbo" in e for e in w.errors)  # 원인과 대체 모델 안내
+    assert "실패" in w.lyrics_panel.align_info.text() and "turbo" in w.lyrics_panel.align_info.text()
+
+
+def test_chain_empty_recognition_keeps_existing_lyrics(qtbot, analysed):
+    w, _folder, _notes, runner = analysed
+    w.lyrics_panel.applyTextRequested.emit("내 가사")
+    before_text = w.doc.lyrics.text
+    fake = runner(segments=[])
+    w.lyrics.recognize()
+    qtbot.waitUntil(lambda: w.lyrics.chain is None and not w.session.busy, timeout=20_000)
+    assert w.doc.lyrics.text == before_text and "emissions" not in fake.calls
+    assert "비어" in w.lyrics_panel.align_info.text()
+
+
+def _answer(monkeypatch, role):
+    from PySide6.QtWidgets import QMessageBox
+
+    def exec_(box):
+        for b in box.buttons():
+            if box.buttonRole(b) == role:
+                b.click()
+                return 0
+        return 0
+
+    monkeypatch.setattr(QMessageBox, "exec", exec_)
+
+
+def test_chain_existing_and_user_edited_lyrics_are_protected(qtbot, analysed, monkeypatch):
+    from PySide6.QtWidgets import QMessageBox
+
+    w, _folder, notes, runner = analysed
+    w.lyrics_panel.applyTextRequested.emit("도 레 미")
+    ids = [s.id for s in w.doc.lyrics.text.syllables]
+    st = ops.set_times(w.doc.lyrics, {ids[0]: (1.0, 1.5)})  # 사용자 수정 시간
+    st = linking.set_links(st, ids[0], [notes[0].id])  # 사용자 연결 (확정)
+    w.doc.push_lyrics(st, "사용자 편집")
+    user_state, user_notes = w.doc.lyrics, list(w.doc.score.notes())
+    fake = runner()
+    _answer(monkeypatch, QMessageBox.ButtonRole.AcceptRole)  # '인식 원본만 보관'
+    w.lyrics.recognize()
+    qtbot.waitUntil(lambda: w.lyrics.chain is None and not w.session.busy, timeout=20_000)
+    assert w.doc.lyrics.text == user_state.text and w.doc.lyrics.alignment == user_state.alignment
+    assert w.doc.lyrics.recognition is not None and "emissions" not in fake.calls
+    # '인식 결과로 바꾸기'를 골라도 실행 취소로 사용자 가사·시간·연결이 그대로 돌아온다. 음표는 바뀌지 않는다
+    _answer(monkeypatch, QMessageBox.ButtonRole.DestructiveRole)
+    w.lyrics.recognize()
+    qtbot.waitUntil(lambda: w.lyrics.chain is None and not w.session.busy, timeout=60_000)
+    assert [s.text for s in w.doc.lyrics.text.syllables] == ["미", "솔", "라"]
+    assert "저장 안 함" in w.lyrics_panel.align_info.text()  # 작업 전에 저장하지 않은 편집이 있었다
+    assert list(w.doc.score.notes()) == user_notes
+    w.doc.undo_stack.undo()
+    w.doc.undo_stack.undo()
+    assert w.doc.lyrics.text == user_state.text and w.doc.lyrics.alignment == user_state.alignment

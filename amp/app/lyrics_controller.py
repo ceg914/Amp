@@ -8,6 +8,8 @@ from __future__ import annotations
 
 import logging
 import os
+import time
+from dataclasses import dataclass, field
 from pathlib import Path
 
 from PySide6.QtCore import QObject, QSettings, QUrl
@@ -39,6 +41,46 @@ def read_text_file(path: str) -> str:
     raise EditError("가사 파일의 문자 인코딩을 알 수 없습니다. UTF-8로 저장해 주세요.")
 
 
+def device_detail(device: str, stats: dict | None) -> str:
+    """'CUDA, NVIDIA GeForce RTX 3070 Ti, VRAM 최대 4.1GB' 처럼 실제로 쓴 장치를 적는다."""
+    parts = [(device or "?").upper()]
+    stats = stats or {}
+    if stats.get("gpu_name"):
+        parts.append(str(stats["gpu_name"]))
+    peak = stats.get("gpu_peak_bytes")
+    if peak is None and stats.get("gpu_peak_mb") is not None:
+        peak = float(stats["gpu_peak_mb"]) * 2**20
+    if peak:
+        parts.append(f"VRAM 최대 {peak / 2**30:.1f}GB")
+    return ", ".join(parts)
+
+
+@dataclass
+class LyricsChain:
+    """F6 한 번으로 이어지는 인식 → 정렬 → 음표 연결의 진행 상태 (단계별 시간·장치)."""
+
+    align_after: bool
+    save_after: bool  # 시작할 때 저장하지 않은 편집이 없었으면 끝난 뒤 프로젝트를 저장한다
+    undo_index: int  # 시작할 때 실행 취소 위치 (끝날 때 이 작업의 변경만 있는지 본다)
+    stage: str = "recognize"
+    pushes: int = 0
+    stage_t0: float = field(default_factory=time.monotonic)
+    times: dict = field(default_factory=dict)
+    devices: dict = field(default_factory=dict)
+
+    def finish_stage(self, stage: str, device: str, stats: dict | None = None) -> None:
+        now = time.monotonic()
+        self.times[stage] = now - self.stage_t0
+        self.devices[stage] = device_detail(device, stats)
+        self.stage_t0 = now
+
+    def describe(self, stage: str) -> str:
+        if stage not in self.times:
+            return "—"
+        dev = self.devices.get(stage) or "?"
+        return f"{self.times[stage]:.0f}초({dev})"
+
+
 class LyricsController(QObject):
     def __init__(self, window) -> None:
         super().__init__(window)
@@ -50,6 +92,7 @@ class LyricsController(QObject):
         self.scene = window.view.roll
         self.settings: QSettings = window.settings
         self.loop: tuple[float, float] | None = None
+        self.chain: LyricsChain | None = None  # F6 연속 작업 (인식 → 정렬 → 연결)
         self._build_actions()
         self._connect()
         self.panel.set_settings({k: self.settings.value(f"lyrics/{k}", d) for k, d in
@@ -202,14 +245,41 @@ class LyricsController(QObject):
         return self.w.inspector.analysis.settings()
 
     def recognize(self) -> None:
+        """F6: 가사 인식. '인식한 뒤 바로 시간 정렬'이 켜져 있으면 정렬 → 음표 연결까지 이어서 한다.
+
+        각 단계는 앞 단계가 끝난 뒤에 시작한다. 어느 단계가 실패하거나 취소되어도 그 전에 반영된 결과와
+        사용자 편집은 그대로 두고, 어디서부터 다시 하면 되는지 알린다.
+        """
         self._save_settings()
-        self.session.run_recognition(self.panel.settings(), self._analysis_settings())
+        if self.session.busy:
+            return
+        align_after = self.panel.align_after.isChecked()
+        chain = LyricsChain(align_after=align_after, save_after=not self.doc.is_dirty,
+                            undo_index=self.doc.undo_stack.index())
+        handle = self.session.run_recognition(self.panel.settings(), self._analysis_settings(),
+                                              stage="[1/3]" if align_after else "")
+        if handle is None:
+            return
+        self.chain = chain
+        self._chain_info("[1/3] 가사 인식 중…" if align_after else "가사 인식 중…")
+        handle.failed.connect(lambda msg, _tb, c=chain: self._chain_stopped(c, "recognize", f"실패했습니다 ({msg})"))
+        handle.cancelled.connect(lambda c=chain: self._chain_stopped(c, "recognize", "취소했습니다"))
 
     def on_recognition(self, rec, reused: bool) -> None:
+        chain = self.chain
+        if chain is not None:
+            chain.finish_stage("recognize", rec.device, (rec.settings or {}).get("stats"))
         state = self.doc.lyrics
         flagged = sum(1 for s in rec.segments if s.review)
         summary = (f"인식 구간 {len(rec.segments)}개, 검토 필요 {flagged}개 · 모델 {rec.model} · 언어 {rec.language}"
                    f" · 장치 {rec.device.upper()}" + (" · 캐시 재사용" if reused else ""))
+        if not any(seg.text.strip() for seg in rec.segments):
+            # 빈 인식 결과로 가사를 지우지 않는다. 인식 원본(빈 것)만 보관한다
+            if self.doc.push_lyrics(lyr_engine.text_from_recognition(state, rec, replace_text=False), "인식 원본 보관"):
+                self._count_push(chain)
+            self._chain_stopped(chain, "recognize", "결과가 비어 있습니다 (보컬이 거의 없거나 '보컬 없는 구간'에 덮였을 수 있습니다)",
+                                error=False)
+            return
         replaced = False
         if state.text.is_empty:
             new = lyr_engine.text_from_recognition(state, rec, replace_text=True)
@@ -228,9 +298,15 @@ class LyricsController(QObject):
                 replaced = self.doc.push_lyrics(lyr_engine.text_from_recognition(state, rec, replace_text=True),
                                                 "자동 인식 결과로 가사 바꾸기")
             elif box.clickedButton() is keep:
-                self.doc.push_lyrics(lyr_engine.text_from_recognition(state, rec, replace_text=False), "인식 원본 보관")
-            else:
+                if self.doc.push_lyrics(lyr_engine.text_from_recognition(state, rec, replace_text=False), "인식 원본 보관"):
+                    self._count_push(chain)
+                self._chain_end(chain, "인식 원본만 보관했습니다. 지금 가사·시간·연결은 그대로입니다.")
                 return
+            else:
+                self._chain_end(chain, "인식 결과를 반영하지 않았습니다. 지금 가사·시간·연결은 그대로입니다.")
+                return
+        if replaced:
+            self._count_push(chain)
         msg = summary
         if rec.warnings:
             msg += " · " + " ".join(rec.warnings)
@@ -239,15 +315,18 @@ class LyricsController(QObject):
         self.w.statusBar().showMessage(msg, 15000)
         if flagged:
             self.panel.filter.setCurrentIndex(self.panel.filter.findData("review"))
-        if replaced:
-            self._align_after_recognition()
+        if replaced and self.panel.align_after.isChecked():
+            self._align_after_recognition(chain)
+        else:
+            self._chain_end(chain, msg)
 
-    def _align_after_recognition(self) -> None:
+    def _align_after_recognition(self, chain: "LyricsChain | None" = None) -> None:
         """인식 결과로 가사를 만든 뒤 정렬까지 잇는다. 인식 작업이 끝났다고 알려진 뒤(busy 해제)에 시작한다."""
         if not self.panel.align_after.isChecked() or self.doc.lyrics.text.is_empty:
+            self._chain_end(chain, "")
             return
         if not self.session.busy:
-            self.align("all")
+            self._start_chain_alignment(chain)
             return
 
         def go(busy: bool) -> None:
@@ -255,9 +334,73 @@ class LyricsController(QObject):
                 return
             self.session.busyChanged.disconnect(go)
             if not self.doc.lyrics.text.is_empty:
-                self.align("all")
+                self._start_chain_alignment(chain)
 
         self.session.busyChanged.connect(go)
+
+    def _start_chain_alignment(self, chain: "LyricsChain | None") -> None:
+        if chain is None:  # 인식 결과를 직접 다시 적용한 경우 등
+            chain = LyricsChain(align_after=True, save_after=False, undo_index=self.doc.undo_stack.index())
+            chain.stage = "recognize"
+            self.chain = chain
+        chain.stage = "align"
+        chain.stage_t0 = time.monotonic()
+        handle = self.session.run_alignment(self.panel.settings(), self._analysis_settings(), "all", None, stage="[2/3]")
+        if handle is None:
+            self._chain_stopped(chain, "align", "을 시작하지 못했습니다")
+            return
+        self._chain_info("[2/3] 시간 정렬 중…")
+        handle.failed.connect(lambda msg, _tb, c=chain: self._chain_stopped(c, "align", f"이 실패했습니다 ({msg})"))
+        handle.cancelled.connect(lambda c=chain: self._chain_stopped(c, "align", "을 취소했습니다"))
+
+    # --- 연속 작업 상태 -------------------------------------------------------------
+
+    def _chain_info(self, text: str) -> None:
+        self.panel.set_align_info(text)
+
+    def _count_push(self, chain: "LyricsChain | None") -> None:
+        if chain is not None:
+            chain.pushes += 1
+
+    def _chain_stopped(self, chain: "LyricsChain | None", stage: str, reason: str, error: bool = True) -> None:
+        """단계가 실패·취소되면 그 전 결과는 두고, 어디서부터 다시 하면 되는지 알린다."""
+        if chain is None or chain is not self.chain:
+            return
+        self.chain = None
+        if stage == "recognize":
+            text = (f"가사 인식이 {reason}. 가사·시간·음표 연결은 바뀌지 않았습니다. 다시 하려면 [가사 인식](F6).")
+        elif stage == "align":
+            text = (f"시간 정렬{reason}. 인식한 가사는 남아 있고, 음절 시간은 인식 모델의 단어 시각을 나눈 추정값입니다"
+                    "(가사 레인의 점선 테두리). 정렬부터 다시 하려면 [전체 정렬](F7).")
+        else:
+            text = (f"음표 연결이 {reason}. 시간 정렬 결과는 반영했습니다. 다시 하려면 [음표 자동 연결].")
+        log.info("가사 연속 작업 멈춤 (%s): %s", stage, reason)
+        self._chain_info(text)
+        self.w.statusBar().showMessage(text, 20000)
+
+    def _chain_end(self, chain: "LyricsChain | None", message: str) -> None:
+        if chain is None or chain is not self.chain:
+            return
+        self.chain = None
+        if message:
+            self._chain_info(message)
+
+    def _chain_done(self, chain: "LyricsChain", aligned: int, linked: int, total: int) -> None:
+        self.chain = None
+        parts = [f"전체 작업 완료 · 인식 {chain.describe('recognize')} · 정렬 {chain.describe('align')}"]
+        if "link" in chain.times:
+            parts.append(f"연결 {chain.times['link']:.1f}초")
+        parts.append(f"음절 {total}개 중 정렬 {aligned}, 연결 {linked}")
+        ours_only = self.doc.undo_stack.index() == chain.undo_index + chain.pushes
+        if chain.save_after and ours_only:
+            parts.append("프로젝트 저장함" if self.w.save() else "저장하지 못함 — Ctrl+S로 다시 저장하세요")
+        else:
+            self.w.autosave.save_now()
+            parts.append("저장 안 함 (작업 전후에 저장하지 않은 다른 편집이 있어 Ctrl+S로 직접 저장하세요. 복구 파일은 써 둠)")
+        text = " · ".join(parts)
+        log.info("가사 연속 작업: %s", text)
+        self._chain_info(text)
+        self.w.statusBar().showMessage(text, 20000)
 
     def apply_recognition(self) -> None:
         rec = self.doc.lyrics.recognition
@@ -270,7 +413,7 @@ class LyricsController(QObject):
                 return
         if self.doc.push_lyrics(lyr_engine.text_from_recognition(self.doc.lyrics, rec, replace_text=True),
                                 "자동 인식 결과로 가사 만들기"):
-            self._align_after_recognition()
+            self._align_after_recognition(None)
 
     # --- 텍스트 ---------------------------------------------------------------
 
@@ -337,12 +480,26 @@ class LyricsController(QObject):
         self.session.run_alignment(self.panel.settings(), self._analysis_settings(), mode, ids)
 
     def on_alignment(self, out) -> None:
+        chain = self.chain if self.chain is not None and self.chain.stage == "align" else None
+        if chain is not None:
+            chain.finish_stage("align", str(out.info.get("device", "")), out.info.get("stats"))
         state = self.doc.lyrics
         duration = self.session.audio.duration if self.session.audio else None
         new, aligned, failed = lyr_engine.apply_results(state, out.results, out.targets, out.info, out.settings, duration)
+        link_error = None
         if self.panel.link_after.isChecked() and len(self.doc.score) and aligned:
-            new = linking.auto_link(new, self.doc.score.notes(), only=aligned)
-        self.doc.push_lyrics(new, "가사 시간 정렬")
+            if chain is not None:
+                self._chain_info("[3/3] 음표 연결 중…")
+            t0 = time.monotonic()
+            try:
+                new = linking.auto_link(new, self.doc.score.notes(), only=aligned)
+            except Exception as e:  # noqa: BLE001 - 연결 실패가 정렬 결과 반영을 막지 않게
+                log.exception("음표 자동 연결 실패")
+                link_error = str(e) or type(e).__name__
+            if chain is not None:
+                chain.times["link"] = time.monotonic() - t0
+        if self.doc.push_lyrics(new, "가사 시간 정렬"):
+            self._count_push(chain)
         low = sum(1 for sid in aligned if (new.alignment.timing(sid).confidence or 0) < 0.1)
         msg = f"정렬 {len(aligned)}음절 · 실패 {len(failed)}음절 · 신뢰도 낮음 {low}음절 · 장치 {out.info.get('device', '').upper()}"
         if out.reused:
@@ -352,6 +509,15 @@ class LyricsController(QObject):
         self.w.statusBar().showMessage(msg, 15000)
         if failed:
             self.panel.filter.setCurrentIndex(self.panel.filter.findData("unaligned"))
+        if link_error is not None:
+            if chain is None:
+                chain = LyricsChain(align_after=True, save_after=False, undo_index=0)
+                self.chain = chain
+            self._chain_stopped(chain, "link", f"실패했습니다 ({link_error})")
+        elif chain is not None:
+            ly = self.doc.lyrics
+            total = len(ly.text.syllables)
+            self._chain_done(chain, total - len(ly.unaligned()), total - len(ly.unlinked()), total)
 
     def auto_link(self) -> None:
         if not len(self.doc.score):
