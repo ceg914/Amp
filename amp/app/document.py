@@ -16,7 +16,7 @@ from amp.core import editing
 from amp.core.errors import EditError
 from amp.core.model import AnalysisResult, AudioRef, Note, Project, Score
 from amp.core.tempo import TempoMap
-from amp.lyrics import linking
+from amp.lyrics import linking, pronunciation
 from amp.lyrics.model import LyricsState
 
 
@@ -27,7 +27,7 @@ def _adopt_sample_lyrics(current: LyricsState, result: AnalysisResult) -> Lyrics
     from amp.lyrics import io as lyrics_io
     from amp.storage.serialization import lyrics_to_dict
 
-    return lyrics_io.from_legacy(lyrics_to_dict(result.lyrics), dict(result.lyric_links))
+    return pronunciation.sync(lyrics_io.from_legacy(lyrics_to_dict(result.lyrics), dict(result.lyric_links)))
 
 
 class ReplaceNotesCommand(QUndoCommand):
@@ -233,9 +233,15 @@ class ProjectDocument(QObject):
         self.lyricsChanged.emit()
 
     def push_lyrics(self, new: LyricsState, text: str) -> bool:
-        """가사 편집 결과를 실행 취소 기록에 넣는다. 바뀐 것이 없으면 넣지 않는다."""
+        """가사 편집 결과를 실행 취소 기록에 넣는다. 바뀐 것이 없으면 넣지 않는다.
+
+        텍스트가 바뀌었으면 발음도 같은 명령 안에서 맞춘다(자동 발음은 새로, 사용자 발음은 지키고 재검토 표시).
+        """
         old = self.project.lyrics
-        if new is old or (new.text == old.text and new.alignment == old.alignment and new.recognition == old.recognition):
+        if new is not old and new.text != old.text:
+            new = pronunciation.sync(new)
+        if new is old or (new.text == old.text and new.alignment == old.alignment and new.recognition == old.recognition
+                          and new.pronunciation == old.pronunciation):
             return False
         self.undo_stack.push(SetLyricsCommand(self, old, new, text))
         return True

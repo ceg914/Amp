@@ -18,7 +18,7 @@ TEMPO = "sonatlas.tempo"
 LYRICS = "sonatlas.lyrics"
 ALIGNMENT = "sonatlas.alignment"
 
-CURRENT = {PROJECT: 1, PITCH: 1, NOTES: 2, TEMPO: 1, LYRICS: 1, ALIGNMENT: 2}
+CURRENT = {PROJECT: 1, PITCH: 1, NOTES: 2, TEMPO: 1, LYRICS: 2, ALIGNMENT: 3}
 
 LABELS = {PROJECT: "프로젝트 파일", PITCH: "피치 분석 파일", NOTES: "음표 파일", TEMPO: "템포 파일",
           LYRICS: "가사 파일", ALIGNMENT: "가사 정렬 파일"}
@@ -62,10 +62,22 @@ def _alignment_v1_to_v2(d: dict) -> dict:
     return d
 
 
+def _lyrics_v1_to_v2(d: dict) -> dict:
+    """STEP 4: 음절별 발음(pronunciation)이 생겼다. v1에는 발음이 없으므로 그대로 두고, 여는 쪽이 자동 발음을 만든다."""
+    return d
+
+
+def _alignment_v2_to_v3(d: dict) -> dict:
+    """STEP 4: 음절마다 사용자가 정한 멜리스마 판정(melisma)이 생겼다. v2에는 없으므로 값은 바꾸지 않는다."""
+    return d
+
+
 # 종류 → {이전 버전: (dict → dict)}
 MIGRATIONS: dict[str, dict[int, Callable[[dict], dict]]] = {k: {} for k in CURRENT}
 MIGRATIONS[NOTES][1] = _notes_v1_to_v2
 MIGRATIONS[ALIGNMENT][1] = _alignment_v1_to_v2
+MIGRATIONS[LYRICS][1] = _lyrics_v1_to_v2
+MIGRATIONS[ALIGNMENT][2] = _alignment_v2_to_v3
 
 
 def stamp(kind: str, body: dict) -> dict:

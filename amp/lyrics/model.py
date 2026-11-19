@@ -135,6 +135,25 @@ class NoteLink:
     role: str = ""
 
 
+MELISMA_DECISIONS = ("melisma", "not_melisma")
+
+
+@dataclass(frozen=True)
+class MelismaDecision:
+    """사용자가 정한 멜리스마 판정 (STEP 4). 자동 판정은 저장하지 않고 음표·연결·피치에서 매번 계산한다.
+
+    음표 재검출·나누기·합치기로 음표 id가 바뀌면 연결과 같은 규칙으로 새 음표에 옮기고, 옮길 곳이 없거나 애매하면
+    ``needs_review`` 를 켠다(판정 자체는 지우지 않는다).
+    """
+
+    kind: str  # melisma / not_melisma
+    note_ids: tuple[str, ...] = ()  # 멜리스마 음표(시간 순). not_melisma면 비어 있다
+    needs_review: bool = False
+    reason: str = ""  # 재확인이 필요한 이유
+    detector_version: str = ""  # 정할 때의 자동 판정기 버전
+    decided: str = ""  # ISO 시각
+
+
 @dataclass(frozen=True)
 class AsrWord:
     text: str
@@ -182,6 +201,7 @@ class Alignment:
     links: Mapping[str, tuple[NoteLink, ...]] = field(default_factory=dict)
     model: dict = field(default_factory=dict)  # 마지막 자동 정렬 모델 (name, version, device, created)
     settings: dict = field(default_factory=dict)
+    melisma: Mapping[str, MelismaDecision] = field(default_factory=dict)  # 음절 id → 사용자 멜리스마 판정 (STEP 4)
 
     def timing(self, sid: str) -> SyllableTiming:
         return self.timings.get(sid) or SyllableTiming()
@@ -219,7 +239,53 @@ class Alignment:
     def restricted_to(self, syllable_ids: Iterable[str]) -> "Alignment":
         keep = set(syllable_ids)
         return replace(self, timings={k: v for k, v in self.timings.items() if k in keep},
-                       links={k: v for k, v in self.links.items() if k in keep})
+                       links={k: v for k, v in self.links.items() if k in keep},
+                       melisma={k: v for k, v in self.melisma.items() if k in keep})
+
+    def with_melisma(self, updates: Mapping[str, MelismaDecision | None]) -> "Alignment":
+        m = dict(self.melisma)
+        for sid, v in updates.items():
+            if v is None:
+                m.pop(sid, None)
+            else:
+                m[sid] = v
+        return replace(self, melisma=m)
+
+
+PRON_SOURCES = ("generated", "user", "imported")
+PRON_STATUSES = ("valid", "uncertain", "unavailable")
+
+
+@dataclass(frozen=True)
+class PronEntry:
+    """음절 하나의 발음. 가사 텍스트에서 추정한 값이며 실제 가수의 발음을 들은 것이 아니다.
+
+    ``text`` 는 발음 표기(한국어: 표준 발음 한글, 일본어: 가타카나). 원문 음절 하나에 발음 음절이 여러 개일 수도(숫자 '12' → 십이),
+    없을 수도(앞 음절과 합쳐 발음: 사용자가 빈 값으로 정함) 있다. 원문 음절과 발음 단위의 대응은 이 항목이 음절 id에 붙어 있는 것으로 관리한다.
+    ``ipa`` 는 국제음성기호. 만들 수 없으면 ""이며 로마자를 대신 넣지 않는다.
+    """
+
+    syllable_id: str
+    original_text: str  # 만들거나 고칠 때의 원문 음절 (원문이 바뀌었는지 가린다)
+    text: str
+    ipa: str
+    language: str = ""
+    source: str = "generated"  # generated / user / imported
+    status: str = "valid"  # valid / uncertain / unavailable
+    user_edited: bool = False
+    model: str = ""
+    version: str = ""
+    rules: tuple[str, ...] = ()  # 적용한 발음 규칙
+    notes: tuple[str, ...] = ()  # 불확실하거나 변환하지 못한 이유
+    stale: bool = False  # 원문이나 앞뒤 문맥이 바뀌어 사용자 발음을 다시 확인해야 함
+    auto_text: str = ""  # 지금 원문에서 자동으로 만든 발음 (사용자 값과 비교·되돌리기용)
+    auto_ipa: str = ""
+    ipa_edited: bool = False  # 사용자가 IPA도 직접 고쳤다 (아니면 발음 표기에서 다시 만든다)
+
+    @property
+    def units(self) -> int:
+        """발음 음절(한글 음절·가나 박) 수."""
+        return sum(1 for c in self.text if 0xAC00 <= ord(c) <= 0xD7A3 or 0x3041 <= ord(c) <= 0x30FF)
 
 
 @dataclass(frozen=True)
@@ -238,6 +304,7 @@ class LyricsState:
     alignment: Alignment = field(default_factory=Alignment)
     recognition: Recognition | None = None
     history: tuple[HistoryEntry, ...] = ()
+    pronunciation: Mapping[str, PronEntry] = field(default_factory=dict)  # 음절 id → 발음 (STEP 4)
 
     @property
     def is_empty(self) -> bool:

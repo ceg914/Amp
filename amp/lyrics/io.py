@@ -11,6 +11,7 @@ from __future__ import annotations
 from typing import Any
 
 from amp.lyrics.model import (
+    MELISMA_DECISIONS,
     Alignment,
     AsrSegment,
     AsrWord,
@@ -20,7 +21,9 @@ from amp.lyrics.model import (
     LyricsText,
     LyricSyllable,
     LyricWord,
+    MelismaDecision,
     NoteLink,
+    PronEntry,
     Recognition,
     SyllableTiming,
     finite_or_none,
@@ -142,11 +145,55 @@ def recognition_from_dict(d: dict, warnings: list[str]) -> Recognition | None:
                        tuple(str(w) for w in d.get("warnings") or ()))
 
 
+def pronunciation_to_dict(state: LyricsState) -> dict:
+    """발음 (STEP 4). 가사 순서대로 음절마다. 텍스트에서 추정한 값임을 note로 남긴다."""
+    from amp.lyrics import pronunciation as pron
+
+    rows = []
+    for s in state.text.syllables:
+        e = state.pronunciation.get(s.id)
+        if e is None:
+            continue
+        rows.append({
+            "syllable_id": e.syllable_id, "original_text": e.original_text, "pronunciation_text": e.text, "ipa": e.ipa,
+            "language": e.language, "pronunciation_source": e.source, "pronunciation_status": e.status,
+            "is_user_edited": e.user_edited, "conversion_model": e.model, "conversion_version": e.version,
+            "rules": list(e.rules), "notes": list(e.notes), "needs_review": e.stale,
+            "generated_text": e.auto_text, "generated_ipa": e.auto_ipa, "ipa_user_edited": e.ipa_edited,
+        })
+    return {"converter": pron.CONVERTER, "version": pron.VERSION,
+            "note": "가사 텍스트에서 규칙으로 추정한 발음입니다. 가수의 실제 발음을 인식한 값이 아닙니다.",
+            "syllables": rows}
+
+
+def pronunciation_from_dict(d: dict | None, known: set[str], warnings: list[str]) -> dict[str, PronEntry]:
+    out: dict[str, PronEntry] = {}
+    for row in (d or {}).get("syllables") or ():
+        try:
+            sid = str(row["syllable_id"])
+            if sid not in known:
+                continue  # 없는 음절의 발음은 버린다
+            status = str(row.get("pronunciation_status", "valid"))
+            source = str(row.get("pronunciation_source", "generated"))
+            out[sid] = PronEntry(
+                sid, str(row.get("original_text", "")), str(row.get("pronunciation_text", "")), str(row.get("ipa", "")),
+                str(row.get("language", "")), source if source in ("generated", "user", "imported") else "imported",
+                status if status in ("valid", "uncertain", "unavailable") else "uncertain",
+                bool(row.get("is_user_edited", False)), str(row.get("conversion_model", "")),
+                str(row.get("conversion_version", "")), tuple(str(x) for x in row.get("rules") or ()),
+                tuple(str(x) for x in row.get("notes") or ()), bool(row.get("needs_review", False)),
+                str(row.get("generated_text", "")), str(row.get("generated_ipa", "")), bool(row.get("ipa_user_edited", False)))
+        except (KeyError, TypeError, ValueError) as e:
+            warnings.append(f"lyrics.json의 발음 하나를 읽지 못했습니다: {e}")
+    return out
+
+
 def lyrics_to_dict(state: LyricsState) -> dict:
     body = text_to_dict(state.text)
     body["recognition"] = recognition_to_dict(state.recognition) if state.recognition else None
     body["history"] = [{"time": h.time, "action": h.action, "detail": h.detail} for h in state.history]
     body["stats"] = {"lines": len(state.text.lines), "syllables": len(state.text.syllables)}
+    body["pronunciation"] = pronunciation_to_dict(state)
     return body
 
 
@@ -158,9 +205,10 @@ def alignment_to_dict(state: LyricsState) -> dict:
     for s in state.text.syllables:  # 가사 순서대로. 시간도 연결도 없는 음절은 적지 않는다
         t = al.timing(s.id)
         links = al.links.get(s.id, ())
-        if not t.aligned and not links and t == SyllableTiming():
+        mel = al.melisma.get(s.id)
+        if not t.aligned and not links and t == SyllableTiming() and mel is None:
             continue
-        rows.append({
+        row = {
             "syllable_id": s.id,
             "start": _num(t.start), "end": _num(t.end), "confidence": _num(t.confidence),
             "start_source": t.start_source, "end_source": t.end_source,
@@ -168,7 +216,12 @@ def alignment_to_dict(state: LyricsState) -> dict:
             "linked_note_ids": [lk.note_id for lk in links],
             "links": [{"note_id": lk.note_id, "confidence": _num(lk.confidence), "source": lk.source,
                        "confirmed": lk.confirmed, **({"role": lk.role} if lk.role else {})} for lk in links],
-        })
+        }
+        if mel is not None:  # 사용자가 정한 멜리스마 판정만 저장한다 (자동 판정은 매번 계산)
+            row["melisma"] = {"kind": mel.kind, "note_ids": list(mel.note_ids), "source": "user", "is_user_confirmed": True,
+                              "needs_review": mel.needs_review, "reason": mel.reason,
+                              "detector_version": mel.detector_version, "decided": mel.decided}
+        rows.append(row)
     total = len(state.text.syllables)
     aligned = total - len(state.unaligned())
     linked = total - len(state.unlinked())
@@ -191,6 +244,7 @@ def _role(x) -> str:
 def alignment_from_dict(d: dict, warnings: list[str]) -> Alignment:
     timings: dict[str, SyllableTiming] = {}
     links: dict[str, tuple[NoteLink, ...]] = {}
+    melisma: dict[str, MelismaDecision] = {}
     for row in d.get("syllables") or ():
         try:
             sid = str(row["syllable_id"])
@@ -210,9 +264,16 @@ def alignment_from_dict(d: dict, warnings: list[str]) -> Alignment:
                 lk = tuple(NoteLink(str(n)) for n in row["linked_note_ids"])
             if lk:
                 links[sid] = lk
+            m = row.get("melisma")
+            if isinstance(m, dict) and m.get("kind") in MELISMA_DECISIONS:
+                melisma[sid] = MelismaDecision(str(m["kind"]), tuple(str(x) for x in m.get("note_ids") or ()),
+                                               bool(m.get("needs_review", False)), str(m.get("reason", "")),
+                                               str(m.get("detector_version", "")), str(m.get("decided", "")))
+            elif m is not None:
+                warnings.append(f"alignment.json의 멜리스마 판정 하나를 알 수 없는 형식이라 건너뛰었습니다: {sid}")
         except (KeyError, TypeError, ValueError) as e:
             warnings.append(f"alignment.json의 음절 하나를 읽지 못했습니다: {e}")
-    return Alignment(timings, links, dict(d.get("model") or {}), dict(d.get("settings") or {}))
+    return Alignment(timings, links, dict(d.get("model") or {}), dict(d.get("settings") or {}), melisma)
 
 
 def state_from_dicts(lyrics: dict | None, alignment: dict | None, warnings: list[str]) -> LyricsState:
@@ -223,7 +284,8 @@ def state_from_dicts(lyrics: dict | None, alignment: dict | None, warnings: list
     hist = tuple(HistoryEntry(str(h.get("time", "")), str(h.get("action", "")), str(h.get("detail", "")))
                  for h in lyrics.get("history") or () if isinstance(h, dict))
     al = alignment_from_dict(alignment or {}, warnings)
-    return LyricsState(text, al, rec, hist)
+    pron = pronunciation_from_dict(lyrics.get("pronunciation"), set(text.order), warnings)
+    return LyricsState(text, al, rec, hist, pron)
 
 
 # --- STEP 1 형식(notes.json 안의 lyrics + 음표 syllable_id) 옮기기 ---------------------

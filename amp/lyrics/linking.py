@@ -229,6 +229,29 @@ def times_from_links(state: LyricsState, sids: Iterable[str], notes_by_id: dict[
 
 
 def reconcile(state: LyricsState, removed: Sequence[Note], added: Sequence[Note]) -> LyricsState:
+    """음표 교체 뒤 연결(아래 ``_reconcile_links``)과 사용자 멜리스마 판정의 음표 id를 함께 옮긴다."""
+    return _reconcile_melisma(_reconcile_links(state, removed, added), removed, added)
+
+
+def _reconcile_melisma(state: LyricsState, removed: Sequence[Note], added: Sequence[Note]) -> LyricsState:
+    decisions = state.alignment.melisma
+    if not decisions:
+        return state
+    added_ids = {n.id for n in added}
+    gone = {n.id for n in removed if n.id not in added_ids}
+    used = {n for d in decisions.values() for n in d.note_ids if n in gone}
+    if not used:
+        return state
+    from amp.lyrics import vocal
+
+    added_sorted = sorted(added, key=lambda n: n.start)
+    old = {n.id: n for n in removed}
+    mapping = {nid: [a.id for a in added_sorted if _overlap(a.start, a.end, old[nid].start, old[nid].end) > 1e-6]
+               for nid in used}
+    return vocal.remap_decisions(state, mapping, gone)
+
+
+def _reconcile_links(state: LyricsState, removed: Sequence[Note], added: Sequence[Note]) -> LyricsState:
     """음표 교체(나누기·합치기·지우기·재분석) 뒤 연결을 다시 잇는다. 음절 텍스트·시간은 바꾸지 않는다.
 
     사라진 음표에 걸린 연결은 그 음표와 시간이 겹치는 새 음표로 옮긴다. 음절 시간이 있으면 음절과도 겹치는
@@ -298,9 +321,14 @@ def prune(state: LyricsState, note_ids: Iterable[str]) -> tuple[LyricsState, int
         if len(keep) != len(links):
             dropped += len(links) - len(keep)
             updates[sid] = keep
-    if not updates:
+    mel = {}
+    for sid, d in al.melisma.items():
+        keep = tuple(n for n in d.note_ids if n in present)
+        if len(keep) != len(d.note_ids):
+            mel[sid] = replace(d, note_ids=keep, needs_review=True, reason="파일에 없는 음표를 가리켜 멜리스마 음표를 다시 확인해야 합니다.")
+    if not updates and not mel:
         return state, 0
-    return replace(state, alignment=al.with_links(updates)), dropped
+    return replace(state, alignment=al.with_links(updates).with_melisma(mel)), dropped
 
 
 def relation_kind(state: LyricsState, sid: str) -> str:

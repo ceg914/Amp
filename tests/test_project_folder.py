@@ -379,7 +379,7 @@ def test_step3_alignment_v1_is_backed_up_before_upgrade(wav_src, tmp_path):
     project.lyrics = st
     folder.save(project)
     ali = json.loads(folder.paths.alignment_json.read_text(encoding="utf-8"))
-    assert ali["schema_version"] == 2
+    assert ali["schema_version"] == 3  # STEP 4
     ali["schema_version"] = 1  # STEP 3이 쓴 파일처럼 (역할 없음)
     for row in ali["syllables"]:
         for lk in row["links"]:

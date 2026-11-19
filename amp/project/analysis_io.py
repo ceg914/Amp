@@ -19,7 +19,7 @@ from amp.core.fileio import atomic_write_json, read_json_with_backup
 from amp.core.model import AnalysisResult, ModelInfo, Note, PitchCurve, Project, Score
 from amp.core.tempo import TempoMap
 from amp.lyrics import io as lyrics_io
-from amp.lyrics import linking
+from amp.lyrics import linking, pronunciation
 from amp.lyrics import ops as lyrics_ops
 from amp.lyrics.model import LyricsState
 from amp.project import schema
@@ -189,6 +189,10 @@ def load_lyrics_files(paths: ProjectPaths, report: LoadReport, note_ids, duratio
     state, dropped = linking.prune(state, note_ids)
     if dropped:
         w2.append(f"없는 음표를 가리키던 가사 연결 {dropped}개를 지웠습니다.")
+    try:  # 발음이 없거나(이전 형식) 변환 규칙 버전이 바뀐 자동 발음은 메모리에서 다시 만든다. 사용자 발음은 그대로
+        state = pronunciation.sync(state)
+    except Exception as e:  # noqa: BLE001 - 발음 변환이 실패해도 가사는 연다
+        w2.append(f"발음을 만들지 못했습니다(가사는 그대로 엽니다): {e}")
     report.warnings.extend(warnings + w2)
     return state
 

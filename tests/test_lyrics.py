@@ -841,7 +841,7 @@ def test_alignment_v2_saves_roles_and_reads_v1(tmp_path):
     st, ids = _timed("가", [(1.0, 1.6)])
     st = linking.auto_link(st, [note("a", 1.0, 1.12, 62), note("b", 1.12, 1.6, 64)])
     d = schema.stamp(schema.ALIGNMENT, io.alignment_to_dict(st))
-    assert d["schema_version"] == 2
+    assert d["schema_version"] == 3  # STEP 4: 사용자 멜리스마 판정이 생겨 v3
     row = d["syllables"][0]
     assert row["links"][0]["role"] == "approach" and "role" not in row["links"][1]
     w: list[str] = []
@@ -851,7 +851,7 @@ def test_alignment_v2_saves_roles_and_reads_v1(tmp_path):
     v1 = dict(d, schema_version=1)
     v1["syllables"] = [dict(r, links=[{k: v for k, v in x.items() if k != "role"} for x in r["links"]]) for r in d["syllables"]]
     up, migrated = schema.migrate(schema.ALIGNMENT, v1)
-    assert migrated and up["schema_version"] == 2
+    assert migrated and up["schema_version"] == 3  # v1 → v2 → v3
     assert all(lk.role == "" for lk in io.alignment_from_dict(up, w).links[ids[0]])
     # 모르는 역할은 보통 연결로 읽는다
     odd = json.loads(json.dumps(d))
@@ -861,7 +861,7 @@ def test_alignment_v2_saves_roles_and_reads_v1(tmp_path):
     from amp.core.errors import ProjectFormatError
 
     with pytest.raises(ProjectFormatError):
-        schema.migrate(schema.ALIGNMENT, dict(d, schema_version=3))
+        schema.migrate(schema.ALIGNMENT, dict(d, schema_version=schema.CURRENT[schema.ALIGNMENT] + 1))
 
 
 # --- Windows 명령줄 한도 (사용자 보고: [WinError 206] 파일 이름이나 확장명이 너무 깁니다) ---------------------------
