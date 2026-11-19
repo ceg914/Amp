@@ -255,7 +255,7 @@ python scripts/validate_audio.py --self-check
 gpu_check.bat --audio "%USERPROFILE%\Documents\SONATLAS Projects\노래 이름\stems\vocals.wav"
 ```
 
-재생 경고 반복 점검 (결과: `playback_check_reports\…\playback_check.md`, 20초 동안 직접 출력 장치를 바꿔 보려면 `--device-change 20`):
+재생 경고 반복 점검 (결과: `playback_check_reports\…\playback_check.md`, 20초 동안 직접 출력 장치를 바꿔 보려면 `--device-change 20`을 주고 그동안 Windows 소리 설정에서 출력 장치를 바꿨다가 되돌립니다):
 
 ```bash
 playback_check.bat --rounds 3 --device-change 20
@@ -283,7 +283,8 @@ python scripts/compare_runs.py "SONATLAS Projects\노래 이름" --list
   음절 끝은 추정값이고, 영어·일본어 실제 곡과 Windows·GPU 실행은 확인하지 못했습니다. 자세한 내용은 STEP_3_IMPLEMENTATION_REPORT.md.
 - STEP 3.5: 끌어올림 합치기·접근음 연결로 두 곡의 가사 글자 위치 정확도 0.853→0.904, 0.883→0.982(두 곡은 규칙을 정할 때도 본 곡이라 독립 검증 아님).
   사용자 Windows PC(RTX 3070 Ti 8GB)에서 Whisper large-v3·turbo와 MMS 정렬이 GPU로 돌고, 취소 뒤 GPU 메모리가 돌아오는 것을 확인했습니다
-  (large-v3: 60초 소리 인식 18.7초, VRAM 최대 3.4GB). Windows 재생 경고 해결 여부는 `playback_check.bat` 결과가 필요합니다. 자세한 내용은 STEP_3_5_VALIDATION_REPORT.md.
+  (large-v3: 60초 소리 인식 18.7초, VRAM 최대 3.4GB). 같은 PC에서 `playback_check.bat` 3회(84단계) 동안 재생 장치 경고 0을 확인했습니다.
+  Windows에서 출력 장치를 바꿀 때의 동작은 아직 확인하지 못했습니다. 자세한 내용은 STEP_3_5_VALIDATION_REPORT.md.
 
 ## 문제 해결
 

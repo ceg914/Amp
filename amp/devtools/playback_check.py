@@ -132,8 +132,9 @@ def run(rounds: int, audio_path: str | None, device_change_s: float, out_root: P
     if device_change_s > 0:
         player.set_audio(audio)
         player.play()
-        print(f"\n지금 {device_change_s:.0f}초 안에 출력 장치를 바꿔 보세요 (헤드폰 꽂기·빼기, 또는 Windows 소리 설정에서 "
-              "기본 출력 장치 바꾸기). 소리가 새 장치로 이어지는지 귀로 확인하세요.", flush=True)
+        print(f"\n지금 {device_change_s:.0f}초 안에 출력 장치를 바꿔 보세요 (Windows 소리 설정에서 "
+              "출력 장치를 다른 것으로 바꿨다가 되돌리기. USB 사운드카드의 헤드폰 단자는 꽂아도 장치가 바뀌지 않을 수 있음). "
+              "소리가 새 장치로 이어지는지 귀로 확인하세요.", flush=True)
         rec.step = "출력 장치 바꾸기"
         before = player.device_switches
         t0 = time.monotonic()
