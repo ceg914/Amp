@@ -166,7 +166,7 @@ def bar_beat(tick: int, beats_per_bar: int, beat_unit: int = 4) -> str:
 
 
 def first_note_info(notes: list[ExportNote], tm, beats_per_bar: int, beat_unit: int = 4) -> str | None:
-    """첫 음 위치. 음원 0초 = 0틱으로 내보내므로, 받는 프로그램이 앞쪽 빈 마디를 없애면 이만큼 당겨진다."""
+    """첫 음 위치. 음원 0초 = 0틱으로 내보내므로, 받는 프로그램에서 위치가 원곡과 다르면 이 마디를 기준으로 맞춘다."""
     if not notes:
         return None
     first = min(notes, key=lambda n: n.start)
