@@ -47,6 +47,7 @@ from amp.app.dialogs import (
 from amp.app.document import ProjectDocument
 from amp.app.compare_controller import CompareController
 from amp.app.export_controller import ExportController
+from amp.app.model_compare_controller import ModelCompareController
 from amp.app.listening_controller import ListeningController
 from amp.app.review_controller import ReviewController
 from amp.app.lyrics_controller import LyricsController
@@ -121,6 +122,16 @@ HELP_TEXT = """<h3>조작 방법</h3>
 <li>보기 &gt; 파형·스펙트로그램: 숨기기·파형만·스펙트로그램만·둘 다·스펙트로그램 + 피치 곡선. 아래 가장자리를 끌어 높이 조절.
 트랙 패널에서 고른 트랙(원본·보컬·반주)을 보여 줍니다.</li>
 </ul>
+<h3>보컬 분리 모델 비교 (STEP 5, 분석 &gt; 모델 비교 모드 <b>Ctrl+Shift+M</b>)</h3>
+<ul>
+<li>분석 &gt; 분리 모델 비교 실행: htdemucs·Mel-Band RoFormer를 하나씩 차례로 분리하고 같은 설정으로 채보합니다.
+결과는 모델별로 stems/models/에 따로 남고, 같은 모델·설정이면 다시 계산하지 않습니다. GPU 메모리가 부족하면 CPU로 바꿀지 묻습니다.</li>
+<li>A/B 전환 <b>Ctrl+B</b>: 재생 위치·반복 구간·속도를 유지한 채 짧게 크로스페이드합니다. '청취용 음량 맞춤'은 재생 음량만 바꿉니다.</li>
+<li>스펙트로그램: A만·B만·좌우(가르는 선을 끌어 옮김)·위아래·차이. 두 쪽 모두 같은 dB 범위를 씁니다.</li>
+<li>피아노 롤: A 음표 = 바이올렛 점선(행 위쪽), B 음표 = 민트 점점선(행 아래쪽). 비교용 그림이라 편집되지 않습니다.</li>
+<li>'모델 차이' 탭과 검토 탭의 '모델 비교' 항목은 차이만 보여 줍니다. 정답 채보가 없으므로 어느 쪽이 정확하다고 판정하지 않습니다.</li>
+<li>[A/B를 분석에 사용…]: 바뀔 항목을 먼저 보여 주고, 사용자 편집은 '수정 유지'로 지킵니다. 다른 모델 결과 파일은 지우지 않습니다.</li>
+</ul>
 <h3>아직 없는 기능</h3>
 <p>자음·모음 단위 시간은 아직 구현하지 않았습니다. 내보내기 &gt; 채보·가사 내보내기에서 USTX·MIDI·MusicXML·JSON·CSV·LRC로 저장합니다.
 '샘플 데이터 생성'은 오디오 길이만 보고 고정 패턴을 만드는 시험용 기능입니다.</p>"""
@@ -160,6 +171,7 @@ class MainWindow(QMainWindow):
         self.review = ReviewController(self)
         self.compare = CompareController(self)
         self.exporter = ExportController(self)
+        self.model_compare = ModelCompareController(self)
         self.right_tabs.addTab(self.review.panel, "검토")
         self.right_tabs.addTab(self.compare.panel, "악보 비교")
         self._build_menus()
@@ -337,6 +349,7 @@ class MainWindow(QMainWindow):
         for a in (self.act_analyze, self.act_redetect, self.act_reseparate, self.act_import_stems, self.act_cancel_analysis, None,
                   self.act_no_vocal, self.act_compare_runs, self.act_probe, self.act_clear_cache, None, self.act_sample):
             m.addSeparator() if a is None else m.addAction(a)
+        self.model_compare.build_menu(m)
         self.lyrics.build_menu(mb)
         m = mb.addMenu("내보내기(&X)")
         m.addAction(self.act_export)
@@ -420,6 +433,10 @@ class MainWindow(QMainWindow):
         self.analyze_button.setProperty("primary", True)
         self.analyze_button.setIcon(icon("wand-sparkles", T.BG_PRIMARY))
         tb.addWidget(self.analyze_button)
+        self.compare_button = QToolButton()
+        self.compare_button.setDefaultAction(self.model_compare.act_mode)
+        self.compare_button.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextOnly)
+        tb.addWidget(self.compare_button)
         self._update_time_label(0.0)
 
     def _build_statusbar(self) -> None:
@@ -554,6 +571,7 @@ class MainWindow(QMainWindow):
         self.act_analyze.setEnabled(has_audio and is_open and not busy)
         self.act_reseparate.setEnabled(has_audio and is_open and not busy)
         self.act_import_stems.setEnabled(has_audio and is_open and not busy)
+        self.model_compare.update_actions(has_audio, is_open, busy)
         self.act_redetect.setEnabled(has_pitch and not busy)
         self.act_sample.setEnabled(has_audio and not busy)
         self.act_cancel_analysis.setEnabled(busy)

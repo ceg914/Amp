@@ -179,7 +179,7 @@ def separate(
     else:
         norm = (wav - mean) / std
         if model_name in TEST_MODELS:
-            sources = _run_test_model(model_name, norm, report, cpu_fallback)
+            sources = _run_test_model(model_name, norm, report, cpu_fallback, device)
             info["device"] = "cpu"
         else:
             sources, dev_info = _run_demucs(model_name, norm, device, report, cpu_fallback)
@@ -199,7 +199,7 @@ def separate(
     return out[0], out[1], info
 
 
-def _run_test_model(name: str, norm: np.ndarray, report, cpu_fallback: bool = True) -> dict:
+def _run_test_model(name: str, norm: np.ndarray, report, cpu_fallback: bool = True, device: str = "cpu") -> dict:
     if name == "_crash":  # 강제 종료 시험용: 정리 코드 없이 프로세스가 죽는다 (메모리 부족 강제 종료 흉내)
         report(0.5, "시험용 모델이 강제 종료됩니다")
         import os
@@ -214,7 +214,7 @@ def _run_test_model(name: str, norm: np.ndarray, report, cpu_fallback: bool = Tr
         for i in range(600):
             time.sleep(0.05)
             report(i / 600, "시험용 모델 실행 중")
-    if name == "_oom" and not cpu_fallback:  # GPU 메모리 부족 시험용
+    if name == "_oom" and device != "cpu" and not cpu_fallback:  # GPU 메모리 부족 시험용 (CPU를 고르면 성공)
         raise SeparationError("oom_gpu", OOM_GPU_MESSAGE)
     report(1.0, "시험용 모델 완료")
     if name == "_half":  # 비교 시험용: 보컬 = 입력 절반, 반주 = 나머지 절반

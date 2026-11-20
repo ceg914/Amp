@@ -12,6 +12,12 @@ amp/
 │   ├── fileio.py               원자적 쓰기(+.bak), 긴 경로, 디스크 부족·권한 오류 메시지
 │   └── errors.py               사용자 메시지를 담는 예외 계층
 ├── audio/                      디코딩, 파형 요약, PCM 변환·믹서, Windows 기본 출력 조회 (Qt 없음)
+│   ├── pcm.py                  PcmMixer: 트랙별 음량·음소거·솔로. 상태가 바뀌면 12ms 음량 램프(A/B 전환 크로스페이드), 여러 트랙 상태를 한 번에 바꾸기
+│   ├── stream.py               STEP 5 PlaybackStream: 장치 프레임 ↔ 원본 시간, 구간 반복(이음매 6ms 페이드), 느린 재생
+│   ├── stretch.py              STEP 5 위상 보코더(위상 고정) 시간 늘리기: 음높이 유지, 반복 구간·60초 창만 늘림
+│   ├── spectrogram.py          STEP 5 타일(256프레임) 계산, 고정 dB 색, 차이 보기(B − A) 색
+│   ├── synth.py                STEP 5 음표 미리 듣기 합성음
+│   └── loudness.py             STEP 5 비교 청취용 음량(무음 블록 제외 RMS)·맞춤 배율 (파일은 바꾸지 않음)
 ├── engine/                     분석 엔진 (Qt 없음)
 │   ├── worker.py               분석 작업 프로세스 (separate · pitch · tempo · probe · asr · emissions · ctc_align)
 │   ├── worker_client.py        작업 프로세스 실행·진행률·취소·오류 코드 → 한국어 메시지
@@ -24,6 +30,8 @@ amp/
 │   ├── notes.py                피치 곡선 → 음표 (v3: 접근음 흡수)
 │   ├── transcription.py        분리 → 피치 → BPM → 음표 파이프라인, 음표만 재검출
 │   ├── stems.py                stems/ 목록(stems.json) 쓰기·검증·불러오기
+│   ├── model_store.py          STEP 5 모델별 분리 결과 보관소 stems/models/<키>/ (키 = 원본·모델·버전·체크포인트·설정 해시), 이전 평면 결과 옮기기
+│   ├── model_compare.py        STEP 5 모델 비교 실행: 모델별 작업 프로세스 순차 실행, GPU 메모리 부족은 묻기(oom_gpu), 취소해도 끝난 결과 보관, 모델별 채보
 │   ├── stem_import.py          외부 분리 결과 가져오기: 리샘플·채널·교차 상관 어긋남 보정·원본 일치 검사, model 'external'
 │   ├── cache.py                cache/ 키·원자적 기록·정리
 │   ├── merge.py                재분석 반영 계획 (사용자 편집 보호)
@@ -42,6 +50,13 @@ amp/
 │   │   ├── korean.py           표준 발음법 규칙(제5·9~29항)을 줄 단위 문맥으로 적용 → 발음 한글, 간략 IPA
 │   │   └── japanese.py         가나 박 → 가타카나·IPA (한자는 변환 불가)
 │   └── vocal.py                음절 구간·유성 가창 길이, 멜리스마 판정(종류 + 근거 속성), 사용자 판정 편집·음표 변경 뒤 옮기기
+├── compare/                    STEP 5 비교·검토 (Qt 없음, 사용자 데이터 읽기 전용)
+│   ├── review.py               분석 오류 검토 규칙(근거 숫자를 사유에 적음)·검토 상태(지문이 바뀌면 재검토)
+│   ├── score_io.py · reference.py   MIDI·MusicXML(MXL) 가져오기, 참조 악보 데이터
+│   ├── align.py · intonation.py     악보 ↔ 음원 정렬(상호상관 + DTW + 우연 기준), 음정 비교(센트·도달 시간·비브라토 중심)
+│   ├── model_diff.py           두 분리 모델로 만든 채보의 차이(음표 대응·음높이·시각·재발음 분할·유성·옥타브), '모델 비교' 검토 항목. 우열 판정 없음
+│   └── source_switch.py        분석 소스 전환 영향 미리 보기 (실제 반영과 같은 plan_reanalysis·linking.reconcile로 계산)
+├── export/                     STEP 5 채보·가사 내보내기: USTX(OpenUtau 0.6), MIDI, MusicXML, JSON, CSV, LRC
 ├── project/                    프로젝트 폴더 (Qt 없음)
 │   ├── layout.py               폴더 구조, Windows 이름 규칙, 중복 이름 처리
 │   ├── schema.py               파일 종류·스키마 버전·마이그레이션
@@ -63,7 +78,12 @@ amp/
     ├── document.py             편집 API, QUndoStack, ApplyAnalysisCommand, SetLyricsCommand (음표 교체 명령이 가사 연결도 함께 되돌림)
     ├── lyrics_controller.py    가사 탭·가사 레인·피아노 롤 강조·재생 연동·가사 메뉴
     ├── vocal_controller.py     STEP 4: 발음·길이·멜리스마 판정 캐시, 편집 동작(실행 취소 가능), 가사·발음 표시 방식
-    ├── player.py               QAudioSink 재생, 트랙 믹서(솔로·음소거·음량)
+    ├── player.py               QAudioSink 재생, 트랙 믹서(솔로·음소거·음량), 반복·속도, 여러 트랙 상태 한 번에 바꾸기
+    ├── listening_controller.py STEP 5 반복 구간·느린 재생·음표 미리 듣기·레인(파형·스펙트로그램) 표시
+    ├── review_controller.py    STEP 5 검토 탭 (다른 기능이 넣는 extra_items 포함)
+    ├── compare_controller.py   STEP 5 '악보 비교' 탭 (참조 악보 가져오기·정렬·음정 비교)
+    ├── export_controller.py    STEP 5 채보·가사 내보내기 대화상자
+    ├── model_compare_controller.py  STEP 5 모델 비교 모드: A/B 패널(왼쪽), '모델 차이' 탭, A/B 청취(cmp_a·cmp_b 솔로 전환), 분석 소스 선택
     ├── workers.py              TaskRunner (QThreadPool)
     ├── autosave.py             자동 저장·비정상 종료 복구
     ├── dialogs.py              새 프로젝트, 내보내기, 재분석 반영 대화상자
@@ -220,3 +240,32 @@ run.bat, install_separation.bat, install_lyrics.bat   Windows 실행·설치
 | `ui/test_lyrics_ui.py` | STEP 3 화면: 가사 레인 끌기·경계 조절·실행 취소, 클릭 이동·재생 중 음절, 음표 아래 가사(N:1·멜리스마)·음표 나누기, 선택 연동·재생 강조·표시 끄기, 인식·정렬 결과 반영(한 단계 실행 취소), TXT 인코딩, 시험용 모델로 전체 흐름 → 저장 → 다시 열기 |
 | `ui/test_main_window.py` | 프로젝트 생성·샘플 분석, 손상 파일, 저장·재열기(재생 위치·트랙 상태), 이중 열기 잠금, 분할·병합·BPM·첫 박, 비정상 종료 복구, 분석→트랙→솔로·음소거→내보내기→편집 보호, .ampproj 변환, 시간축 동기화(요구 5), 열린 프로젝트 복사본을 두 번째 창에서 열기, 실행 기록·비교 보고서, 실패한 분석 미기록, 저장 충돌 확인 |
 | 나머지 | STEP 1 회귀: 모델, 편집, 템포, 오디오·PCM·믹서, 저장 형식, 문서·실행 취소, 피아노 롤 마우스 조작, 작업 실행기, 자동 저장, 재생기, 진입점, 설치 스크립트 |
+
+## 모델별 분리 결과와 모델 비교 (STEP 5)
+
+```text
+stems/
+├── models/
+│   ├── htdemucs-1a2b3c4d5e/        vocals.wav · instrumental.wav · stems.json (이 결과의 목록 + identity)
+│   ├── mel_roformer-6f7e8d9c0b/
+│   └── external-0123456789/        외부 분리 결과 가져오기
+└── stems.json                      지금 분석에 쓰는 결과를 가리킴 (파일 경로가 models/<키>/…, model_info.store_key)
+```
+
+- 키 = 모델 이름 + sha1(identity)[:10]. identity: 원본 해시, 모델, Demucs 패키지 버전·shifts·overlap·split·shift seed
+  (htdemucs), RoFormer 코드 버전·체크포인트 내용 SHA-256·설정 파일 SHA-256(mel_roformer), 가져온 파일 해시(external).
+  장치(CPU/GPU)는 넣지 않는다. 체크포인트를 같은 내용으로 옮기면 같은 키, 내용이 바뀌면 다른 키.
+- 위쪽 `stems.json`은 STEP 2 형식 그대로라 재생·가사 인식·내보내기·`workspace.stems_status()`가 바뀌지 않았다. 경로가 모두 상대라
+  폴더를 옮기거나 복사해도 열린다. 이전 버전 프로젝트의 평면 결과(`stems/vocals.wav`)는 처음 쓸 때 `os.replace`로 모델 폴더로 옮긴다
+  (`created`가 같아 `stems_id`와 피치 캐시가 그대로 이어진다).
+- 파이프라인 `_separation`: 지금 결과가 설정 모델과 맞으면 재사용 → 같은 키가 보관소에 있으면 그것을 가리킴 → 없으면 분리해서 새 폴더.
+  '다시 분리'는 같은 키 폴더만 바꾼다. 다른 모델·가져온 결과는 남는다.
+- 비교 실행(`model_compare.run_compare`)은 모델마다 작업 프로세스를 하나씩 띄운다. 프로세스가 끝나야 다음 모델을 올리므로 GPU에 두 모델이
+  함께 있지 않다. `cpu_fallback=False`라 GPU 메모리 부족은 `oom_gpu` 오류로 돌아오고, 화면이 CPU로 다시 할지 묻는다.
+  분석 설정의 보통 분석은 예전처럼 GPU 메모리가 부족하면 CPU로 다시 실행한다(이번에 바꾸지 않음).
+- 모델별 채보는 `TranscriptionRequest.stems_key`로 보관한 결과를 읽어 같은 피치·음표 설정으로 돌린다. 피치 캐시 키에 분리 결과 id가 들어가
+  모델별로 따로 쌓인다. 지금 분석에 쓰는 결과는 바꾸지 않는다.
+- A/B 청취: 비교 모드가 재생 트랙 `cmp_a`·`cmp_b`를 올리고 `AudioPlayer.set_track_states`로 솔로를 한 번에 바꾼다. 스트림을 다시 만들지
+  않으므로 위치·반복·속도가 그대로고, `PcmMixer`의 음량 램프가 12ms 크로스페이드를 만든다. 장치 버퍼(200ms) 때문에 들리는 시점은 그만큼 늦다.
+- 분석 소스 선택: `ModelStore.activate`(위쪽 stems.json만 바꿈) → 재생 트랙 다시 읽기 → `apply_analysis(keep_edits)`. 바뀔 항목은
+  `source_switch.preview`가 같은 함수로 미리 계산해 보여 준다. A/B로 고른 키만 `analysis/model_compare.json`에 적는다.

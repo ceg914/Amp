@@ -251,20 +251,16 @@ def test_compare_oom_and_load_failure_do_not_stop_other_models(song, tmp_path):
     bad = tmp_path / "broken.ckpt"
     bad.write_bytes(b"not a checkpoint")
     req = _request(song, tmp_path)
-    run = run_compare(req, [ModelSpec("_oom"), ModelSpec("mel_roformer", {"checkpoint": str(bad), "config": ""}),
+    run = run_compare(req, [ModelSpec("_oom", device="auto"), ModelSpec("mel_roformer", {"checkpoint": str(bad), "config": ""}),
                             ModelSpec("_identity")], transcribe=False)
     oom, failed, ok = run.outcomes
     assert oom.status == "oom" and oom.error_code == "oom_gpu" and "CPU" in oom.message
     assert failed.status == "failed" and failed.message
     assert ok.status == "done"
     assert [e.model for e in ModelStore(req.stems_dir, req.source_sha256).entries()] == ["_identity"]
-    # 사용자가 'CPU로 다시'를 고르면 (시험용 _oom은 CPU 전환을 허용하면 성공한다)
-    from amp.engine.dsp.separation import separate
-
-    x = (np.random.default_rng(1).standard_normal((SR, 2)) * 0.1).astype(np.float32)
-    with pytest.raises(Exception):
-        separate(x, SR, "_oom", "cpu", None, None, cpu_fallback=False)
-    separate(x, SR, "_oom", "cpu", None, None, cpu_fallback=True)
+    # 사용자가 'CPU로 다시'를 고르면 성공한다 (시험용 _oom은 CPU가 아닌 장치에서만 메모리 부족을 흉내 냄)
+    again = run_compare(req, [ModelSpec("_oom", device="cpu")], transcribe=False)
+    assert again.outcomes[0].status == "done"
 
 
 def test_missing_roformer_file_is_reported_per_model(song, tmp_path):

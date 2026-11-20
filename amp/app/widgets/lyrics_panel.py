@@ -14,6 +14,7 @@ from PySide6.QtWidgets import (
     QCheckBox,
     QComboBox,
     QFormLayout,
+    QGridLayout,
     QGroupBox,
     QHBoxLayout,
     QLabel,
@@ -31,6 +32,7 @@ from PySide6.QtWidgets import (
 )
 
 from amp.app import theme
+from amp.app.widgets import shrinkable_combos
 from amp.lyrics import linking, review, vocal
 from amp.lyrics import pronunciation as pron
 from amp.lyrics.asr import LANGUAGES, MODELS
@@ -134,7 +136,7 @@ class LyricsPanel(QScrollArea):
         self.editor.setMinimumHeight(220)
         self.editor.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
         v.addWidget(self.editor)
-        row = QHBoxLayout()
+        row = QGridLayout()  # 2×2: 좁은 패널에서 버튼 네 개가 한 줄을 넘지 않게
         self.apply_text = QPushButton("적용")
         self.apply_text.setProperty("accent", True)
         self.apply_text.setToolTip("바뀐 줄만 다시 나눕니다. 그대로인 음절의 시간·음표 연결은 남습니다.")
@@ -142,8 +144,8 @@ class LyricsPanel(QScrollArea):
         self.paste = QPushButton("붙여넣기")
         self.paste.setToolTip("클립보드 가사를 선택 영역(없으면 커서 위치)에 넣습니다. '적용'을 눌러야 반영됩니다.")
         self.import_txt = QPushButton("TXT 가져오기…")
-        for b in (self.apply_text, self.revert_text, self.paste, self.import_txt):
-            row.addWidget(b)
+        for i, b in enumerate((self.apply_text, self.revert_text, self.paste, self.import_txt)):
+            row.addWidget(b, i // 2, i % 2)
         v.addLayout(row)
         row = QHBoxLayout()
         self.repeat = QPushButton("선택 줄 반복 추가")
@@ -281,6 +283,10 @@ class LyricsPanel(QScrollArea):
         v.addWidget(self.listing)
         lay.addWidget(g)
         lay.addStretch(1)
+        # 좁은 창: 긴 콤보 항목('자동 (GPU 여유 5.5GB 이상: …)')이 패널 최소 폭을 456px로 밀어 가로 스크롤이 생겼다
+        shrinkable_combos(body)
+        for form in body.findChildren(QFormLayout):
+            form.setRowWrapPolicy(QFormLayout.RowWrapPolicy.WrapLongRows)
 
         self.recognize.clicked.connect(self.recognizeRequested)
         self.apply_rec.clicked.connect(self.applyRecognitionRequested)

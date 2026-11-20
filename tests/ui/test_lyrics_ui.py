@@ -503,3 +503,19 @@ def test_play_from_syllable_and_syllable_loop_on_real_player(qtbot, make_window,
     assert w.lyrics.loop is None
     w.player.stop()
     assert w.errors == []
+
+
+def test_lyrics_panel_has_no_horizontal_scroll_in_narrow_window(qtbot, window):
+    """STEP 5: 좁은 창에서 가사 패널이 가로로 스크롤되던 문제. 긴 콤보 항목이 최소 폭을 456px로 밀었다."""
+    from PySide6.QtWidgets import QComboBox
+
+    w = window
+    w.right_tabs.setCurrentWidget(w.lyrics_panel)
+    for width in (1440, 900, 700):
+        w.resize(width, 800)
+        qtbot.wait(30)
+        lp = w.lyrics_panel
+        assert lp.horizontalScrollBar().maximum() == 0, (width, lp.widget().minimumSizeHint().width(), lp.viewport().width())
+    model = w.lyrics_panel.model
+    assert model.sizeAdjustPolicy() == QComboBox.SizeAdjustPolicy.AdjustToMinimumContentsLengthWithIcon
+    assert model.toolTip() == model.currentText()  # 줄어든 글자는 툴팁에서 전부 보인다

@@ -318,7 +318,11 @@ class SpectrogramView(QWidget):
             info = f"모델 비교 · {label} · 같은 dB 범위 {self.db_floor:g}~{self.db_ceil:g}dB · n_fft {S.RESOLUTIONS[self.resolution]}"
             if missing:
                 info += " · 계산 중…"
-            p.drawText(QRectF(6, body_h - 18, w - 12, 16), Qt.AlignmentFlag.AlignRight, info)
+            p.setFont(theme.ui_font(9))
+            tw = p.fontMetrics().horizontalAdvance(info) + 10
+            box = QRectF(max(0.0, w - tw - 4), body_h - 18, min(tw, w), 16)
+            p.fillRect(box, QColor(18, 17, 22, 210))  # 밝은 스펙트로그램 위에서도 읽히게
+            p.drawText(box, Qt.AlignmentFlag.AlignCenter, info)
             x = self.timeline.time_to_x(self._playhead)
             p.setPen(QPen(theme.PLAYHEAD, 1.5))
             p.drawLine(QPointF(x, 0), QPointF(x, body_h))
@@ -350,12 +354,16 @@ class SpectrogramView(QWidget):
 
     def _draw_ticks(self, p: QPainter, body_h: float, y0: float = 0.0) -> None:
         p.setFont(theme.mono_font(9))
+        last_label = None
         for hz in FREQ_TICKS:
             if not (self.fmin <= hz <= self.fmax):
                 continue
             y = y0 + float(S.freq_to_y(hz, int(body_h), self.fmin, self.fmax, self.log_axis))
             p.setPen(QPen(QColor(240, 236, 246, 50), 1))
             p.drawLine(QPointF(0, y), QPointF(8, y))
+            if last_label is not None and abs(last_label - y) < 12:  # 낮은 레인(위아래 비교): 글자가 겹치면 건너뜀
+                continue
+            last_label = y
             p.setPen(theme.TEXT_DIM)
             p.drawText(QPointF(10, y + 4), f"{hz // 1000}k" if hz >= 1000 else str(hz))
 
