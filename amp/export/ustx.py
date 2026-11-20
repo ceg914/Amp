@@ -18,7 +18,18 @@ from __future__ import annotations
 import numpy as np
 import yaml
 
-from amp.export.common import EXTEND, ExportNote, ExportOptions, ExportReport, TickMap, pick_notes, tempo_points
+from amp.export.common import (
+    EXTEND,
+    ExportNote,
+    ExportOptions,
+    ExportReport,
+    TickMap,
+    first_note_info,
+    note_range,
+    pick_notes,
+    range_text,
+    tempo_points,
+)
 
 USTX_VERSION = "0.6"
 GAP_CLOSE_S = 0.5
@@ -46,7 +57,7 @@ def _rdp(xs: np.ndarray, ys: np.ndarray, eps: float) -> list[int]:
     return sorted(keep)
 
 
-def note_pitch_points(note: ExportNote, curve, mode: str) -> tuple[list[dict], bool]:
+def note_pitch_points(note: ExportNote, curve, mode: str, offset: float = 0.0) -> tuple[list[dict], bool]:
     """(피치점, snap_first). 곡선이 모자라면 OpenUtau 기본 두 점."""
     default = [{"x": -40.0, "y": 0.0, "shape": "io"}, {"x": 40.0, "y": 0.0, "shape": "io"}]
     if mode == "none" or curve is None:
@@ -63,7 +74,7 @@ def note_pitch_points(note: ExportNote, curve, mode: str) -> tuple[list[dict], b
     if ok.sum() < 3:
         return default, True
     t_ms = (curve.start_time + (np.arange(i0, i1) / fr) - note.start) * 1000.0
-    semi = 69 + 12 * np.log2(np.where(ok, f0, 440.0) / 440.0) - note.pitch
+    semi = 69 + 12 * np.log2(np.where(ok, f0, 440.0) / 440.0) + offset - note.pitch  # offset: 조옮김 (음표와 함께 옮김)
     t_ms, semi = t_ms[ok], semi[ok]
     w = max(1, int(round(win * fr)))
     if w > 1 and semi.size >= w:
@@ -118,7 +129,7 @@ def build(project, options: ExportOptions, name: str = "SONATLAS") -> tuple[dict
             lyric = EXTEND
         if prev_note is not None and pos < prev_end_tick:  # 겹침: 앞 음표를 줄인다 (OpenUtau 한 파트는 단성부 편집이 기본)
             prev_note["duration"] = max(1, pos - prev_note["position"])
-        points, snap = note_pitch_points(n, curve, mode)
+        points, snap = note_pitch_points(n, curve, mode, options.transpose)
         note = {"position": pos, "duration": end - pos, "tone": int(n.pitch), "lyric": lyric,
                 "pitch": {"data": points, "snap_first": snap},
                 "vibrato": {"length": 0, "period": 175, "depth": 25, "in": 10, "out": 10, "shift": 0, "drift": 0,
@@ -140,6 +151,9 @@ def build(project, options: ExportOptions, name: str = "SONATLAS") -> tuple[dict
         "wave_parts": [],
     }
     rep.notes = len(out_notes)
+    rep.info += [f"음역: {range_text(note_range((n.pitch, n.end - n.start) for n in notes))}"]
+    if (fi := first_note_info(notes, tm, bpb, unit)) is not None:
+        rep.info.append(fi)
     rep.omitted += ["가수(보이스뱅크)·phonemizer 지정 (OpenUtau에서 선택)", "음표 신뢰도·수정 여부·발음 기호·멜리스마 판정 근거"]
     if mode == "none":
         rep.omitted.append("실제 피치 곡선 (옵션: 음표와 가사만)")

@@ -200,3 +200,111 @@ def test_ustx_keys_exist_in_openutau_model():
             assert all(set(pt) <= F_["point"] and pt["shape"] in ("io", "l", "i", "o", "sp") for pt in n["pitch"]["data"])
     # 버전은 YAML 스칼라 "0.6" (OpenUtau가 System.Version으로 읽음)
     assert "ustx_version: '0.6'" in U.dumps(doc) or "ustx_version: \"0.6\"" in U.dumps(doc) or "ustx_version: 0.6" in U.dumps(doc)
+
+
+# --- UFData · 조옮김 · MIDI 가사 인코딩 (VOX Factory 등 보컬 합성 프로그램) -------------------------
+
+# utaformatix-data 소스(Kotlin Document/Project/Track/Note/Pitch/Tempo/TimeSignature.kt)의 필드 이름
+UFDATA_FIELDS = {
+    "document": {"formatVersion", "project"},
+    "project": {"name", "tracks", "timeSignatures", "tempos", "measurePrefix"},
+    "track": {"name", "notes", "pitch"},
+    "note": {"key", "tickOn", "tickOff", "lyric", "phoneme"},
+    "tempo": {"tickPosition", "bpm"},
+    "time_signature": {"measurePosition", "numerator", "denominator"},
+    "pitch": {"ticks", "values", "isAbsolute"},
+}
+
+
+def test_ufdata_matches_utaformatix_model_and_keeps_korean_lyrics(tmp_path):
+    from amp.export import ufdata as UF
+
+    p, _ids = _project()
+    path = tmp_path / "곡.ufdata"
+    rep = UF.export(p, str(path), ExportOptions())
+    doc = json.loads(path.read_bytes().decode("utf-8"))
+    assert set(doc) == UFDATA_FIELDS["document"] and doc["formatVersion"] == 1
+    proj = doc["project"]
+    assert set(proj) == UFDATA_FIELDS["project"]
+    assert proj["tempos"] == [{"tickPosition": 0, "bpm": 120.0}, {"tickPosition": 1920, "bpm": 60.0}]
+    assert proj["timeSignatures"] == [{"measurePosition": 0, "numerator": 4, "denominator": 4}]
+    (track,) = proj["tracks"]
+    assert set(track) == UFDATA_FIELDS["track"] and track["pitch"] is None
+    assert all(set(n) == UFDATA_FIELDS["note"] for n in track["notes"])
+    assert [(n["tickOn"], n["key"], n["lyric"]) for n in track["notes"]] == [
+        (480, 60, "사"), (960, 62, "랑"), (1344, 64, "-"), (1824, 65, "-"), (2400, 67, "해")]
+    assert all(n["tickOff"] > n["tickOn"] for n in track["notes"])
+    assert rep.lyrics == 3 and rep.extended == 2
+    assert any("첫 음: 0.50초 = 마디 1, 2.00박" in x for x in rep.info)
+    assert any("음역: C4(60) ~ G4(67)" in x for x in rep.info)
+
+
+def test_ufdata_bpm_is_not_rounded_and_pitch_curve_is_absolute_semitones():
+    from amp.export import ufdata as UF
+
+    p, _ids = _project(tempo=TempoMap((TempoPoint(0.0, 95.93),), 4))
+    doc, _rep = UF.build(p, ExportOptions(pitch="detailed", extend_lyric=""))
+    proj = doc["project"]
+    assert proj["tempos"] == [{"tickPosition": 0, "bpm": 95.93}]  # 정수로 반올림하면 곡 끝에서 시간이 밀린다
+    notes = proj["tracks"][0]["notes"]
+    assert [n["lyric"] for n in notes] == ["사", "랑", "", "", "해"]
+    pitch = proj["tracks"][0]["pitch"]
+    assert set(pitch) == UFDATA_FIELDS["pitch"] and pitch["isAbsolute"] is True
+    assert pitch["ticks"] == sorted(pitch["ticks"]) and len(pitch["ticks"]) == len(pitch["values"])
+    vals = [v for v in pitch["values"] if v is not None]
+    assert min(vals) > 59 and max(vals) < 68  # 음표 높이(60~67) 근처의 반음 값 (센트 아님)
+    assert None in pitch["values"]  # 무성 구간(음표 사이)은 null
+    assert all(a != b for a, b in zip(pitch["values"], pitch["values"][1:]))  # 바뀌는 점만
+
+
+def test_transpose_moves_notes_and_pitch_together_in_every_synth_format():
+    from amp.export import ufdata as UF
+
+    p, _ids = _project()
+    base, _ = UF.build(p, ExportOptions(pitch="detailed"))
+    up, rep = UF.build(p, ExportOptions(pitch="detailed", transpose=-5))
+    k0 = [n["key"] for n in base["project"]["tracks"][0]["notes"]]
+    k1 = [n["key"] for n in up["project"]["tracks"][0]["notes"]]
+    assert k1 == [k - 5 for k in k0]
+    v0 = [v for v in base["project"]["tracks"][0]["pitch"]["values"] if v is not None]
+    v1 = [v for v in up["project"]["tracks"][0]["pitch"]["values"] if v is not None]
+    assert v1 == pytest.approx([v - 5 for v in v0], abs=0.011)
+    assert any("-5반음 조옮김" in w for w in rep.warnings)
+    assert [n.pitch for n in p.score.notes()] == [60, 62, 64, 65, 67]  # 프로젝트 음표는 그대로
+    # USTX: 음표는 옮기고, 음표 기준 피치점은 그대로(같이 옮겼으므로)
+    u0, _ = U.build(p, ExportOptions(pitch="detailed"))
+    u1, _ = U.build(p, ExportOptions(pitch="detailed", transpose=-5))
+    n0, n1 = u0["voice_parts"][0]["notes"], u1["voice_parts"][0]["notes"]
+    assert [n["tone"] for n in n1] == [n["tone"] - 5 for n in n0]
+    assert [n["pitch"]["data"] for n in n1] == [n["pitch"]["data"] for n in n0]
+
+
+def test_midi_lyric_encoding_cp949_and_bends_follow_transpose(tmp_path):
+    import mido
+
+    p, _ids = _project()
+    path = tmp_path / "cp949.mid"
+    rep = F.export_midi(p, str(path), ExportOptions(midi_lyric_encoding="cp949", transpose=2, pitch="simple"))
+    m = mido.MidiFile(str(path))
+    lyr = [msg.text.encode("latin-1") for msg in m.tracks[1] if msg.type == "lyrics"]
+    assert [b.decode("cp949") for b in lyr] == ["사", "랑", "해"]
+    assert "가사 인코딩: CP949 (lyrics 메타 이벤트)" in rep.info
+    notes = [msg.note for msg in m.tracks[1] if msg.type == "note_on" and msg.velocity]
+    assert notes == [62, 64, 66, 67, 69]
+    bends = [msg.pitch for msg in m.tracks[1] if msg.type == "pitchwheel"]
+    assert max(abs(b) for b in bends) < 8191 * 0.5 / 12 * 2  # 조옮김과 함께 옮겼으므로 벤드는 ±0.5반음 안
+    # UTF-8은 그대로
+    F.export_midi(p, str(tmp_path / "u.mid"), ExportOptions())
+    lyr8 = [msg.text.encode("latin-1").decode("utf-8") for msg in mido.MidiFile(str(tmp_path / "u.mid")).tracks[1]
+            if msg.type == "lyrics"]
+    assert lyr8 == ["사", "랑", "해"]
+
+
+def test_note_range_uses_duration_weighted_core():
+    from amp.export.common import note_range, range_text
+
+    r = note_range([(48, 0.1), (60, 2.0), (62, 2.0), (64, 2.0), (79, 0.1)])
+    assert (r["low"], r["high"]) == (48, 79)
+    assert (r["core_low"], r["core_high"]) == (60, 64)  # 아주 짧은 끝 음은 주 음역에서 빠진다
+    assert range_text(r).startswith("C3(48) ~ G5(79)") and "주 음역 C4(60) ~ E4(64)" in range_text(r)
+    assert "A#3(58)" in range_text(r, -2)

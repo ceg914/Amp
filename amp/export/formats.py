@@ -23,7 +23,17 @@ from xml.sax.saxutils import escape
 import numpy as np
 
 from amp.core.fileio import atomic_write_bytes
-from amp.export.common import TICKS_PER_BEAT, ExportOptions, ExportReport, TickMap, pick_notes, tempo_points
+from amp.export.common import (
+    TICKS_PER_BEAT,
+    ExportOptions,
+    ExportReport,
+    TickMap,
+    first_note_info,
+    note_range,
+    pick_notes,
+    range_text,
+    tempo_points,
+)
 
 SHARP_NAMES = (("C", 0), ("C", 1), ("D", 0), ("D", 1), ("E", 0), ("F", 0), ("F", 1), ("G", 0), ("G", 1), ("A", 0), ("A", 1), ("B", 0))
 DIV = 4  # MusicXML divisions: 4분음표 = 4 (16분음표 격자)
@@ -54,20 +64,31 @@ def export_midi(project, path: str, options: ExportOptions) -> ExportReport:
     ev = [(0, mido.MetaMessage("track_name", name="Vocal"))]
     curve = project.analysis.pitch_curve if project.analysis is not None else None
     bend = options.pitch != "none" and curve is not None and options.source != "reference"
+    enc = options.midi_lyric_encoding if options.midi_lyric_encoding in ("utf-8", "cp949") else "utf-8"
+    bad_lyrics = 0
     if bend:  # 피치 벤드 범위 ±12반음 (RPN 0)
         for cc, val in ((101, 0), (100, 0), (6, BEND_RANGE), (38, 0), (101, 127), (100, 127)):
             ev.append((0, mido.Message("control_change", control=cc, value=val)))
     for n in notes:
         on, off = tm.tick(n.start), max(tm.tick(n.end), tm.tick(n.start) + 1)
         if options.lyrics and n.lyric:
-            # mido는 메타 텍스트를 latin-1로 쓴다: UTF-8 바이트를 그대로 넣는다 (가져오기도 UTF-8로 읽음)
-            ev.append((on, mido.MetaMessage("lyrics", text=n.lyric.encode("utf-8").decode("latin-1"))))
+            # mido는 메타 텍스트를 latin-1로 쓴다: 고른 인코딩(UTF-8 / CP949)의 바이트를 그대로 넣는다
+            raw = n.lyric.encode(enc, errors="replace")
+            if enc != "utf-8" and raw.decode(enc, errors="replace") != n.lyric:
+                bad_lyrics += 1
+            ev.append((on, mido.MetaMessage("lyrics", text=raw.decode("latin-1"))))
             rep.lyrics += 1
         ev.append((on, mido.Message("note_on", note=int(n.pitch), velocity=90)))
         ev.append((off, mido.Message("note_off", note=int(n.pitch), velocity=0)))
         if bend:
-            ev += _bends(n, curve, tm)
+            ev += _bends(n, curve, tm, options.transpose)
     _write_track(tr, ev)
+    if bad_lyrics:
+        rep.warnings.append(f"가사 {bad_lyrics}개에 {enc.upper()}로 쓸 수 없는 글자가 있어 '?'로 바꿨습니다.")
+    rep.info += [f"가사 인코딩: {enc.upper()} (lyrics 메타 이벤트)",
+                 f"음역: {range_text(note_range((n.pitch, n.end - n.start) for n in notes))}"]
+    if (fi := first_note_info(notes, tm, bpb, unit)) is not None:
+        rep.info.append(fi)
     buf = io.BytesIO()
     mid.save(file=buf)
     atomic_write_bytes(path, buf.getvalue())
@@ -80,7 +101,7 @@ def export_midi(project, path: str, options: ExportOptions) -> ExportReport:
     return rep
 
 
-def _bends(n, curve, tm) -> list:
+def _bends(n, curve, tm, offset: float = 0.0) -> list:
     import mido
 
     out = []
@@ -93,7 +114,7 @@ def _bends(n, curve, tm) -> list:
         f = curve.f0_hz[i]
         if not np.isfinite(f) or f <= 0:
             continue
-        semi = 69 + 12 * math.log2(f / 440.0) - n.pitch
+        semi = 69 + 12 * math.log2(f / 440.0) + offset - n.pitch
         val = int(round(max(-1.0, min(1.0, semi / BEND_RANGE)) * 8191))
         if val != last:
             out.append((tm.tick(curve.start_time + i / fr), mido.Message("pitchwheel", pitch=val)))

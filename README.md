@@ -30,7 +30,7 @@ STEP 2.5 검증 결과는 [STEP_2_5_VALIDATION_REPORT.md](STEP_2_5_VALIDATION_RE
 | 프로젝트 폴더 관리 | 구현 | 원본 복사·연결, stems·analysis·cache·exports 분리, 자동 복구 |
 | 오디오 내보내기 (WAV/MP3) | 구현 | 개별·일괄, 비트레이트·WAV 형식 선택, 덮어쓰기 확인 |
 | 이전 형식(.ampproj) 열기 | 구현 | 새 폴더로 변환, 원래 파일은 그대로 두고 백업 사본 생성 |
-| 채보·가사 내보내기 (STEP 5) | 구현 | USTX(OpenUtau 0.6 형식)·MIDI·MusicXML·JSON·CSV·LRC. MusicXML·MIDI는 MuseScore 3.2.3으로 열어 확인, USTX는 OpenUtau 소스의 필드와 맞춘 형식 시험까지만(OpenUtau로 직접 열어 보지 못함) |
+| 채보·가사 내보내기 (STEP 5) | 구현 | USTX(OpenUtau 0.6 형식)·UFData(UtaFormatix, 보컬 합성 프로그램용)·MIDI(가사 UTF-8/CP949)·MusicXML·JSON·CSV·LRC. 조옮김·곡 음역 표시. MusicXML·MIDI는 MuseScore 3.2.3으로 열어 확인, USTX는 OpenUtau 소스의 필드와 맞춘 형식 시험까지만(OpenUtau로 직접 열어 보지 못함) |
 | 구간 반복·느린 재생 (STEP 5) | 구현 | 음높이 유지 0.5·0.75·0.9배(위상 보코더), 반복 이음매 페이드, 화면 위치는 원본 시간 |
 | 음표 미리 듣기·스펙트로그램 (STEP 5) | 구현 | 내장 합성음(가수 음색 아님), 화면에 보이는 구간만 타일로 계산하는 스펙트로그램(고정 dB 색) |
 | 분석 오류 검토 (STEP 5) | 구현 | 읽기 전용 규칙 목록, 사유에 기준 숫자. 'AI 신뢰도' 같은 근거 없는 점수 없음. 검토 상태 저장 |
@@ -237,7 +237,11 @@ python -m amp
      '모델 차이' 탭과 검토 탭의 '모델 비교' 항목은 차이만 보여 줍니다. 정답 채보가 없으므로 어느 모델이 정확하다고 판정하지 않습니다.
      [A/B를 분석에 사용…]은 바뀔 항목(자동 음표·피치 곡선·연결·멜리스마·음절 시간)을 먼저 보여 주고, 사용자 편집은 '수정 유지'로 지킵니다.
      필요 없는 분리 결과는 목록에서 골라 [지우기…]로 정리합니다(지금 분석에 쓰는 결과는 지울 수 없음).
-   - **내보내기 > 채보·가사 내보내기**: USTX(OpenUtau)·MIDI·MusicXML·JSON·CSV·LRC. 가수·phonemizer는 OpenUtau에서 고르세요.
+   - **내보내기 > 채보·가사 내보내기**: USTX(OpenUtau)·UFData·MIDI·MusicXML·JSON·CSV·LRC. 가수·phonemizer는 OpenUtau에서 고르세요.
+     보컬 합성 프로그램(VOX Factory 등)에 넣을 때: 대화상자에 곡 음역(최저·최고음, 음표 시간 90%가 드는 주 음역)이 나오고,
+     **조옮김**으로 가수 음역에 맞춰 음표·피치를 함께 옮길 수 있습니다(프로젝트 음표는 그대로). MIDI 가사가 깨지면 **MIDI 가사 인코딩**을
+     CP949로, 가사가 빠지면 **UFData** 형식을 써 보세요(JSON이라 인코딩 문제가 없음). 내보낸 뒤 첫 음이 몇 번째 마디인지 알려 줍니다.
+     받는 프로그램이 앞쪽 빈 마디를 없애 음표를 당기면 그만큼 되돌려 원곡과 맞추세요.
 9. **프로젝트 저장** (Ctrl+S), **내보내기 > 오디오 내보내기** (Ctrl+Shift+E).
 
 | 동작 | 방법 |

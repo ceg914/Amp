@@ -6,7 +6,7 @@
 from __future__ import annotations
 
 import bisect
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 
 TICKS_PER_BEAT = 480
 EXTEND = "+~"  # OpenUtau: 앞 음절을 이어 부르는 음 (OpenUtau MusicXML 가져오기와 같은 표기)
@@ -20,6 +20,9 @@ class ExportOptions:
     pitch: str = "none"  # none / simple / detailed (USTX·MIDI 피치)
     lrc_words: bool = False  # LRC 음절 단위 시각(확장 표기)
     csv_bom: bool = True  # Windows Excel이 UTF-8 한글을 바로 읽게
+    transpose: int = 0  # 조옮김(반음). 음표 높이와 피치 곡선을 함께 옮긴다. 보컬 합성 프로그램 가수 음역에 맞출 때
+    midi_lyric_encoding: str = "utf-8"  # MIDI 가사 메타 이벤트 인코딩: utf-8 / cp949 (프로그램마다 읽는 인코딩이 다르다)
+    extend_lyric: str = "-"  # UFData: 앞 음절을 이어 부르는 음표의 가사 표기 ("-", "+", "" 빈칸)
 
 
 @dataclass
@@ -32,6 +35,7 @@ class ExportReport:
     gaps_closed: int = 0
     omitted: list[str] = field(default_factory=list)  # 형식상 담지 못한 정보
     warnings: list[str] = field(default_factory=list)
+    info: list[str] = field(default_factory=list)  # 참고: 음역·첫 음 위치 등
     source: str = "user"
     range: tuple[float, float] | None = None
 
@@ -43,6 +47,7 @@ class ExportReport:
             lines.append(f"가사 {self.lyrics}개" + (f", 이어 부르기 음표 {self.extended}개" if self.extended else ""))
         if self.gaps_closed:
             lines.append(f"멜리스마 음표 사이 빈틈 {self.gaps_closed}곳을 앞 음표를 늘여 메웠습니다(이어 부르기 표기 조건)")
+        lines += self.info
         lines += [f"담지 못한 정보: {x}" for x in self.omitted]
         lines += [f"주의: {x}" for x in self.warnings]
         return "\n".join(lines)
@@ -78,7 +83,7 @@ def pick_notes(project, options: ExportOptions) -> tuple[list[ExportNote], list[
             out.append(ExportNote(n.id, a, b, n.pitch, lyric, ext, (), "reference"))
             if lyric:
                 last_lyric_note = n
-        return _in_range(out, options.range), warnings
+        return _transpose(_in_range(out, options.range), options.transpose, warnings), warnings
     if options.source == "auto":
         if project.analysis is None:
             raise ValueError("자동 분석 결과가 없습니다.")
@@ -111,7 +116,62 @@ def pick_notes(project, options: ExportOptions) -> tuple[list[ExportNote], list[
     out = [ExportNote(n.id, n.start, n.end, n.pitch, "".join(lyric_of[n.id]) if n.id in lyric_of else None,
                       n.id in extend and n.id not in lyric_of, tuple(sids_of.get(n.id, ())), status.get(n.id, ""),
                       n.confidence) for n in notes]
-    return _in_range(out, options.range), warnings
+    return _transpose(_in_range(out, options.range), options.transpose, warnings), warnings
+
+
+def _transpose(notes: list[ExportNote], semitones: int, warnings: list[str]) -> list[ExportNote]:
+    if not semitones:
+        return notes
+    out = [replace(n, pitch=min(127, max(0, n.pitch + semitones))) for n in notes]
+    clipped = sum(1 for n in notes if not 0 <= n.pitch + semitones <= 127)
+    if clipped:
+        warnings.append(f"조옮김 뒤 MIDI 범위(0~127)를 벗어난 음표 {clipped}개를 끝 값으로 맞췄습니다.")
+    warnings.append(f"{semitones:+d}반음 조옮김해 내보냈습니다(프로젝트 음표는 그대로).")
+    return out
+
+
+def note_range(pitches_durations) -> dict | None:
+    """(음높이, 길이 초) 목록 → 최저·최고음과 주 음역(길이 가중 5~95%: 음표 시간의 90%가 들어가는 범위)."""
+    import numpy as np
+
+    pd = [(int(p), max(float(d), 1e-3)) for p, d in pitches_durations]
+    if not pd:
+        return None
+    p = np.array([x[0] for x in pd])
+    w = np.array([x[1] for x in pd])
+    order = np.argsort(p)
+    cw = np.cumsum(w[order]) / w.sum()
+    lo = int(p[order][np.searchsorted(cw, 0.05)])
+    hi = int(p[order][min(len(p) - 1, np.searchsorted(cw, 0.95))])
+    return {"low": int(p.min()), "high": int(p.max()), "core_low": lo, "core_high": hi}
+
+
+def range_text(r: dict | None, transpose: int = 0) -> str:
+    from amp.core.pitch import note_name
+
+    if r is None:
+        return "음표 없음"
+    def nm(x):
+        return f"{note_name(x + transpose)}({x + transpose})"
+    return (f"{nm(r['low'])} ~ {nm(r['high'])} · 주 음역 {nm(r['core_low'])} ~ {nm(r['core_high'])} "
+            f"(음표 시간의 90%)")
+
+
+def bar_beat(tick: int, beats_per_bar: int, beat_unit: int = 4) -> str:
+    """틱 → '마디 9, 1.43박' (마디·박은 1부터)."""
+    beat_ticks = TICKS_PER_BEAT * 4 / max(1, beat_unit)
+    beats = tick / beat_ticks
+    bar = int(beats // max(1, beats_per_bar))
+    return f"마디 {bar + 1}, {beats - bar * beats_per_bar + 1:.2f}박"
+
+
+def first_note_info(notes: list[ExportNote], tm, beats_per_bar: int, beat_unit: int = 4) -> str | None:
+    """첫 음 위치. 음원 0초 = 0틱으로 내보내므로, 받는 프로그램이 앞쪽 빈 마디를 없애면 이만큼 당겨진다."""
+    if not notes:
+        return None
+    first = min(notes, key=lambda n: n.start)
+    tk = tm.tick(first.start)
+    return f"첫 음: {first.start:.2f}초 = {bar_beat(tk, beats_per_bar, beat_unit)} (틱 {tk}). 음원 0초가 마디 1 시작입니다."
 
 
 def _in_range(notes: list[ExportNote], rng) -> list[ExportNote]:
