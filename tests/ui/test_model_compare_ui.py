@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import hashlib
 import math
+import os
 
 import pytest
 from PySide6.QtWidgets import QDialog, QMessageBox
@@ -76,6 +77,7 @@ def test_ab_switch_keeps_position_loop_speed_and_crossfades(qtbot, compared):
     assert w.player.track_state(MC.CMP_B)["solo"] and not w.player.track_state(MC.CMP_A)["solo"]
     assert w.player.position() == pytest.approx(pos)
     assert w.player.loop_region == (1.5, 3.5) and w.player.loop_enabled
+    assert set(w.player.stretch_inputs()) == {MC.CMP_A, MC.CMP_B}  # 느린 재생은 A·B 두 트랙만 늘린다
     if not w.player.output_available():
         pytest.skip("오디오 출력 장치 없음: 재생 중 전환은 확인하지 못함")
     w.player.play()
@@ -215,3 +217,47 @@ def test_gpu_oom_asks_before_cpu_and_keeps_other_result(qtbot, window, song, mon
     _compare(qtbot, w, [ModelSpec("_oom", device="auto")])
     qtbot.waitUntil(lambda: not w.session.busy and len(w.session.model_store().entries()) == 2, timeout=120_000)
     assert sorted(e.model for e in w.session.model_store().entries()) == ["_identity", "_oom"]
+
+
+def test_old_project_with_flat_stems_opens_then_moves_into_store(qtbot, make_window, song):
+    """이전 버전 프로젝트: stems/vocals.wav(평면)는 열 때 그대로 쓰고, 모델 비교를 처음 쓸 때 덮어쓰지 않고 옮긴다.
+    옮긴 뒤에도 재생 트랙·가사 인식 입력 경로가 새 위치를 가리킨다."""
+    import json
+    import shutil
+
+    import numpy as np
+    import soundfile as sf
+
+    from amp.engine import stems as stem_store
+    from amp.engine.settings import AnalysisSettings
+
+    w = make_window("a")
+    folder = create(qtbot, w, song)
+    y, sr = sf.read(song, dtype="float32", always_2d=True)
+    tmp = folder.paths.stems / ".tmp-old"
+    tmp.mkdir(parents=True)
+    for name, a in (("vocals", y * 0.8), ("instrumental", y * 0.2)):
+        sf.write(tmp / f"{name}.wav", a, sr, subtype="PCM_24")
+    (tmp / "info.json").write_text(json.dumps({"model": "htdemucs", "sample_rate": sr, "frames": len(y), "demucs": "4.1.0"}),
+                                   encoding="utf-8")
+    old = stem_store.commit(tmp, folder.paths.stems, folder.meta.original.sha256, {"device": "cpu"})  # 이전 방식 그대로
+    shutil.rmtree(tmp)
+    flat = {n: hashlib.sha256((folder.paths.stems / f"{n}.wav").read_bytes()).hexdigest() for n in ("vocals", "instrumental")}
+    assert w.save()
+    root = str(folder.root)
+    w.doc.mark_saved(w.doc.file_path or "")
+    w.close()
+    w2 = make_window("b")
+    assert w2.open_project(root + "/project.json")
+    qtbot.waitUntil(lambda: "vocals" in w2.session.stems, timeout=20_000)
+    assert w2.session.manifest.files["vocals"]["path"] == "vocals.wav"  # 여는 것만으로는 옮기지 않는다
+    w2.model_compare.act_mode.trigger()
+    (e,) = w2.model_compare._entries
+    assert e.model == "htdemucs" and e.active and not (folder.paths.stems / "vocals.wav").exists()
+    assert {n: hashlib.sha256((e.path / f"{n}.wav").read_bytes()).hexdigest() for n in flat} == flat  # 내용 그대로
+    qtbot.waitUntil(lambda: w2.session.manifest is not None and w2.session.manifest.files["vocals"]["path"].startswith("models/"),
+                    timeout=20_000)
+    assert w2.session.manifest.stems_id == old.stems_id  # 피치 캐시가 그대로 이어진다
+    req = w2.session.lyrics_request(w2.lyrics_panel.settings(), AnalysisSettings())
+    assert os.path.isfile(req.vocals_path) and "models" in req.vocals_path
+    assert np.allclose(w2.session.raw_stems["vocals"].samples, y * 0.8, atol=2 ** -20)

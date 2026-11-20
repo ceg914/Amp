@@ -676,6 +676,9 @@ class ProjectSession(QObject):
 
         if self.folder is None or self.audio is None:
             raise AnalysisError("열린 프로젝트가 없습니다.")
+        if self.manifest is not None and not (self.folder.paths.stems / self.manifest.files["vocals"]["path"]).is_file():
+            m, ok, _why = self.folder.stems_status()  # 보관소로 옮겨졌을 수 있다 (STEP 5): 목록을 다시 읽는다
+            self.manifest = m if ok else None
         if self.manifest is not None:
             path = str(self.folder.paths.stems / self.manifest.files["vocals"]["path"])
             input_id = "stems-" + self.manifest.stems_id

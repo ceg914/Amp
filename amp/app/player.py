@@ -30,6 +30,7 @@ _FORMAT_MAP = {
     QAudioFormat.SampleFormat.Int32: SampleFormat.INT32,
     QAudioFormat.SampleFormat.Float: SampleFormat.FLOAT32,
 }
+COMPARE_TRACKS = ("cmp_a", "cmp_b")  # 모델 비교 모드의 A/B 재생 트랙 (model_compare_controller)
 BUFFER_USEC = 200_000  # 장치 버퍼 길이. UI가 잠깐 바빠도 소리가 끊기지 않을 만큼 둔다.
 SLOW_WINDOW_S = 60.0  # 반복 구간 없이 느리게 재생할 때 한 번에 늘리는 길이 (곡 전체를 미리 늘리지 않는다)
 
@@ -207,7 +208,13 @@ class AudioPlayer(QObject):
         return None
 
     def stretch_inputs(self) -> dict[str, AudioData]:
-        return dict(self._tracks) or ({"original": self._audio} if self._audio is not None else {})
+        tracks = dict(self._tracks) or ({"original": self._audio} if self._audio is not None else {})
+        solo = {n for n in tracks if self.track_state(n)["solo"]}
+        if solo and solo <= set(COMPARE_TRACKS):
+            # 모델 비교 청취: 솔로인 A/B 말고는 들리지 않으므로 A·B 두 트랙만 늘린다 (다섯 트랙이면 60초 창에 16초 → 약 6초).
+            # A/B 전환은 솔로만 바꾸므로 두 트랙 모두 늘려 둔다. 비교 모드를 끄면 트랙이 바뀌어 다시 늘린다
+            return {n: tracks[n] for n in COMPARE_TRACKS if n in tracks}
+        return tracks
 
     @property
     def tracks_version(self) -> int:

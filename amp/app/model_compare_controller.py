@@ -41,6 +41,7 @@ from PySide6.QtWidgets import (
 )
 
 from amp.app import theme
+from amp.app.player import COMPARE_TRACKS
 from amp.app.widgets import shrinkable_combos
 from amp.app.widgets.spectrogram import COMPARE_MODES
 from amp.audio import loudness
@@ -50,7 +51,7 @@ from amp.engine.model_compare import STATUS_LABELS, ModelSpec
 
 log = logging.getLogger(__name__)
 
-CMP_A, CMP_B = "cmp_a", "cmp_b"
+CMP_A, CMP_B = COMPARE_TRACKS
 STATE_FILE = "model_compare.json"  # analysis/ 안. A/B로 고른 결과 키만 적는다 (분리 결과는 stems/models/)
 TRACK_KINDS = {"vocals": "보컬", "instrumental": "반주"}
 
@@ -476,8 +477,8 @@ class ModelCompareController(QObject):
     def refresh_entries(self) -> None:
         store = self.store()
         try:
-            if store is not None:
-                store.migrate_legacy()
+            if store is not None and store.migrate_legacy() is not None:
+                self.w.session.load_stems()  # 예전 평면 결과를 옮겼다: 세션이 가진 목록(파일 경로)을 새로 읽는다
             self._entries = store.entries() if store is not None else []
         except OSError as e:
             log.warning("분리 결과 목록을 읽지 못함: %s", e)
