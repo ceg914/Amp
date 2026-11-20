@@ -28,6 +28,7 @@ from amp.app import theme
 from amp.app.document import ProjectDocument
 from amp.app.timeline import TimelineState
 from amp.lyrics import linking
+from amp.lyrics import pronunciation as pron
 from amp.lyrics.ops import MIN_SYLLABLE_S
 
 EDGE_PX = 5.0
@@ -249,10 +250,17 @@ class LyricLane(QWidget):
                 n_dots = len(al.links.get(sid, ())) if len(al.links.get(sid, ())) > 1 else 0
                 color = theme.LYRIC_CURRENT
             if n_dots > 1:
-                p.setPen(Qt.PenStyle.NoPen)
-                p.setBrush(color)
+                # 모양으로도 구분 (UI 명세 2.5): 판정 불확실 = 빈 원, 사용자 확정 멜리스마 = 사각형, 자동 멜리스마 = 채운 원
+                hollow = g is not None and not g.is_melisma
+                square = g is not None and g.is_melisma and g.source == "user"
+                p.setPen(QPen(color, 1.0) if hollow else Qt.PenStyle.NoPen)
+                p.setBrush(Qt.BrushStyle.NoBrush if hollow else color)
                 for k in range(min(n_dots, 4)):
-                    p.drawEllipse(QPointF(xa + 4 + k * 5, bot + 4), 1.6, 1.6)
+                    c = QPointF(xa + 4 + k * 5, bot + 4)
+                    if square:
+                        p.drawRect(QRectF(c.x() - 1.7, c.y() - 1.7, 3.4, 3.4))
+                    else:
+                        p.drawEllipse(c, 1.6, 1.6)
         n_un = len(ly.unaligned())
         if n_un:
             msg = f"미정렬 {n_un}"
@@ -482,6 +490,4 @@ class LyricLane(QWidget):
         e = self.doc.lyrics.pronunciation.get(sid)
         if e is None:
             return ""
-        if self.sub_mode == "ipa":
-            return e.ipa or "—"
-        return e.text if e.text else ("∅" if e.user_edited else "?")
+        return pron.marked_text(e, ipa=self.sub_mode == "ipa")  # 상태 기호(↻ ✓ ?)를 색과 함께 붙인다

@@ -217,3 +217,31 @@ def test_many_syllables_refresh_and_render_quickly(qtbot, window):
     print(f"\n음절·음표 {n}개: 판정·길이 다시 계산 {refresh_ms:.0f}ms, 장면 전체 그리기 {render_ms:.0f}ms")
     assert len(w.vocal.groups) == n and refresh_ms < 2000
 
+
+
+def test_status_is_shown_with_marks_not_only_color(qtbot, window):
+    """UI 명세 2.5: 상태를 색만으로 구분하지 않는다. 발음은 ✓(사용자 확정)·↻(재검토)·?(불확실·변환 불가) 기호를 붙인다."""
+    w = window
+    ids = _setup(w, text="같이 아 la", spans=((1.0, 1.5), (1.5, 2.0), (2.0, 3.2), (3.3, 3.6)),
+                 notes=[note("n1", 1.0, 1.5, 60), note("n2", 1.5, 2.0, 62), note("m1", 2.0, 2.4, 64),
+                        note("m2", 2.4, 2.8, 65), note("m3", 2.8, 3.2, 67), note("e1", 3.3, 3.6, 60)],
+                 links={0: ["n1"], 1: ["n2"], 2: ["m1", "m2", "m3"], 3: ["e1"]})
+    roll, lane = w.view.roll, w.lyric_lane
+    w.vocal.mode_actions["all"].trigger()
+    assert roll.label_lines(roll.items_by_id["n2"])[1:] == [("pron", "[치]"), ("ipa", "/tɕʰi/")]  # 정상: 기호 없음
+    eng = w.doc.lyrics.pronunciation[ids[3]]
+    assert eng.status == "unavailable"
+    assert roll.label_lines(roll.items_by_id["e1"])[1:] == [("pron", "[?]"), ("ipa", "/—/")]
+    w.lyrics.on_syllable_action("pron_confirm", [ids[1]])
+    assert roll.label_lines(roll.items_by_id["n2"])[1] == ("pron", "[치✓]")
+    assert lane._sub_text(ids[1]) == "치✓"
+    w.lyrics_panel.applyTextRequested.emit("갈이 아 la")  # 앞 음절이 바뀌어 사용자 발음 재검토
+    assert w.doc.lyrics.pronunciation[ids[1]].stale
+    assert roll.label_lines(roll.items_by_id["n2"])[1] == ("pron", "[치↻]") and lane._sub_text(ids[1]) == "치↻"
+    lane.set_display(sub_mode="ipa")
+    assert lane._sub_text(ids[3]) == "—"
+    # 멜리스마 점: 자동 멜리스마는 채운 원, 사용자 확정은 사각형 (그리기 오류 없이 그려지는지)
+    w.lyrics.on_syllable_action("mel_set", [ids[2]])
+    assert w.vocal.groups[ids[2]].source == "user"
+    lane.resize(800, lane.height())
+    assert not lane.grab().isNull()

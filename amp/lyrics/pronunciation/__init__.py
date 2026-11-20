@@ -30,6 +30,31 @@ N_IPA_USER = "직접 입력한 발음이 한글·가나가 아니어서 IPA를 �
 
 STATUS_LABELS = {"valid": "규칙 적용", "uncertain": "불확실", "unavailable": "변환 불가"}
 SOURCE_LABELS = {"generated": "자동 생성", "user": "사용자 확정", "imported": "가져옴"}
+# 화면에서 색 외에 붙이는 상태 기호 (UI 명세 2.5: 상태를 색만으로 구분하지 않는다)
+MARK_STALE, MARK_USER, MARK_UNCERTAIN = "↻", "✓", "?"
+
+
+def status_mark(e: PronEntry | None) -> str:
+    """발음 상태 기호: 재검토 필요 ↻ > 사용자 확정 ✓ > 불확실·변환 불가 ? > 없음."""
+    if e is None:
+        return MARK_UNCERTAIN
+    if e.stale:
+        return MARK_STALE
+    if e.user_edited:
+        return MARK_USER
+    return MARK_UNCERTAIN if e.status != "valid" else ""
+
+
+def marked_text(e: PronEntry | None, ipa: bool = False) -> str:
+    """기호를 붙인 발음(또는 IPA). 값이 없으면 발음은 '?', IPA는 '—' (기호를 겹쳐 붙이지 않음)."""
+    if e is None:
+        return "—" if ipa else MARK_UNCERTAIN
+    value = e.ipa if ipa else e.text
+    if not value:
+        if ipa:
+            return "—"
+        return "∅" + (MARK_STALE if e.stale else MARK_USER) if e.user_edited else MARK_UNCERTAIN
+    return value + status_mark(e)
 
 _PUNCT_BREAK = set(string.punctuation) | set("、。，．！？…～〜「」『』（）·")
 

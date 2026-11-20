@@ -15,6 +15,9 @@ from amp.app.pianoroll.items import NoteItem, PitchCurveItem, PlayheadItem
 from amp.app.pianoroll.mapping import PITCH_MAX, PITCH_MIN, PianoRollMapper
 from amp.core.model import Note
 from amp.core.pitch import is_black_key
+from amp.lyrics.pronunciation import marked_text as pron_marked
+
+IPA_PAD = 4.0  # IPA 줄 아래 여백(px)
 
 MIN_SCENE_SECONDS = 30.0
 TAIL_SECONDS = 4.0
@@ -158,8 +161,8 @@ class PianoRollScene(QGraphicsScene):
             if firsts:
                 item.set_label("".join(text.syllable(x).text for x in firsts))
                 ps = [pron.get(x) for x in firsts]
-                item.label_pron = "".join(e.text if e is not None and e.text else "?" for e in ps)
-                item.label_ipa = " ".join(e.ipa if e is not None and e.ipa else "—" for e in ps)
+                item.label_pron = "".join(pron_marked(e) for e in ps)  # 상태 기호(↻ ✓ ?)를 붙인다
+                item.label_ipa = " ".join(pron_marked(e, ipa=True) for e in ps)
             else:
                 item.label_pron = item.label_ipa = ""
                 if nid in approach:
@@ -369,7 +372,9 @@ class PianoRollScene(QGraphicsScene):
                 continue
             r = item.rect()
             w = max(max(fm.horizontalAdvance(t) for _k, t in lines) + 6, 12)
-            box = QRectF(r.left(), r.bottom() + 1, w, line_h * len(lines))
+            # IPA 줄 아래 여백: p͈ 같은 아래 결합 기호가 p 꼬리와 겹치거나 글상자 끝에 잘리지 않게
+            pad = IPA_PAD if lines[-1][0] == "ipa" else 0.0
+            box = QRectF(r.left(), r.bottom() + 1, w, line_h * len(lines) + pad)
             active = [x for x in active if x.right() > box.left()]
             if any(x.intersects(box) for x in active):
                 hidden += 1  # 앞 글상자와 겹친다 (확대하면 보인다). 음높이가 가까운 이웃 음표의 글상자도 본다
@@ -381,6 +386,7 @@ class PianoRollScene(QGraphicsScene):
             painter.fillRect(box, bg)
             for k, (kind, t) in enumerate(lines):
                 painter.setPen(theme.BG if current else colors[kind])
-                painter.drawText(QRectF(box.left(), box.top() + k * line_h, box.width(), line_h),
-                                 Qt.AlignmentFlag.AlignCenter, t)
+                align = Qt.AlignmentFlag.AlignHCenter | (Qt.AlignmentFlag.AlignTop if kind == "ipa" else Qt.AlignmentFlag.AlignVCenter)
+                painter.drawText(QRectF(box.left(), box.top() + k * line_h, box.width(), line_h + (pad if kind == "ipa" else 0)),
+                                 align, t)
         self.labels_hidden = hidden
