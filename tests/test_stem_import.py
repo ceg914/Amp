@@ -200,7 +200,8 @@ def test_pipeline_uses_imported_stems_instead_of_separating(tmp_path):
     pipe = TranscriptionPipeline(runner, separation_model="_identity")
     out = pipe.run(req)
     assert calls["separate"] == 0 and out.reused["separation"] is True
-    assert calls["pitch_input:stems"] == 1  # stems/vocals.wav로 피치
+    # stems/models/external-<키>/vocals.wav로 피치 (모델별 보관소)
+    assert sum(v for k, v in calls.items() if k.startswith("pitch_input:external-")) == 1
     assert out.manifest.stems_id == imported.stems_id
     assert out.result.models["separation"].name == "external"
     assert [n.pitch for n in out.result.notes] == [64, 67, 69]
@@ -213,5 +214,11 @@ def test_pipeline_uses_imported_stems_instead_of_separating(tmp_path):
     # 명시적으로 다시 분리하면 그때 분리한다
     out = pipe.run(replace(req, force_separation=True))
     assert calls["separate"] == 1 and out.manifest.model == "_identity"
+    # 가져온 결과 둘과 분리 결과 하나가 모두 남는다 (덮어쓰지 않음)
+    from amp.engine.model_store import ModelStore
+
+    kept = ModelStore(stems_dir, sha).entries()
+    assert sorted(e.model for e in kept) == ["_identity", "external", "external"]
+    assert [e.model for e in kept if e.active] == ["_identity"]
     info = json.loads((stems_dir / stem_store.MANIFEST).read_text(encoding="utf-8"))
     assert info["model"] == "_identity"

@@ -22,7 +22,6 @@ import os
 import shutil
 import tempfile
 import time
-import uuid
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
@@ -40,6 +39,7 @@ from amp.engine.cache import AnalysisCache
 from amp.engine.context import CancelToken, ProgressFn
 from amp.engine.dsp.pitch import FMAX_HZ, FMIN_HZ, PitchFrames
 from amp.engine.features import vocal_presence
+from amp.engine.model_store import ModelStore, StoreEntry, identity_for, store_key
 from amp.engine.notes import detect_notes
 from amp.engine.pitch_post import articulation_envelope, build_curve
 from amp.engine.settings import AnalysisSettings
@@ -71,6 +71,10 @@ class TranscriptionRequest:
     syllable_starts: tuple = ()
     # RoFormer 모델 파일 {"checkpoint", "config"}. 컴퓨터마다 다른 경로라 프로젝트가 아니라 프로그램 설정에 둔다
     model_files: dict = field(default_factory=dict)
+    # 모델 비교: 보관한 분리 결과(stems/models/<키>)로 분석한다. 지금 쓰는 결과(stems.json)는 바꾸지 않는다
+    stems_key: str | None = None
+    # False면 GPU 메모리 부족 때 CPU로 자동 전환하지 않고 오류(oom_gpu)를 낸다 (모델 비교: 사용자에게 묻는다)
+    cpu_fallback: bool = True
 
 
 @dataclass
@@ -134,7 +138,7 @@ class TranscriptionPipeline:
         token = token or CancelToken()
         report = progress or (lambda f, m: None)
         st = req.settings
-        separate = st.separation != "none"
+        separate = st.separation != "none" or bool(req.stems_key)  # 모델 비교는 항상 보관한 분리 결과로
         prog = _Progress(report, {"sep": 0.6, "pitch": 0.3, "tempo": 0.07, "notes": 0.03} if separate
                          else {"pitch": 0.75, "tempo": 0.2, "notes": 0.05})
         warnings: list[str] = []
@@ -241,7 +245,20 @@ class TranscriptionPipeline:
     # --- 단계 -----------------------------------------------------------------
 
     def _separation(self, req: TranscriptionRequest, stems_dir: Path, report: ProgressFn, token: CancelToken):
-        manifest = stem_store.read_manifest(stems_dir) if stems_dir.exists() else None
+        """모델별 보관소(stems/models/<키>)를 쓴다. 다른 모델로 분리해도 기존 결과를 덮어쓰지 않는다."""
+        store = ModelStore(stems_dir, req.source_sha256)
+        if req.stems_key:
+            manifest = store.view(req.stems_key)
+            if manifest is None:
+                raise AnalysisError("비교할 분리 결과가 없거나 원본과 맞지 않습니다. 모델 비교를 다시 실행하세요.")
+            report(1.0, f"보관한 분리 결과 사용 ({req.stems_key})")
+            return manifest, True
+        try:
+            if (moved := store.migrate_legacy()) is not None:
+                log.info("이전 형식 분리 결과를 %s로 옮김", moved)
+        except OSError as e:  # 옮기지 못하면 예전처럼 평면 결과를 그대로 쓴다
+            log.warning("이전 형식 분리 결과를 옮기지 못함: %s", e)
+        manifest = store.pointer()
         ok, reason = stem_store.validate(stems_dir, manifest, req.source_sha256)
         model = self.separation_model or req.settings.separation
         reusable = manifest is not None and manifest.model in (model, EXTERNAL) and _same_model_file(manifest, req)
@@ -251,21 +268,35 @@ class TranscriptionPipeline:
             return manifest, True
         if manifest is not None and not ok:
             log.info("기존 분리 결과를 쓸 수 없음: %s", reason)
-        stems_dir.mkdir(parents=True, exist_ok=True)
-        tmp = stems_dir / f".tmp-{uuid.uuid4().hex[:8]}"
-        tmp.mkdir()
+        if model == "mel_roformer" and not req.model_files.get("checkpoint"):
+            raise AnalysisError("Mel-Band RoFormer 모델 파일(.ckpt)을 고르지 않았습니다. 분석 설정의 보컬 분리에서 "
+                                "[모델 파일…]로 지정하세요.")
+        identity = identity_for(model, req.source_sha256, req.model_files)
+        key = store_key(identity)
+        if not req.force_separation and store.entry(key) is not None:
+            report(1.0, "보관한 분리 결과 사용")  # 예전에 이 모델·설정으로 분리해 둔 결과
+            return store.activate(key), True
+        entry = self.separate_into(store, model, identity, req, report, token)
+        return store.activate(entry.key), False
+
+    def separate_into(self, store: ModelStore, model: str, identity: dict, req: TranscriptionRequest,
+                      report: ProgressFn, token: CancelToken) -> StoreEntry:
+        """작업 프로세스로 분리해 보관소에 넣는다. 지금 쓰는 결과(stems.json)는 바꾸지 않는다.
+        같은 키(같은 원본·모델·체크포인트·설정)의 결과만 새 결과로 바뀐다."""
+        tmp = store.new_tmp()
         try:
-            args = {"input": req.source_path, "out_dir": str(tmp), "model": model, "device": req.settings.device}
+            args = {"input": req.source_path, "out_dir": str(tmp), "model": model, "device": req.settings.device,
+                    "cpu_fallback": bool(req.cpu_fallback)}
             if model == "mel_roformer":
-                if not req.model_files.get("checkpoint"):
-                    raise AnalysisError("Mel-Band RoFormer 모델 파일(.ckpt)을 고르지 않았습니다. 분석 설정의 보컬 분리에서 "
-                                        "[모델 파일…]로 지정하세요.")
                 args["model_files"] = dict(req.model_files)
             self._call("separate", args, report, token, req.numba_cache_dir)
-            manifest = stem_store.commit(tmp, stems_dir, req.source_sha256, {"device": req.settings.device})
+            return store.commit(tmp, identity, {"device": req.settings.device})
         finally:
             shutil.rmtree(tmp, ignore_errors=True)  # 성공이면 이미 비었고, 실패·취소면 임시 파일을 지운다
-        return manifest, False
+            try:
+                store.root.rmdir()  # 첫 분리가 실패·취소되면 빈 models/도 남기지 않는다 (비어 있지 않으면 그대로)
+            except OSError:
+                pass
 
     @staticmethod
     def _cached(cache: AnalysisCache | None, key: str, stage: str, params: dict, use_cache: bool, scratch: Path,

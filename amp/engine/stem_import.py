@@ -19,7 +19,6 @@ import hashlib
 import math
 import os
 from dataclasses import dataclass, field
-from pathlib import Path
 from typing import Callable
 
 import numpy as np
@@ -199,32 +198,37 @@ def prepare(original: AudioData, vocals_path: str, instrumental_path: str | None
 
 def write_stems(stems_dir: str | os.PathLike, vocals: AudioData, instrumental: AudioData, source_sha256: str,
                 rep: ImportReport, vocals_path: str, instrumental_path: str | None):
-    """stems/에 PCM 24bit로 쓰고 model='external' 목록을 남긴다. 목록을 먼저 지워 교체 중 중단에 대비한다."""
+    """stems/models/<키>/에 PCM 24bit로 쓰고(model='external') 분석에 쓸 결과로 고른다.
+
+    다른 모델의 분리 결과는 각자 폴더에 그대로 남는다. 같은 파일을 다시 가져오면 같은 키라 그 결과만 바뀐다.
+    """
     import json
-    import uuid
 
     import soundfile as sf
 
-    from amp.engine import stems as stem_store
+    from amp.engine.model_store import ModelStore
 
-    stems_dir = Path(stems_dir)
-    stems_dir.mkdir(parents=True, exist_ok=True)
-    tmp = stems_dir / f".tmp-{uuid.uuid4().hex[:8]}"
-    tmp.mkdir()
+    store = ModelStore(stems_dir, source_sha256)
+    store.migrate_legacy()  # 예전 평면 결과는 덮어쓰지 않고 모델 폴더로 옮긴다
+    tmp = store.new_tmp()
     try:
         for name, a in (("vocals", vocals), ("instrumental", instrumental)):
             sf.write(str(tmp / f"{name}.wav"), np.clip(a.samples, -1.0, 1.0), a.sample_rate, subtype="PCM_24")
+        vocals_sha = _sha256(vocals_path)
+        inst_sha = _sha256(instrumental_path) if instrumental_path else ""
         info = {
             "model": EXTERNAL, "sample_rate": vocals.sample_rate, "frames": vocals.frames, "source": EXTERNAL,
-            "tool": rep.tool, "vocals_file": rep.vocals_file, "vocals_sha256": _sha256(vocals_path),
-            "instrumental_file": rep.instrumental_file,
-            "instrumental_sha256": _sha256(instrumental_path) if instrumental_path else "",
+            "tool": rep.tool, "vocals_file": rep.vocals_file, "vocals_sha256": vocals_sha,
+            "instrumental_file": rep.instrumental_file, "instrumental_sha256": inst_sha,
             "instrumental": rep.instrumental, "lag_ms": round(rep.lag_ms, 2), "resampled_from": rep.resampled_from,
             "length_diff_ms": round(rep.length_diff_ms, 1), "residual_db": rep.residual_db,
             "correlation": rep.correlation, "warnings": list(rep.warnings),
         }
         (tmp / "info.json").write_text(json.dumps(info, ensure_ascii=False), encoding="utf-8")
-        return stem_store.commit(tmp, stems_dir, source_sha256, {"imported": True})
+        identity = {"model": EXTERNAL, "source": source_sha256, "vocals_sha256": vocals_sha,
+                    "instrumental_sha256": inst_sha}
+        entry = store.commit(tmp, identity, {"imported": True})
+        return store.activate(entry.key)
     finally:
         import shutil
 

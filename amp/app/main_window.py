@@ -685,20 +685,21 @@ class MainWindow(QMainWindow):
                     row.set_available(False, "오디오 없음", "—", "muted")
             elif audio is not None:
                 m = s.manifest
+                rel = f"stems/{m.files[name]['path']}" if m is not None and name in m.files else f"stems/{name}.wav"
                 if m is not None and m.model == "mel_roformer":
                     dev = str(m.model_info.get("device", ""))
-                    info = (f"stems/{name}.wav\n{audio.duration:.1f}s · RoFormer ({m.model_info.get('checkpoint', '')})"
+                    info = (f"{rel}\n{audio.duration:.1f}s · RoFormer ({m.model_info.get('checkpoint', '')})"
                             f" · {dev.upper()}")
                     row.set_available(True, info, "✓ 분리됨", "ok")
                 elif m is not None and m.model == "external":
                     src = m.model_info.get("tool") or m.model_info.get(f"{name}_file") or m.model_info.get("vocals_file", "")
                     if name == "instrumental" and m.model_info.get("instrumental") == "original_minus_vocals":
                         src = "원본 − 가져온 보컬"
-                    info = f"stems/{name}.wav\n{audio.duration:.1f}s · 가져옴: {src}"
+                    info = f"{rel}\n{audio.duration:.1f}s · 가져옴: {src}"
                     row.set_available(True, info, "✓ 가져옴", "ok")
                 else:
                     dev = m.model_info.get("device", "") if m else ""
-                    info = f"stems/{name}.wav\n{audio.duration:.1f}s · {m.model if m else ''} · {dev.upper()}"
+                    info = f"{rel}\n{audio.duration:.1f}s · {m.model if m else ''} · {dev.upper()}"
                     row.set_available(True, info, "✓ 분리됨", "ok")
             else:
                 reason = s.stems_reason or "분리 전"

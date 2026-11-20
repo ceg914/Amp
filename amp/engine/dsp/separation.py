@@ -19,7 +19,8 @@ import numpy as np
 
 DEMUCS_MODELS = ("htdemucs",)
 ROFORMER_MODELS = ("mel_roformer",)  # 사용자가 고른 체크포인트 파일로 실행 (amp/engine/dsp/roformer.py)
-TEST_MODELS = ("_identity", "_sleep", "_crash")
+TEST_MODELS = ("_identity", "_sleep", "_crash", "_half", "_oom")
+OOM_GPU_MESSAGE = "GPU 메모리가 부족해 보컬 분리를 마치지 못했습니다. CPU로 다시 실행할 수 있지만 훨씬 오래 걸립니다."
 MODEL_RATE = 44100
 # demucs는 shifts마다 0~0.5초 임의 이동을 쓴다. 같은 곡을 다시 분리해도 같은 결과가 나오도록 시드를 고정한다.
 SHIFT_SEED = 0
@@ -143,10 +144,12 @@ def separate(
     device: str = "auto",
     progress: Callable[[float, str], None] | None = None,
     model_files: dict | None = None,
+    cpu_fallback: bool = True,
 ) -> tuple[np.ndarray, np.ndarray, dict]:
     """(frames, channels) → (vocals, accompaniment, info). 출력은 입력과 같은 sr·프레임 수다.
 
     model_files: RoFormer용 {"checkpoint": 경로, "config": .yaml 경로 또는 ""}.
+    cpu_fallback: False면 GPU 메모리가 부족할 때 CPU로 다시 돌리지 않고 SeparationError("oom_gpu")를 낸다.
     """
     report = progress or (lambda f, m: None)
     if model_name not in DEMUCS_MODELS + ROFORMER_MODELS + TEST_MODELS:
@@ -170,16 +173,16 @@ def separate(
         info["silent_input"] = True
         report(1.0, "무음 입력 — 분리를 건너뜀")
     elif model_name in ROFORMER_MODELS:  # 정규화 없이 원래 크기로 (참조 구현과 같게). 반주 = 원본 − 보컬
-        vocals, dev_info = _run_roformer(wav, files, device, report)
+        vocals, dev_info = _run_roformer(wav, files, device, report, cpu_fallback)
         info.update(dev_info)
         accompaniment = (wav - vocals).astype(np.float32)
     else:
         norm = (wav - mean) / std
         if model_name in TEST_MODELS:
-            sources = _run_test_model(model_name, norm, report)
+            sources = _run_test_model(model_name, norm, report, cpu_fallback)
             info["device"] = "cpu"
         else:
-            sources, dev_info = _run_demucs(model_name, norm, device, report)
+            sources, dev_info = _run_demucs(model_name, norm, device, report, cpu_fallback)
             info.update(dev_info)
         vocals = sources["vocals"] * std + mean
         others = [v for k, v in sources.items() if k != "vocals"]
@@ -196,7 +199,7 @@ def separate(
     return out[0], out[1], info
 
 
-def _run_test_model(name: str, norm: np.ndarray, report) -> dict:
+def _run_test_model(name: str, norm: np.ndarray, report, cpu_fallback: bool = True) -> dict:
     if name == "_crash":  # 강제 종료 시험용: 정리 코드 없이 프로세스가 죽는다 (메모리 부족 강제 종료 흉내)
         report(0.5, "시험용 모델이 강제 종료됩니다")
         import os
@@ -211,11 +214,15 @@ def _run_test_model(name: str, norm: np.ndarray, report) -> dict:
         for i in range(600):
             time.sleep(0.05)
             report(i / 600, "시험용 모델 실행 중")
+    if name == "_oom" and not cpu_fallback:  # GPU 메모리 부족 시험용
+        raise SeparationError("oom_gpu", OOM_GPU_MESSAGE)
     report(1.0, "시험용 모델 완료")
+    if name == "_half":  # 비교 시험용: 보컬 = 입력 절반, 반주 = 나머지 절반
+        return {"vocals": norm * 0.5, "other": norm * 0.5}
     return {"vocals": norm.copy(), "other": np.zeros_like(norm)}  # 반주는 0, 보컬은 입력 그대로
 
 
-def _run_roformer(wav: np.ndarray, files: dict, device: str, report) -> tuple[np.ndarray, dict]:
+def _run_roformer(wav: np.ndarray, files: dict, device: str, report, cpu_fallback: bool = True) -> tuple[np.ndarray, dict]:
     import importlib.util
 
     if importlib.util.find_spec("torch") is None:
@@ -223,12 +230,12 @@ def _run_roformer(wav: np.ndarray, files: dict, device: str, report) -> tuple[np
     from amp.engine.dsp import roformer
 
     try:
-        return roformer.run(wav, files["checkpoint"], files.get("config") or None, device, report)
+        return roformer.run(wav, files["checkpoint"], files.get("config") or None, device, report, cpu_fallback)
     except roformer.RoformerError as e:
         raise SeparationError(e.code, str(e)) from e
 
 
-def _run_demucs(model_name: str, norm: np.ndarray, device: str, report) -> tuple[dict, dict]:
+def _run_demucs(model_name: str, norm: np.ndarray, device: str, report, cpu_fallback: bool = True) -> tuple[dict, dict]:
     try:
         import torch
         from demucs.apply import apply_model
@@ -280,6 +287,8 @@ def _run_demucs(model_name: str, norm: np.ndarray, device: str, report) -> tuple
             raise
         if actual != "cuda":
             raise SeparationError("oom", "메모리가 부족해 보컬 분리를 마치지 못했습니다. 다른 프로그램을 닫고 다시 시도하세요.") from e
+        if not cpu_fallback:
+            raise SeparationError("oom_gpu", OOM_GPU_MESSAGE) from e
         torch.cuda.empty_cache()
         info["device"] = "cpu"
         info["note"] = "GPU 메모리가 부족해 CPU로 다시 실행했습니다."

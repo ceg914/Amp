@@ -5,8 +5,9 @@ from __future__ import annotations
 import math
 from contextlib import contextmanager
 
+import numpy as np
 from PySide6.QtCore import QLineF, QPointF, QRectF, Qt
-from PySide6.QtGui import QBrush, QColor, QPainter, QPen
+from PySide6.QtGui import QBrush, QColor, QPainter, QPainterPath, QPen
 from PySide6.QtWidgets import QGraphicsScene
 
 from amp.app import theme
@@ -43,6 +44,10 @@ class PianoRollScene(QGraphicsScene):
         self.reference_notes: list[tuple[float, float, int, str]] = []
         self.reference_mode = "both"  # auto / ref / both / diff
         self.reference_preview = False  # 정렬을 확정하지 않음 (점선을 더 촘촘히)
+        # STEP 5 모델 비교: "a"/"b" → {"notes": [(시작, 끝, 음높이)], "curve": PitchCurve | None, "label": str}
+        # 비교용 자동 결과는 편집할 수 없는 그림이다. A는 행 위쪽 절반 바이올렛 점선, B는 아래쪽 절반 민트 점점선
+        self.model_layers: dict[str, dict] = {}
+        self.model_show = {"a_notes": True, "b_notes": True, "a_curve": True, "b_curve": True}
         self.lyrics_visible = True
         self.highlight_notes: set[str] = set()  # 선택한 음절에 연결된 음표 (민트 테두리)
         self.current_notes: set[str] = set()  # 재생 중인 음절에 연결된 음표 (글자 강조)
@@ -248,6 +253,80 @@ class PianoRollScene(QGraphicsScene):
                 painter.setPen(theme.LYRIC_WARN if flag != "uncertain" else theme.TEXT_DIM)
                 painter.drawText(QRectF(r.left() + 1, r.top() - 1, 12, r.height() + 2), Qt.AlignmentFlag.AlignCenter, marks[flag])
 
+    def set_model_layers(self, layers: dict[str, dict] | None) -> None:
+        self.model_layers = dict(layers or {})
+        self.invalidate(self.sceneRect(), QGraphicsScene.SceneLayer.BackgroundLayer | QGraphicsScene.SceneLayer.ForegroundLayer)
+
+    def set_model_visibility(self, **flags: bool) -> None:
+        for k, v in flags.items():
+            if k in self.model_show:
+                self.model_show[k] = bool(v)
+        self.invalidate(self.sceneRect(), QGraphicsScene.SceneLayer.BackgroundLayer | QGraphicsScene.SceneLayer.ForegroundLayer)
+
+    def _model_pen(self, role: str, width: float = 1.4) -> QPen:
+        pen = QPen(theme.MODEL_A if role == "a" else theme.MODEL_B, width,
+                   Qt.PenStyle.DashLine if role == "a" else Qt.PenStyle.DotLine)
+        pen.setCosmetic(True)
+        return pen
+
+    def _draw_model_notes(self, painter: QPainter, rect: QRectF) -> None:
+        m = self.mapper
+        t0, t1 = m.x_to_time(rect.left()), m.x_to_time(rect.right())
+        half = m.row_height / 2
+        painter.setFont(theme.mono_font(8))
+        for role in ("a", "b"):
+            layer = self.model_layers.get(role)
+            if not layer or not self.model_show.get(f"{role}_notes", True):
+                continue
+            color = theme.MODEL_A if role == "a" else theme.MODEL_B
+            fill = QColor(color)
+            fill.setAlpha(34)
+            pen = self._model_pen(role)
+            for a, b, pitch in layer.get("notes", ()):
+                if b < t0 or a > t1:
+                    continue
+                y = m.pitch_to_y(pitch) + (0.5 if role == "a" else half)
+                r = QRectF(m.time_to_x(a), y, max(m.time_to_x(b) - m.time_to_x(a), 2.0), half - 0.5)
+                painter.fillRect(r, fill)
+                painter.setPen(pen)
+                painter.drawRect(r)
+                if r.width() >= 14 and m.row_height >= 12:
+                    painter.setPen(color)
+                    painter.drawText(QRectF(r.left() + 1, r.top() - 1, 10, half + 1), Qt.AlignmentFlag.AlignCenter, role.upper())
+
+    def _draw_model_curves(self, painter: QPainter, rect: QRectF) -> None:
+        m = self.mapper
+        t0, t1 = m.x_to_time(rect.left()), m.x_to_time(rect.right())
+        for role in ("a", "b"):
+            layer = self.model_layers.get(role)
+            c = layer.get("curve") if layer else None
+            if c is None or not self.model_show.get(f"{role}_curve", True):
+                continue
+            i0 = max(0, int((t0 - c.start_time) * c.frame_rate) - 1)
+            i1 = min(len(c.f0_hz), int((t1 - c.start_time) * c.frame_rate) + 2)
+            if i1 <= i0:
+                continue
+            f = np.asarray(c.f0_hz[i0:i1], dtype=float)
+            conf = np.asarray(c.confidence[i0:i1], dtype=float)
+            ok = np.isfinite(f) & (f > 0) & (conf >= 0.05)
+            midi = 69 + 12 * np.log2(np.where(ok, f, 440.0) / 440.0)
+            xs = (c.start_time + np.arange(i0, i1) / c.frame_rate) * m.px_per_sec
+            ys = (PITCH_MAX - midi) * m.row_height + m.row_height / 2
+            path = QPainterPath()
+            down = False
+            for x, y, good in zip(xs.tolist(), ys.tolist(), ok.tolist()):
+                if not good:
+                    down = False
+                    continue
+                if down:
+                    path.lineTo(x, y)
+                else:
+                    path.moveTo(x, y)
+                    down = True
+            painter.setPen(self._model_pen(role, 1.8))
+            painter.setBrush(Qt.BrushStyle.NoBrush)
+            painter.drawPath(path)
+
     def set_loop_region(self, region) -> None:
         self.loop_region = tuple(region) if region else None
         self.invalidate(self.sceneRect(), QGraphicsScene.SceneLayer.BackgroundLayer)
@@ -338,6 +417,8 @@ class PianoRollScene(QGraphicsScene):
                     painter.drawLine(QLineF(x, rect.top(), x, rect.bottom()))
 
         self._draw_reference(painter, rect)  # STEP 5: 참조 악보 (격자 위, 자동 채보 음표 아래)
+        if self.model_layers:
+            self._draw_model_notes(painter, rect)  # STEP 5: 모델 비교용 A/B 자동 음표 (작업본 음표 아래)
         tempo = self.doc.score.tempo
         t0 = max(0.0, m.x_to_time(left))
         t1 = m.x_to_time(right)
@@ -374,6 +455,8 @@ class PianoRollScene(QGraphicsScene):
     def drawForeground(self, painter: QPainter, rect: QRectF) -> None:  # noqa: N802
         """가사·발음·IPA는 음표 아래 글상자로 쓴다. 화면에 보이는 음표만 그리고, 앞 글상자와 겹치면 생략한다.
         멜리스마는 음표를 민트 선으로 잇고 아래에 괄호선을 긋는다(사용자 확정: 굵은 실선, 자동: 실선, 판정 불확실: 점선)."""
+        if self.model_layers:
+            self._draw_model_curves(painter, rect)  # A/B 피치 곡선은 음표 위에 그린다 (가려지지 않게)
         if not self.lyrics_visible:
             return
         grow = QRectF(rect).adjusted(-200, -40, 200, 40)

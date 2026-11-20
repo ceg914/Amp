@@ -287,6 +287,16 @@ def test_pipeline_uses_roformer_and_reuses_until_checkpoint_changes(tmp_path):
     pipe.run(replace(req, model_files={}))  # 파일 설정이 없어도 있는 결과는 쓴다
     assert len([c for c, _ in calls if c == "separate"]) == 1
     st_ = os.stat(ckpt)
-    os.utime(ckpt, ns=(st_.st_atime_ns, st_.st_mtime_ns + 10_000_000_000))  # 모델 파일이 바뀜
+    os.utime(ckpt, ns=(st_.st_atime_ns, st_.st_mtime_ns + 10_000_000_000))  # 수정 시각만 바뀜 (내용 같음)
+    pipe.run(req)
+    assert len([c for c, _ in calls if c == "separate"]) == 1  # 보관소 키는 내용 해시라 그대로 재사용
+    changed = tiny_model()
+    with torch.no_grad():
+        next(changed.parameters()).add_(0.01)
+    save_ckpt(ckpt, changed)  # 같은 경로, 다른 가중치 = 모델 파일이 바뀜
     pipe.run(req)
     assert len([c for c, _ in calls if c == "separate"]) == 2
+    from amp.engine.model_store import ModelStore
+
+    kept = ModelStore(req.stems_dir, req.source_sha256).entries()
+    assert len(kept) == 2 and sum(e.active for e in kept) == 1  # 이전 체크포인트 결과도 남는다

@@ -41,6 +41,10 @@ NO_VOCAL_HATCH.setAlpha(45)
 TEXT = QColor(T.TEXT)
 TEXT_DIM = QColor(T.TEXT_2)
 ACCENT = QColor(T.ACCENT)
+ACCENT_2 = QColor(T.ACCENT_2)
+# 모델 비교: A = 바이올렛 점선, B = 민트 점선 (색과 함께 모양·꼬리표로도 구분한다)
+MODEL_A = QColor(T.ACCENT)
+MODEL_B = QColor(T.ACCENT_2)
 
 # 음표는 모두 바이올렛. 상태(원본/수정/추가)는 채움·테두리 모양으로 구분한다(색만으로 구분하지 않음).
 NOTE_FILL = {"original": QColor(T.ACCENT), "modified": QColor(T.ACCENT), "user": QColor(T.ACCENT)}

@@ -106,7 +106,11 @@ class PcmMixer:
     - 솔로가 하나라도 켜져 있으면 솔로 트랙만 들린다. 아니면 음소거하지 않은 트랙이 모두 들린다.
     - 상태는 재생 중에도 바꿀 수 있다. 오디오 스레드는 블록을 읽을 때마다 현재 상태를 쓴다.
     - 모든 트랙은 같은 샘플레이트·프레임 수여야 한다(분리 결과가 원본과 같은 시간축을 쓰므로 성립).
+    - 음량·음소거·솔로가 바뀌면 트랙마다 RAMP_S 동안 음량을 직선으로 옮긴다. 모델 A/B 전환(솔로 A → 솔로 B)은
+      A가 줄고 B가 커지는 짧은 크로스페이드가 되어 딸깍 소리가 나지 않는다. 재생 위치는 그대로다.
     """
+
+    RAMP_S = 0.012
 
     def __init__(
         self,
@@ -131,6 +135,7 @@ class PcmMixer:
         self.sample_format = sample_format
         self.total_out_frames = first.total_out_frames
         self.state = {name: {"gain": 1.0, "mute": False, "solo": False} for name in tracks}
+        self._applied: dict[str, float] | None = None  # 마지막 블록 끝의 실제 음량 (처음 읽을 때 목표값으로 시작)
 
     @property
     def bytes_per_frame(self) -> int:
@@ -154,11 +159,32 @@ class PcmMixer:
             s["solo"] = bool(solo)
         self.state = {**self.state, name: s}  # 통째로 바꿔 오디오 스레드가 반쯤 바뀐 상태를 보지 않게 한다
 
+    def set_states(self, changes: dict[str, dict]) -> None:
+        """여러 트랙 상태를 한 번에 바꾼다 (A/B 전환: 오디오 스레드가 '둘 다 솔로 아님' 같은 중간 상태를 보지 않게)."""
+        new = dict(self.state)
+        for name, ch in changes.items():
+            if name not in new:
+                continue
+            s = dict(new[name])
+            if ch.get("gain") is not None:
+                s["gain"] = float(max(0.0, ch["gain"]))
+            for k in ("mute", "solo"):
+                if ch.get(k) is not None:
+                    s[k] = bool(ch[k])
+            new[name] = s
+        self.state = new
+
     def audible(self) -> list[tuple[str, float]]:
         state = self.state
         solo = [n for n, s in state.items() if s["solo"]]
         names = solo if solo else [n for n, s in state.items() if not s["mute"]]
         return [(n, state[n]["gain"]) for n in names if state[n]["gain"] > 0]
+
+    def targets(self) -> dict[str, float]:
+        """트랙별 목표 음량 (들리지 않으면 0)."""
+        out = dict.fromkeys(self._converters, 0.0)
+        out.update(self.audible())
+        return out
 
     def read_float(self, start: int, count: int) -> np.ndarray:
         """출력 프레임 [start, start+count)를 섞은 float32 (count', out_channels). 끝을 넘으면 짧다."""
@@ -167,9 +193,24 @@ class PcmMixer:
         mix = np.zeros((count, self.out_channels), dtype=np.float32)
         if count == 0:
             return mix
-        for name, gain in self.audible():
-            conv = self._converters[name]
-            mix += conv._map_channels(conv._resample(start, count)) * gain
+        targets = self.targets()
+        applied = dict(targets) if self._applied is None else self._applied
+        ramp = max(1, int(self.RAMP_S * self.out_rate))
+        done: dict[str, float] = {}
+        for name, conv in self._converters.items():
+            g1 = targets[name]
+            g0 = applied.get(name, g1)
+            if abs(g1 - g0) < 1e-6:
+                done[name] = g1
+                if g1 > 0:
+                    mix += conv._map_channels(conv._resample(start, count)) * g1
+                continue
+            step = (g1 - g0) / ramp  # 블록이 짧으면 다음 블록에서 이어서 옮긴다
+            env = g0 + step * np.arange(1, count + 1, dtype=np.float32)
+            env = np.minimum(env, g1) if g1 > g0 else np.maximum(env, g1)
+            mix += conv._map_channels(conv._resample(start, count)) * env[:, None].astype(np.float32)
+            done[name] = float(env[-1])
+        self._applied = done
         return mix
 
     def quantize(self, block: np.ndarray) -> bytes:

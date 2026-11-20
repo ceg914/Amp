@@ -526,7 +526,7 @@ def demix(model_fn: Callable, mix: np.ndarray, chunk_size: int, num_overlap: int
 
 
 def run(wav: np.ndarray, checkpoint: str, config_path: str | None, device: str,
-        report: Callable[[float, str], None]) -> tuple[np.ndarray, dict]:
+        report: Callable[[float, str], None], cpu_fallback: bool = True) -> tuple[np.ndarray, dict]:
     """44.1kHz (2, frames) → (보컬 (2, frames), 정보). 반주는 호출한 쪽에서 원본 − 보컬로 만든다."""
     import torch
 
@@ -564,6 +564,10 @@ def run(wav: np.ndarray, checkpoint: str, config_path: str | None, device: str,
             raise
         if actual != "cuda":
             raise RoformerError("oom", "메모리가 부족해 보컬 분리를 마치지 못했습니다. 다른 프로그램을 닫고 다시 시도하세요.") from e
+        if not cpu_fallback:
+            from amp.engine.dsp.separation import OOM_GPU_MESSAGE
+
+            raise RoformerError("oom_gpu", OOM_GPU_MESSAGE) from e
         torch.cuda.empty_cache()
         info["device"] = "cpu"
         info["note"] = "GPU 메모리가 부족해 CPU로 다시 실행했습니다."

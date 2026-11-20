@@ -316,14 +316,13 @@ class ProjectSession(QObject):
             self._remask()  # 작업 중에 구간이 바뀌었다
 
     def import_stems(self, vocals_path: str, instrumental_path: str | None = None, tool: str = "") -> TaskHandle | None:
-        """다른 프로그램으로 만든 분리 결과를 stems/로 가져온다. 기존 분리 결과는 backup/에 남긴다.
+        """다른 프로그램으로 만든 분리 결과를 stems/models/로 가져온다. 기존 분리 결과는 각자 모델 폴더에 그대로 남는다.
 
         가져온 결과는 manifest model='external'이고, 다음 분석은 Demucs 대신 이 결과로 피치·음표를 계산한다.
         """
         if self.folder is None or self.audio is None or self.busy:
             return None
         from amp.engine import stem_import
-        from amp.project.workspace import backup_file
 
         folder, audio, seq, ranges = self.folder, self.audio, self._seq, self.mask_ranges
         sha = folder.meta.original.sha256
@@ -331,17 +330,7 @@ class ProjectSession(QObject):
         def job(progress, token):
             vocals, inst, rep = stem_import.prepare(audio, vocals_path, instrumental_path, tool, progress)
             token.raise_if_cancelled()
-            old, _ok, _why = folder.stems_status()
-            if old is not None:  # 덮어쓰기 전에 지금 분리 결과를 남긴다 (Demucs 결과로 돌아갈 수 있게)
-                progress(0.75, "기존 분리 결과 백업 중")
-                label = f"before-import-{old.model}"
-                for name in ("vocals", "instrumental"):
-                    path = folder.paths.stems / str(old.files.get(name, {}).get("path", f"{name}.wav"))
-                    if path.exists():
-                        backup_file(folder, path, label)
-                if (folder.paths.stems / stem_store.MANIFEST).exists():
-                    backup_file(folder, folder.paths.stems / stem_store.MANIFEST, label)
-            progress(0.8, "분리 결과 저장 중")
+            progress(0.8, "분리 결과 저장 중")  # 기존 결과는 stems/models/<키>/에 그대로 남는다 (모델 비교에서 다시 고를 수 있음)
             manifest = stem_import.write_stems(folder.paths.stems, vocals, inst, sha, rep, vocals_path, instrumental_path)
             raw = stem_store.load(folder.paths.stems, manifest)  # 저장한 그대로(24bit) 다시 읽어 재생·분석과 같게
             eff = apply_no_vocal(raw, ranges)
@@ -505,6 +494,68 @@ class ProjectSession(QObject):
             syllable_starts=self.syllable_starts(), model_files=dict(self.model_files),
         )
 
+    # --- 모델 비교 (STEP 5) -----------------------------------------------------
+
+    def model_store(self):
+        """프로젝트의 모델별 분리 결과 보관소 (stems/models/). 예전 평면 결과는 처음 열 때 옮긴다."""
+        if self.folder is None:
+            return None
+        from amp.engine.model_store import ModelStore
+
+        return ModelStore(self.folder.paths.stems, self.folder.meta.original.sha256)
+
+    def run_model_compare(self, settings: AnalysisSettings, specs: list, force: bool = False) -> TaskHandle | None:
+        """고른 모델을 하나씩 분리하고 같은 설정으로 채보한다. 지금 분석에 쓰는 결과는 바꾸지 않는다."""
+        if self.busy:
+            return None
+        try:
+            req = self._request(settings, False)
+        except AnalysisError as e:
+            self.error.emit("모델을 비교할 수 없습니다", str(e), "")
+            return None
+        from amp.engine import model_compare
+
+        def job(progress, token):
+            return model_compare.run_compare(req, list(specs), progress, token, force=force)
+
+        handle = self._submit("분리 모델 비교", job)
+        self._track_analysis(handle)
+        handle.finished.connect(self._record_compare_runs)
+        return handle
+
+    def transcribe_entries(self, settings: AnalysisSettings, keys: list[str]) -> TaskHandle | None:
+        """보관한 분리 결과를 같은 설정으로 채보만 한다 (가져온 결과 비교, 프로젝트를 다시 연 뒤 등)."""
+        if self.busy:
+            return None
+        try:
+            req = self._request(settings, False)
+        except AnalysisError as e:
+            self.error.emit("모델별 채보를 할 수 없습니다", str(e), "")
+            return None
+        from amp.engine import model_compare
+
+        def job(progress, token):
+            return model_compare.transcribe_keys(req, list(keys), progress, token)
+
+        handle = self._submit("모델별 채보", job)
+        self._track_analysis(handle)
+        return handle
+
+    def _record_compare_runs(self, run) -> None:
+        for oc in getattr(run, "outcomes", ()):
+            out = getattr(oc, "output", None)
+            if out is not None:  # 모델별 자동 분석도 실행 기록으로 남긴다 (나중에 비교·복구용)
+                self._record_run(out.result, f"compare:{oc.spec.model}", out.timings, out.reused, out.resources)
+
+    def activate_stems(self, key: str) -> None:
+        """이 분리 결과를 분석에 쓴다 (stems/stems.json만 바꿈, 다른 결과 파일은 그대로). 재생 트랙을 다시 불러온다."""
+        store = self.model_store()
+        if store is None:
+            raise AnalysisError("열린 프로젝트가 없습니다.")
+        manifest = store.activate(key)
+        log.info("분석 소스 변경: %s (%s)", key, manifest.model)
+        self.load_stems()
+
     def syllable_starts(self) -> tuple[float, ...]:
         """음표 검출에 넘길 음절 시작: 정렬 모델·사용자·음표에서 온 시간만 (인식 단어 시각 추정값은 쓰지 않는다)."""
         al = self.doc.lyrics.alignment
@@ -520,16 +571,9 @@ class ProjectSession(QObject):
             self.error.emit("분석할 수 없습니다", str(e), "")
             return None
         audio, seq, ranges = self.audio, self._seq, self.mask_ranges
-        folder = self.folder
-        keep_external = force_separation and self.manifest is not None and self.manifest.model == "external"
 
         def job(progress, token):
-            if keep_external and folder is not None:  # 가져온 분리 결과를 Demucs 결과로 바꾸기 전에 남긴다
-                from amp.project.workspace import backup_file
-
-                for path in sorted(folder.paths.stems.glob("*.wav")) + [folder.paths.stems / stem_store.MANIFEST]:
-                    if path.exists():
-                        backup_file(folder, path, "before-reseparate-external")
+            # 다시 분리해도 다른 모델·가져온 결과는 stems/models/<키>/에 그대로 남는다 (같은 모델·설정 결과만 바뀜)
             out = TranscriptionPipeline().run(req, progress, token)
             # 파형 요약은 작업 스레드에서 만든다. 화면 스레드에서 만들면 5분 곡 스템 둘에 0.7초쯤 화면이 멈췄다
             # (사용자 Windows 로그: 분석 실행 직후 0.65~1.05초 멈춤)

@@ -337,6 +337,17 @@ class AudioPlayer(QObject):
         if self._mixer is not None:
             self._mixer.set_state(name, gain=gain, mute=mute, solo=solo)
 
+    def set_track_states(self, changes: dict[str, dict]) -> None:
+        """여러 트랙의 음량·음소거·솔로를 한 번에 바꾼다. 재생은 멈추지 않고 믹서가 짧게 크로스페이드한다."""
+        for name, ch in changes.items():
+            st = self.track_state(name)
+            for k in ("gain", "mute", "solo"):
+                if ch.get(k) is not None:
+                    st[k] = float(ch[k]) if k == "gain" else bool(ch[k])
+            self._track_state[name] = st
+        if self._mixer is not None:  # 보통·반복·느린 재생 모두 지금 스트림이 읽는 믹서
+            self._mixer.set_states(changes)
+
     def toggle(self) -> None:
         if self._state is PlaybackState.PLAYING:
             self.pause()

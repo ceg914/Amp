@@ -32,6 +32,11 @@ KIND_LABELS = {
     "onset_gap": "음절·음표 시작 차이", "link_review": "재확인 필요한 연결", "asr_low": "인식 신뢰도 낮은 가사",
     "mel_uncertain": "멜리스마 판정 불확실", "mel_review": "멜리스마 재확인 필요", "pron_unavailable": "발음 변환 불가",
     "pron_stale": "발음 재검토 필요", "sep_novocal_notes": "보컬 없는 구간 안의 음표", "sep_leak": "반주가 섞였을 수 있는 음표",
+    # 모델 비교 (amp.compare.model_diff)
+    "model_only_a": "A 결과에만 있는 음표", "model_only_b": "B 결과에만 있는 음표", "model_pitch": "모델 간 음높이 차이",
+    "model_octave": "모델 간 옥타브 차이 의심", "model_curve": "모델 간 피치 곡선 차이",
+    "model_voiced_a": "A에서만 유성인 구간", "model_voiced_b": "B에서만 유성인 구간",
+    "model_repeat": "재발음 분할 차이", "model_novocal_a": "보컬 없는 구간의 A 음표", "model_novocal_b": "보컬 없는 구간의 B 음표",
 }
 
 # 기준값 (사유에 그대로 적는다)

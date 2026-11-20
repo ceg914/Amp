@@ -228,7 +228,8 @@ class ProjectFolder:
     def cleanup_temp(self) -> list[str]:
         """비정상 종료로 남은 임시 파일·폴더를 지운다. 잠금을 잡은 뒤(다른 쓰기 주체가 없을 때)만 호출한다."""
         removed: list[str] = []
-        for d in self.paths.stems.glob(".tmp-*") if self.paths.stems.exists() else []:
+        tmp_dirs = [*self.paths.stems.glob(".tmp-*"), *self.paths.stems.glob("models/.tmp-*")] if self.paths.stems.exists() else []
+        for d in tmp_dirs:
             shutil.rmtree(d, ignore_errors=True)
             removed.append(str(d.relative_to(self.root)))
         if self.paths.cache.exists():

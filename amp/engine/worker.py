@@ -12,8 +12,8 @@ GUI가 ``python -m amp.engine.worker <명령> --args-file <JSON 파일>`` 로 �
 명령
     probe      PyTorch·Demucs·CUDA 설치 상태
     check_model {"checkpoint", "config"} → RoFormer 모델 파일 구조 확인 (분리하지 않음)
-    separate   {"input", "out_dir", "model", "device", "model_files"} → out_dir/vocals.wav, instrumental.wav, info.json
-               (model_files: RoFormer 체크포인트·설정 경로)
+    separate   {"input", "out_dir", "model", "device", "model_files", "cpu_fallback"} → out_dir/vocals.wav, instrumental.wav, info.json
+               (model_files: RoFormer 체크포인트·설정 경로, cpu_fallback=False면 GPU 메모리 부족 때 oom_gpu 오류)
     pitch      {"input", "out_dir", "fmin", "fmax"} → out_dir/pitch.npz, meta.json
     tempo      {"input", "out_dir"} → out_dir/tempo.json
     asr        {"input", "out_dir", "model", "language", "device", "download_root", "no_vocal_ranges"}
@@ -78,7 +78,8 @@ def cmd_separate(args: dict) -> dict:
     audio = _load(args["input"])
     _progress(0.02, "오디오 디코딩 완료")
     vocals, instrumental, info = separate(audio.samples, audio.sample_rate, args.get("model", "htdemucs"),
-                                          args.get("device", "auto"), _progress, args.get("model_files"))
+                                          args.get("device", "auto"), _progress, args.get("model_files"),
+                                          bool(args.get("cpu_fallback", True)))
     out = args["out_dir"]
     _write_wav(os.path.join(out, "vocals.wav"), vocals, audio.sample_rate)
     _write_wav(os.path.join(out, "instrumental.wav"), instrumental, audio.sample_rate)

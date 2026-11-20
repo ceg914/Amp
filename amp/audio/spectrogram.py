@@ -127,6 +127,31 @@ def colormap(n: int = 256) -> np.ndarray:
     return out.round().astype(np.uint8)
 
 
+DIFF_SPAN_DB = 24.0  # 차이 보기 색 범위 ±dB (고정)
+_DIFF_STOPS = [(0.0, (0x66, 0xC8, 0xBE)), (0.5, (0x12, 0x11, 0x16)), (1.0, (0xAD, 0x96, 0xF5))]
+
+
+def diverging_colormap(n: int = 256) -> np.ndarray:
+    """차이 보기용 (n, 3) uint8: 민트(A가 큼) → 바탕(같음) → 바이올렛(B가 큼)."""
+    x = np.linspace(0, 1, n)
+    out = np.zeros((n, 3))
+    for (x0, c0), (x1, c1) in zip(_DIFF_STOPS[:-1], _DIFF_STOPS[1:]):
+        m = (x >= x0) & (x <= x1)
+        f = ((x[m] - x0) / (x1 - x0))[:, None]
+        out[m] = np.array(c0) * (1 - f) + np.array(c1) * f
+    return out.round().astype(np.uint8)
+
+
+def diff_indices(db_a: np.ndarray, db_b: np.ndarray, db_floor: float, db_ceil: float,
+                 span: float = DIFF_SPAN_DB) -> np.ndarray:
+    """B − A (dB) → 색 번호. 두 쪽 모두 같은 표시 범위 [floor, ceil]로 자른 뒤 뺀다(아주 작은 소리끼리의 차이는 0).
+    색은 차이만 보여 준다. 어느 쪽이 나은지는 판정하지 않는다."""
+    a = np.clip(db_a, db_floor, db_ceil)
+    b = np.clip(db_b, db_floor, db_ceil)
+    t = (b - a + span) / (2 * span)
+    return (np.clip(t, 0.0, 1.0) * 255).astype(np.uint8)
+
+
 def to_indices(db_rows: np.ndarray, db_floor: float, db_ceil: float) -> np.ndarray:
     """dB → 색 번호 0~255 (같은 기준이면 같은 색)."""
     t = (db_rows - db_floor) / max(db_ceil - db_floor, 1e-6)

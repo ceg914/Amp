@@ -448,8 +448,8 @@ class CountingPipeline(IdentityPipeline):
 
 
 def test_import_external_stems_backs_up_and_reanalyses_without_separating(qtbot, window, song, monkeypatch, tmp_path):
-    """외부 분리 결과 가져오기: 기존 분리 결과는 backup/에 남기고, 트랙·파형을 바꾸고, 재분석은 분리를 건너뛴다.
-    직접 고친 음표는 '수정 유지'로 남는다. 다른 곡 파일은 거부하고 기존 결과를 건드리지 않는다."""
+    """외부 분리 결과 가져오기: 기존 분리 결과는 stems/models/<키>/에 그대로 남기고(덮어쓰지 않음), 트랙·파형을 바꾸고,
+    재분석은 분리를 건너뛴다. 직접 고친 음표는 '수정 유지'로 남는다. 다른 곡 파일은 거부하고 기존 결과를 건드리지 않는다."""
     import hashlib
 
     import numpy as np
@@ -463,7 +463,12 @@ def test_import_external_stems_backs_up_and_reanalyses_without_separating(qtbot,
     qtbot.waitUntil(lambda: window.doc.project.analysis is not None and not window.session.busy, timeout=120_000)
     qtbot.waitUntil(lambda: "vocals" in window.session.stems, timeout=20_000)
     assert CountingPipeline.commands.count("separate") == 1
-    old_hash = {p.name: hashlib.sha256(p.read_bytes()).hexdigest() for p in folder.paths.stems.glob("*.wav")}
+    def stem_hashes():
+        return {str(p.relative_to(folder.paths.stems)): hashlib.sha256(p.read_bytes()).hexdigest()
+                for p in folder.paths.stems.rglob("*.wav")}
+
+    old_hash = stem_hashes()
+    assert len(old_hash) == 2 and all(k.startswith("models/identity-") for k in old_hash)
     first = window.doc.score.notes()[0].id
     window.doc.move_notes([first], 0.0, 2)  # 사용자 편집 (64 → 66)
 
@@ -475,8 +480,8 @@ def test_import_external_stems_backs_up_and_reanalyses_without_separating(qtbot,
     qtbot.waitSignal(h.ended, timeout=30_000)
     qtbot.waitUntil(lambda: window.errors != [], timeout=5_000)
     assert "맞지 않습니다" in window.errors[0]
-    assert {p.name: hashlib.sha256(p.read_bytes()).hexdigest() for p in folder.paths.stems.glob("*.wav")} == old_hash
-    assert not (folder.root / "backup").exists() or not list((folder.root / "backup").glob("*before-import*"))
+    assert stem_hashes() == old_hash
+    assert not list(folder.paths.stems.glob("models/external-*"))
     window.errors.clear()
 
     # 같은 곡의 보컬 (앞에 20ms 무음이 붙은 파일) → 맞춰서 가져온다
@@ -496,10 +501,9 @@ def test_import_external_stems_backs_up_and_reanalyses_without_separating(qtbot,
     assert np.allclose(window.session.raw_stems["instrumental"].samples, y * 0.2, atol=2 ** -20)
     assert window.player.tracks["vocals"] is window.session.stems["vocals"]
     assert "가져옴: 시험 도구" in window.tracks.rows["vocals"].toolTip() + window.tracks.rows["vocals"].info.text()
-    backups = sorted(p.name for p in (folder.root / "backup").iterdir())
-    assert sum("before-import-_identity" in n for n in backups) == 3  # vocals, instrumental, stems.json
-    for p in (folder.root / "backup").glob("*before-import-_identity-*.wav"):
-        assert hashlib.sha256(p.read_bytes()).hexdigest() == old_hash[p.name.rsplit("-", 1)[-1]]
+    now = stem_hashes()
+    assert {k: v for k, v in now.items() if k in old_hash} == old_hash  # 앞 분리 결과는 그대로
+    assert sum(k.startswith("models/external-") for k in now) == 2
 
     # 가져온 뒤 '다시 분석할까요?' → 예 (conftest가 예로 답한다) → 분리 없이 피치부터
     qtbot.waitUntil(lambda: window.doc.project.analysis is not analyses_before and not window.session.busy,
@@ -510,12 +514,13 @@ def test_import_external_stems_backs_up_and_reanalyses_without_separating(qtbot,
     assert pitches == [66, 67, 69]  # 고친 음표 유지
     assert window.errors == []
 
-    # 다시 분리하면 가져온 결과도 backup/에 남긴다
+    # 다시 분리해도 가져온 결과는 그대로 남는다 (같은 모델·설정 결과만 새로 바뀜)
+    imported_files = {k: v for k, v in stem_hashes().items() if k.startswith("models/external-")}
     window.reseparate()
     qtbot.waitUntil(lambda: CountingPipeline.commands.count("separate") == 2 and not window.session.busy,
                     timeout=120_000)
     assert window.session.manifest.model == "_identity"
-    assert sum("before-reseparate-external" in p.name for p in (folder.root / "backup").iterdir()) == 3
+    assert {k: v for k, v in stem_hashes().items() if k.startswith("models/external-")} == imported_files
 
 
 def test_stem_import_dialog_validates_files(qtbot, tmp_path):
@@ -588,7 +593,8 @@ def test_roformer_model_file_choice_check_and_analysis(qtbot, window, song, monk
     assert m.model_info["checkpoint_identity"]["size"] == os.path.getsize(ckpt)
     assert window.doc.project.analysis.models["separation"].name == "mel_roformer"
     assert "RoFormer (tiny_roformer.ckpt)" in window.tracks.rows["vocals"].info.text()
-    assert (folder.paths.stems / "vocals.wav").is_file()
+    assert (folder.paths.stems / m.files["vocals"]["path"]).is_file()
+    assert m.files["vocals"]["path"].startswith("models/mel_roformer-")  # 모델별 폴더
 
 
 def test_roformer_bad_model_file_shows_reason(qtbot, window, tmp_path):
