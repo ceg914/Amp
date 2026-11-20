@@ -209,6 +209,8 @@ class TranscriptionPipeline:
         artic = articulation_envelope(frames.onset, frames.rms, frames.frame_rate, rms_fine=frames.rms_fine)
         notes = detect_notes(curve, artic, params)
         notes_report(1.0, f"음표 {len(notes)}개 검출")
+        if not separate and (w := unseparated_sparse_warning(notes, req.audio.duration)):
+            warnings.append(w)
         lap("notes")
         timings["total"] = time.perf_counter() - t_start
         if tempo.get("reason"):
@@ -335,6 +337,31 @@ def _read_json(path: Path) -> dict:
         return {}
 
 
+UNSEPARATED_SPARSE_PREFIX = "보컬 분리를 '분리 안 함'으로 분석했는데"
+SPARSE_MIN_DURATION_S = 20.0
+SPARSE_MAX_COVERAGE = 0.20
+SPARSE_MAX_MEDIAN_CONF = 0.25
+
+
+def unseparated_sparse_warning(notes, duration: float) -> str | None:
+    """분리 없이 분석한 결과가 반주 섞인 곡에서 나온 모양이면 안내 문구. 아니면 None.
+
+    반주가 있는 곡을 원본 그대로 pYIN에 넣으면 가장 센 화성음(베이스 등)을 따라가거나 유성 판정을 거의 못 해
+    음표가 곡의 일부에만 낮은 신뢰도로 나온다. 무반주 노래는 노래하는 동안 대부분 음표가 생기고 신뢰도도 높다.
+    """
+    if duration < SPARSE_MIN_DURATION_S:
+        return None
+    covered = sum(max(0.0, n.end - n.start) for n in notes)
+    coverage = covered / duration
+    confs = sorted(float(n.confidence) for n in notes if n.confidence is not None)
+    median = confs[len(confs) // 2] if confs else 0.0
+    if coverage >= SPARSE_MAX_COVERAGE or median >= SPARSE_MAX_MEDIAN_CONF:
+        return None
+    return (f"{UNSEPARATED_SPARSE_PREFIX} 음표가 곡 길이의 {coverage * 100:.0f}%({len(notes)}개)에만 나왔고 신뢰도 중앙값이 "
+            f"{median:.2f}로 낮습니다. 반주가 있는 곡이면 원본 전체에서 가장 센 소리(베이스 등)를 따라가 보컬을 거의 놓칩니다. "
+            "분석 설정의 보컬 분리를 Demucs나 RoFormer로 바꾸거나, 분석 > 외부 분리 결과 가져오기를 쓰세요.")
+
+
 def redetect_notes(result: AnalysisResult, settings: AnalysisSettings, syllable_starts=()) -> AnalysisResult:
     """보컬 분리·피치 추출 결과는 그대로 두고 음표 검출만 다시 한다."""
     if result.pitch_curve is None:
@@ -347,7 +374,10 @@ def redetect_notes(result: AnalysisResult, settings: AnalysisSettings, syllable_
     merged.update({k: v for k, v in settings.to_dict().items()
                    if k in ("sensitivity", "min_note_ms", "pitch_change_semitones", "pitch_low", "pitch_high",
                             "no_vocal_ranges", "merge_approach")})
-    warnings = tuple(w for w in result.warnings if w != OLD_FEATURES_WARNING)
+    warnings = tuple(w for w in result.warnings if w != OLD_FEATURES_WARNING and not w.startswith(UNSEPARATED_SPARSE_PREFIX))
+    sep = result.models.get("separation")
+    if sep is not None and sep.name == "none" and (w := unseparated_sparse_warning(notes, result.duration)):
+        warnings += (w,)
     pitch_info = result.models.get("pitch")
     if pitch_info is not None and int((pitch_info.params or {}).get("features_version", 1)) < PITCH_VERSION:
         warnings += (OLD_FEATURES_WARNING,)

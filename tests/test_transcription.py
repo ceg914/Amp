@@ -173,3 +173,37 @@ def test_vibrato_song_all_sensitivities(tmp_path, sens):
     out = TranscriptionPipeline(InProcessRunner()).run(make_request(str(path), tmp_path, settings=settings))
     assert [n.pitch for n in out.result.notes] == [64, 67, 69, 67, 65, 67]
     assert any(n.vibrato for n in out.result.notes)
+
+
+def test_unseparated_sparse_warning_thresholds():
+    """사용자 실행 기록(분리 안 함, 3분 35초에 음표 35개·곡의 8%, 신뢰도 중앙값 0.13)과 같은 모양이면 안내한다."""
+    from amp.engine.transcription import unseparated_sparse_warning
+    from tests.conftest import note
+
+    sparse = [note(f"s{i}", 5.0 + i * 6.0, 5.5 + i * 6.0, 51, confidence=0.13) for i in range(35)]
+    w = unseparated_sparse_warning(sparse, 215.4)
+    assert w is not None and "8%(35개)" in w and "0.13" in w and "Demucs나 RoFormer" in w
+    assert unseparated_sparse_warning([], 215.4) is not None  # 음표가 하나도 없어도
+    # 무반주 노래처럼 곡 대부분에 음표가 있거나, 드문드문이라도 신뢰도가 높으면 안내하지 않는다
+    dense = [note(f"d{i}", i * 1.0, i * 1.0 + 0.8, 60, confidence=0.13) for i in range(200)]
+    assert unseparated_sparse_warning(dense, 215.4) is None
+    confident = [note(f"c{i}", 5.0 + i * 6.0, 5.5 + i * 6.0, 60, confidence=0.7) for i in range(35)]
+    assert unseparated_sparse_warning(confident, 215.4) is None
+    assert unseparated_sparse_warning(sparse[:2], 15.0) is None  # 짧은 음원은 판단하지 않음
+
+
+def test_unaccompanied_song_without_separation_gets_no_sparse_warning(tmp_path):
+    from amp.engine.transcription import UNSEPARATED_SPARSE_PREFIX
+
+    melody = [(0.5 + i * 1.0, 1.3 + i * 1.0, 60 + (i % 5) * 2) for i in range(24)]
+    y = sung(melody, 25.0)
+    path = tmp_path / "무반주.wav"
+    sf.write(path, np.stack([y, y], 1), SR)
+    out = TranscriptionPipeline(InProcessRunner(), separation_model="_identity").run(
+        make_request(str(path), tmp_path, settings=AnalysisSettings(separation="none")))
+    assert len(out.result.notes) >= 20
+    assert not any(w.startswith(UNSEPARATED_SPARSE_PREFIX) for w in out.result.warnings)
+    # 음표만 다시 검출할 때 예전 안내가 남아 있으면 지금 음표로 다시 판단한다
+    stale = replace(out.result, warnings=out.result.warnings + (UNSEPARATED_SPARSE_PREFIX + " 예전 안내",))
+    again = redetect_notes(stale, AnalysisSettings(separation="none"))
+    assert not any(w.startswith(UNSEPARATED_SPARSE_PREFIX) for w in again.warnings)
