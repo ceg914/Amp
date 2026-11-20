@@ -45,7 +45,9 @@ from amp.app.dialogs import (
     StemImportDialog,
 )
 from amp.app.document import ProjectDocument
+from amp.app.compare_controller import CompareController
 from amp.app.listening_controller import ListeningController
+from amp.app.review_controller import ReviewController
 from amp.app.lyrics_controller import LyricsController
 from amp.app.vocal_controller import VocalDetailController
 from amp.app.pianoroll.view import PianoRollView
@@ -154,6 +156,10 @@ class MainWindow(QMainWindow):
         self.lyrics = LyricsController(self)
         self.vocal = VocalDetailController(self)
         self.listening = ListeningController(self)
+        self.review = ReviewController(self)
+        self.compare = CompareController(self)
+        self.right_tabs.addTab(self.review.panel, "검토")
+        self.right_tabs.addTab(self.compare.panel, "악보 비교")
         self._build_menus()
         self._build_toolbar()
         self.listening.build_toolbar()
@@ -310,6 +316,7 @@ class MainWindow(QMainWindow):
     def _build_menus(self) -> None:
         mb = self.menuBar()
         m = mb.addMenu("프로젝트(&P)")
+        self.menu_project = m
         m.addAction(self.act_new)
         m.addAction(self.act_open_project)
         self.recent_menu = m.addMenu("최근 프로젝트")
@@ -339,6 +346,7 @@ class MainWindow(QMainWindow):
                   self.act_show_curve, self.act_follow):
             m.addSeparator() if a is None else m.addAction(a)
         self.listening.build_menu(self.menu_play, m)
+        self.compare.build_menu(self.menu_project, m)
         m.addSeparator()
         self.vocal.build_menu(m, self.lyrics.menu)
         self.view_menu = m
@@ -482,6 +490,8 @@ class MainWindow(QMainWindow):
         self.waveform.regionSelected.connect(lambda a, b: self.listening.set_region(a, b, enable=True))
         self.spectrogram.seekRequested.connect(self.seek)
         self.view.notePreviewRequested.connect(self.listening.preview_pitch)
+        self.view.roll.selectionChanged.connect(self.compare.show_selected)
+        self.session.tracksChanged.connect(self.review.schedule)
 
         s = self.session
         s.opened.connect(self._on_session_opened)
@@ -1182,6 +1192,8 @@ class MainWindow(QMainWindow):
     # --- 보컬 없는 구간 ----------------------------------------------------------
 
     def _on_analysis_settings_changed(self, s: AnalysisSettings) -> None:
+        if hasattr(self, "review"):
+            self.review.schedule()
         # 프로그램 기본 설정에는 곡마다 다른 보컬 없는 구간을 넣지 않는다 (프로젝트 저장 때 project.json에 남는다)
         self.settings.setValue(SETTINGS_KEY, {**s.to_dict(), "no_vocal_ranges": []})
         self.view.roll.set_no_vocal_ranges(s.no_vocal_ranges)

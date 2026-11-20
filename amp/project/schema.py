@@ -17,11 +17,13 @@ NOTES = "sonatlas.notes"
 TEMPO = "sonatlas.tempo"
 LYRICS = "sonatlas.lyrics"
 ALIGNMENT = "sonatlas.alignment"
+REVIEW = "sonatlas.review"  # STEP 5: 분석 오류 검토 상태
+REFERENCE = "sonatlas.reference_score"  # STEP 5: 가져온 참조 악보와 정렬
 
-CURRENT = {PROJECT: 1, PITCH: 1, NOTES: 2, TEMPO: 1, LYRICS: 2, ALIGNMENT: 3}
+CURRENT = {PROJECT: 1, PITCH: 1, NOTES: 2, TEMPO: 1, LYRICS: 2, ALIGNMENT: 3, REVIEW: 1, REFERENCE: 1}
 
 LABELS = {PROJECT: "프로젝트 파일", PITCH: "피치 분석 파일", NOTES: "음표 파일", TEMPO: "템포 파일",
-          LYRICS: "가사 파일", ALIGNMENT: "가사 정렬 파일"}
+          LYRICS: "가사 파일", ALIGNMENT: "가사 정렬 파일", REVIEW: "검토 상태 파일", REFERENCE: "참조 악보 파일"}
 
 
 def _notes_v1_to_v2(d: dict) -> dict:

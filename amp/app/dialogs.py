@@ -495,3 +495,54 @@ class RoformerModelDialog(QDialog):
             self.error.setText("설정 파일을 찾을 수 없습니다.")
             return
         self.accept()
+
+
+class ScoreImportDialog(QDialog):
+    """참조 악보 가져오기: 비교할 보컬 성부를 고른다. 고르지 않은 성부(반주)는 섞지 않는다."""
+
+    def __init__(self, file_name: str, parts, suggested: str | None, warnings=(), parent=None) -> None:
+        super().__init__(parent)
+        from PySide6.QtWidgets import QListWidget, QListWidgetItem
+
+        self.setWindowTitle("참조 악보 가져오기")
+        self.setMinimumWidth(560)
+        lay = QVBoxLayout(self)
+        lay.addWidget(_title(f"참조 악보: {file_name}"))
+        lay.addWidget(_hint(
+            "자동 채보와 비교할 보컬 성부를 고르세요. 고른 성부만 참조 트랙으로 저장하고 다른 성부는 섞지 않습니다. "
+            "가져온 악보는 자동 채보·직접 고친 음표를 바꾸지 않습니다. 파일 사본은 프로젝트 폴더 scores/에 둡니다."))
+        self.list = QListWidget()
+        for p in parts:
+            tags = []
+            if p.has_lyrics:
+                tags.append("가사 있음")
+            if p.polyphonic:
+                tags.append("화음·여러 성부")
+            if p.drums:
+                tags.append("타악기")
+            text = f"{p.name} — 음표 {p.notes}개, 음역 {p.low}~{p.high}" + (f" ({', '.join(tags)})" if tags else "")
+            if p.id == suggested:
+                text += "  ← 보컬 후보"
+            it = QListWidgetItem(text)
+            it.setData(256, p.id)
+            self.list.addItem(it)
+            if p.id == suggested:
+                self.list.setCurrentItem(it)
+        if self.list.currentItem() is None and self.list.count():
+            self.list.setCurrentRow(0)
+        lay.addWidget(self.list)
+        if warnings:
+            w = QLabel("\n".join(f"• {x}" for x in warnings))
+            w.setWordWrap(True)
+            w.setProperty("role", "warning")
+            lay.addWidget(w)
+        bb = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
+        bb.button(QDialogButtonBox.StandardButton.Ok).setText("가져오기")
+        bb.button(QDialogButtonBox.StandardButton.Cancel).setText("취소")
+        bb.accepted.connect(self.accept)
+        bb.rejected.connect(self.reject)
+        lay.addWidget(bb)
+
+    def part_id(self) -> str | None:
+        it = self.list.currentItem()
+        return None if it is None else it.data(256)

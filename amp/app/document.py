@@ -72,6 +72,20 @@ class SetLyricsCommand(QUndoCommand):
         self._doc._apply_lyrics(self._old)
 
 
+class SetFieldCommand(QUndoCommand):
+    """STEP 5: 프로젝트의 검토 상태·참조 악보 교체 (불변 객체 스냅샷 교체)."""
+
+    def __init__(self, doc: "ProjectDocument", name: str, old, new, text: str) -> None:
+        super().__init__(text)
+        self._doc, self._name, self._old, self._new = doc, name, old, new
+
+    def redo(self) -> None:
+        self._doc._apply_field(self._name, self._new)
+
+    def undo(self) -> None:
+        self._doc._apply_field(self._name, self._old)
+
+
 class SetTempoCommand(QUndoCommand):
     ID = 1001
 
@@ -128,6 +142,8 @@ class ProjectDocument(QObject):
     analysisChanged = Signal()  # 원본 분석이 바뀜 (재분석 적용·되돌리기) — 피아노 롤 전체 다시 그림
     notesReplaced = Signal(list, list)  # 지운 id 목록, 추가/교체된 Note 목록
     tempoChanged = Signal()
+    reviewChanged = Signal()  # STEP 5: 검토 상태
+    referenceChanged = Signal()  # STEP 5: 참조 악보·정렬
     selectionRequested = Signal(list)  # 선택할 음표 id 목록
     dirtyChanged = Signal(bool)
     filePathChanged = Signal(str)
@@ -231,6 +247,23 @@ class ProjectDocument(QObject):
         self.project.lyrics = state
         self._touch()
         self.lyricsChanged.emit()
+
+    def set_review_state(self, new, text: str = "검토 상태") -> bool:
+        if new == self.project.review:
+            return False
+        self.undo_stack.push(SetFieldCommand(self, "review", self.project.review, new, text))
+        return True
+
+    def set_reference(self, new, text: str = "참조 악보") -> bool:
+        if new == self.project.reference:
+            return False
+        self.undo_stack.push(SetFieldCommand(self, "reference", self.project.reference, new, text))
+        return True
+
+    def _apply_field(self, name: str, value) -> None:
+        setattr(self.project, name, value)  # Project는 다른 곳도 같은 객체를 들고 있어 자리에서 바꾼다
+        self._touch()
+        (self.reviewChanged if name == "review" else self.referenceChanged).emit()
 
     def push_lyrics(self, new: LyricsState, text: str) -> bool:
         """가사 편집 결과를 실행 취소 기록에 넣는다. 바뀐 것이 없으면 넣지 않는다.

@@ -153,6 +153,42 @@ def save_analysis_files(paths: ProjectPaths, project: Project, *, write_pitch: b
     atomic_write_json(paths.notes_json, notes_to_dict(project), backup=True)
     atomic_write_json(paths.tempo_json, tempo_to_dict(project), backup=True)
     save_lyrics_files(paths, project.lyrics)
+    save_step5_files(paths, project)
+
+
+def save_step5_files(paths: ProjectPaths, project: Project) -> None:
+    """검토 상태·참조 악보. 내용이 없고 파일도 없으면 만들지 않는다(이전 프로젝트 구조 그대로)."""
+    from amp.compare import reference as ref_io
+    from amp.compare import review as review_io
+
+    if project.review.entries or paths.review_json.exists():
+        atomic_write_json(paths.review_json, schema.stamp(schema.REVIEW, review_io.state_to_dict(project.review)),
+                          backup=True)
+    if project.reference is not None:
+        atomic_write_json(paths.reference_json, schema.stamp(schema.REFERENCE, ref_io.to_dict(project.reference)),
+                          backup=True)
+    elif paths.reference_json.exists():  # 참조 악보를 지웠다: 파일은 백업으로 남기고 지운다
+        backup = paths.reference_json.with_name(paths.reference_json.name + ".removed.bak")
+        paths.reference_json.replace(backup)
+
+
+def load_step5_files(paths: ProjectPaths, report: LoadReport):
+    from amp.compare import reference as ref_io
+    from amp.compare import review as review_io
+
+    review = review_io.ReviewState()
+    reference = None
+    if paths.review_json.exists():
+        try:
+            review = review_io.state_from_dict(_load(paths.review_json, schema.REVIEW, report))
+        except Exception as e:  # noqa: BLE001 - 검토 상태가 깨져도 프로젝트는 연다
+            report.warnings.append(f"검토 상태 파일을 읽지 못해 빈 상태로 시작합니다: {e}")
+    if paths.reference_json.exists():
+        try:
+            reference = ref_io.from_dict(_load(paths.reference_json, schema.REFERENCE, report))
+        except Exception as e:  # noqa: BLE001
+            report.warnings.append(f"참조 악보 파일을 읽지 못했습니다: {e}")
+    return review, reference
 
 
 def save_lyrics_files(paths: ProjectPaths, state: LyricsState) -> None:

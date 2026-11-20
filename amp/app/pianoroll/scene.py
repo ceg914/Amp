@@ -39,6 +39,10 @@ class PianoRollScene(QGraphicsScene):
         self._playhead_time = 0.0
         self.no_vocal_ranges: tuple = ()  # 보컬 없는 구간 (초). 배경에 빗금 띠로 그린다
         self.loop_region: tuple[float, float] | None = None  # 반복 재생 구간 (초). 배경에 옅은 바이올렛 띠
+        # STEP 5: 참조 악보 음표 [(음원 시작, 끝, 음높이, 표시: "" / high / low / missing / uncertain)]. 편집할 수 없는 그림
+        self.reference_notes: list[tuple[float, float, int, str]] = []
+        self.reference_mode = "both"  # auto / ref / both / diff
+        self.reference_preview = False  # 정렬을 확정하지 않음 (점선을 더 촘촘히)
         self.lyrics_visible = True
         self.highlight_notes: set[str] = set()  # 선택한 음절에 연결된 음표 (민트 테두리)
         self.current_notes: set[str] = set()  # 재생 중인 음절에 연결된 음표 (글자 강조)
@@ -214,6 +218,36 @@ class PianoRollScene(QGraphicsScene):
             self.current_notes = set(current)
         self.invalidate(self.sceneRect(), QGraphicsScene.SceneLayer.ForegroundLayer)
 
+    def set_reference(self, notes, mode: str | None = None, preview: bool | None = None) -> None:
+        self.reference_notes = list(notes)
+        if mode is not None:
+            self.reference_mode = mode
+        if preview is not None:
+            self.reference_preview = preview
+        self.invalidate(self.sceneRect(), QGraphicsScene.SceneLayer.BackgroundLayer)
+
+    def _draw_reference(self, painter: QPainter, rect: QRectF) -> None:
+        if not self.reference_notes or self.reference_mode == "auto":
+            return
+        m = self.mapper
+        left, right = rect.left(), rect.right()
+        t0, t1 = m.x_to_time(left), m.x_to_time(right)
+        diff = self.reference_mode == "diff"
+        fill = QColor(240, 236, 246, 40)
+        edge = QPen(QColor(240, 236, 246, 170), 1.2, Qt.PenStyle.DotLine if self.reference_preview else Qt.PenStyle.DashLine)
+        warn = QPen(theme.LYRIC_WARN, 2.0)
+        marks = {"high": "▲", "low": "▼", "missing": "✕", "uncertain": "?"}
+        for a, b, pitch, flag in self.reference_notes:
+            if b < t0 or a > t1:
+                continue
+            r = QRectF(m.time_to_x(a), m.pitch_to_y(pitch) + 1, max(m.time_to_x(b) - m.time_to_x(a), 2.0), m.row_height - 2)
+            painter.fillRect(r, fill)
+            painter.setPen(warn if diff and flag in ("high", "low", "missing") else edge)
+            painter.drawRect(r)
+            if diff and flag in marks and r.width() >= 10:
+                painter.setPen(theme.LYRIC_WARN if flag != "uncertain" else theme.TEXT_DIM)
+                painter.drawText(QRectF(r.left() + 1, r.top() - 1, 12, r.height() + 2), Qt.AlignmentFlag.AlignCenter, marks[flag])
+
     def set_loop_region(self, region) -> None:
         self.loop_region = tuple(region) if region else None
         self.invalidate(self.sceneRect(), QGraphicsScene.SceneLayer.BackgroundLayer)
@@ -303,6 +337,7 @@ class PianoRollScene(QGraphicsScene):
                 if left <= x <= right:
                     painter.drawLine(QLineF(x, rect.top(), x, rect.bottom()))
 
+        self._draw_reference(painter, rect)  # STEP 5: 참조 악보 (격자 위, 자동 채보 음표 아래)
         tempo = self.doc.score.tempo
         t0 = max(0.0, m.x_to_time(left))
         t1 = m.x_to_time(right)

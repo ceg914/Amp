@@ -13,6 +13,7 @@
 from __future__ import annotations
 
 import math
+from typing import TYPE_CHECKING
 from dataclasses import dataclass, field, replace
 from functools import cached_property
 from typing import Iterable
@@ -23,6 +24,10 @@ from amp.core.errors import EditError
 from amp.core.pitch import MIDI_MAX, MIDI_MIN, hz_to_midi, note_name
 from amp.core.tempo import TempoMap
 from amp.lyrics.model import LyricsState
+
+if TYPE_CHECKING:  # STEP 5 (Qt 비의존 모듈, 순환 import를 피해 실행 때는 늦게 불러온다)
+    from amp.compare.reference import ReferenceScore
+    from amp.compare.review import ReviewState
 
 DEFAULT_BPM = 120.0
 
@@ -272,6 +277,9 @@ class Project:
     analysis: AnalysisResult | None = None
     score: Score = field(default_factory=Score)
     lyrics: LyricsState = field(default_factory=LyricsState)
+    # STEP 5: 분석 오류 검토 상태(항목 키 → 상태)와 가져온 참조 악보(자동 채보 음표와 따로)
+    review: "ReviewState" = field(default_factory=lambda: _review_state())
+    reference: "ReferenceScore | None" = None
 
     def note_status(self, note: Note) -> str:
         """'original'(원본 그대로), 'modified'(수정됨), 'user'(사용자 추가) 중 하나."""
@@ -288,3 +296,9 @@ class Project:
             and src.pitch == note.pitch
         )
         return "original" if same else "modified"
+
+
+def _review_state():
+    from amp.compare.review import ReviewState
+
+    return ReviewState()
