@@ -99,6 +99,13 @@ class ReviewPanel(QWidget):
         self.summary.setText(summary)
         t = self.table
         t.blockSignals(True)
+        # 채우는 동안 열 너비 '내용에 맞춤'을 끈다. 켜 둔 채 셀을 넣으면 셀마다 전체 열을 다시 재서
+        # 실제 곡(검토 항목 약 630개, 셀 4,387개)에서 69초 동안 화면이 멈췄다. 다 채운 뒤 한 번만 맞춘다
+        hh = t.horizontalHeader()
+        modes = [hh.sectionResizeMode(c) for c in range(t.columnCount())]
+        for c in range(t.columnCount()):
+            hh.setSectionResizeMode(c, QHeaderView.ResizeMode.Interactive)
+        t.setUpdatesEnabled(False)
         t.setRowCount(len(rows))
         mono = theme.mono_font()
         warn = theme.LYRIC_WARN
@@ -116,6 +123,9 @@ class ReviewPanel(QWidget):
                     cell.setForeground(theme.ACCENT if status == "open" else warn)
                 cell.setToolTip(it.reason)
                 t.setItem(r, c, cell)
+        for c, m in enumerate(modes):
+            hh.setSectionResizeMode(c, m)
+        t.setUpdatesEnabled(True)
         t.blockSignals(False)
         if keep is not None:
             for r, (it, _s) in enumerate(rows):

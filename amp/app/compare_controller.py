@@ -457,7 +457,12 @@ class CompareController(QObject):
         rep = self.report
         if rep is None:
             return
-        ids = self.w.view.roll.selected_ids()
+        import shiboken6
+
+        roll = self.w.view.roll
+        if not shiboken6.isValid(roll):  # 창을 닫는 중: 장면이 지워지며 마지막 선택 변경을 보낸다
+            return
+        ids = roll.selected_ids()
         sel = [self.w.doc.score.get(i) for i in ids if i in self.w.doc.score]
         if not sel:
             return

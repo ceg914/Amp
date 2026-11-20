@@ -108,13 +108,15 @@ def to_dict(ref: ReferenceScore) -> dict:
                    "imported": ref.imported},
         "parts": [vars(p) | {} for p in ref.parts],
         "part_id": ref.part_id,
-        "notes": [{"id": n.id, "start": round(n.start, 6), "end": round(n.end, 6), "pitch": n.pitch, "lyric": n.lyric,
-                   "lyric_extend": n.lyric_extend, "beat": round(n.beat, 6), "beats": round(n.beats, 6),
+        # 반올림하지 않는다: 저장 → 다시 열기가 메모리 값과 같아야 한다 (6자리 반올림으로 실제 곡 악보 73음이 0.5µs씩 달라졌다)
+        "notes": [{"id": n.id, "start": float(n.start), "end": float(n.end), "pitch": n.pitch, "lyric": n.lyric,
+                   "lyric_extend": n.lyric_extend, "beat": float(n.beat), "beats": float(n.beats),
                    "voice": n.voice, "tied": n.tied} for n in ref.notes],
         "tempo": [list(t) for t in ref.tempo],
         "time_signatures": [list(t) for t in ref.time_signatures],
         "warnings": list(ref.warnings),
-        "alignment": {"offset": a.offset, "scale": a.scale, "warp": [list(p) for p in a.warp], "method": a.method,
+        "alignment": {"offset": float(a.offset), "scale": float(a.scale), "warp": [[float(x), float(y)] for x, y in a.warp],
+                      "method": a.method,
                       "confirmed": a.confirmed, "quality": a.quality},
     }
 

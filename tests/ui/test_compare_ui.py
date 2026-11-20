@@ -150,3 +150,27 @@ def test_reference_import_align_confirm_intonation_and_reopen(qtbot, window, son
     w.doc.undo_stack.undo()
     assert w.doc.project.reference is not None
     assert w.errors == []
+
+
+def test_review_list_with_many_items_fills_quickly(qtbot, window):
+    """실제 곡 검토 항목 약 630개에서 표 채우기가 69초 걸렸다(열 너비 자동 맞춤이 셀마다 다시 계산). 이제 한 번만 맞춘다."""
+    import time
+
+    from amp.compare import review as R
+
+    items = [R._item("note_low_conf", "note", i * 0.5, i * 0.5 + 0.3, f"신뢰도 0.{i % 10} (기준 0.35) 시험 항목 {i}", "medium",
+                     [f"n{i}"], basis=(i,)) for i in range(700)]
+    rows = [(it, "open") for it in items]
+    window.right_tabs.setCurrentWidget(window.review.panel)
+    window.review.panel.set_rows(rows, "시험")
+    window.review.panel.select_row(5)  # 행을 고른 상태에서 다시 채울 때 느려졌다 (수정 전 300행에 14.5초)
+    qtbot.wait(50)
+    t0 = time.perf_counter()
+    window.review.panel.set_rows(rows, "시험")
+    dt = time.perf_counter() - t0
+    assert window.review.panel.table.rowCount() == 700
+    assert dt < 5.0, dt
+    hh = window.review.panel.table.horizontalHeader()
+    from PySide6.QtWidgets import QHeaderView
+
+    assert hh.sectionResizeMode(0) == QHeaderView.ResizeMode.ResizeToContents  # 맞춤 설정은 되돌린다
