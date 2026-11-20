@@ -3,8 +3,8 @@
 from __future__ import annotations
 
 import numpy as np
-from PySide6.QtCore import QLineF, QPointF, Qt, Signal
-from PySide6.QtGui import QMouseEvent, QPainter, QPen, QPixmap, QWheelEvent
+from PySide6.QtCore import QLineF, QPointF, QRectF, Qt, Signal
+from PySide6.QtGui import QColor, QMouseEvent, QPainter, QPen, QPixmap, QWheelEvent
 from PySide6.QtWidgets import QSizePolicy, QWidget
 
 from amp.app import theme
@@ -12,8 +12,14 @@ from amp.app.timeline import TimelineState
 from amp.audio.peaks import WaveformPeaks
 
 
+DRAG_SELECT_PX = 4
+
+
 class WaveformView(QWidget):
+    """누르면 그 위치로 이동, 끌면 그 구간을 반복 구간으로 고른다(regionSelected)."""
+
     seekRequested = Signal(float)
+    regionSelected = Signal(float, float)
 
     def __init__(self, timeline: TimelineState, parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -24,6 +30,9 @@ class WaveformView(QWidget):
         self._cache_key: tuple | None = None
         self._color = theme.WAVE
         self._label = ""
+        self.region: tuple[float, float] | None = None
+        self._press_x: float | None = None
+        self._drag_x: float | None = None
         self.setMinimumHeight(60)
         self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
         self.setFixedHeight(90)
@@ -36,6 +45,10 @@ class WaveformView(QWidget):
             self._color = color
         self._label = label
         self._cache_key = None
+        self.update()
+
+    def set_region(self, region) -> None:
+        self.region = tuple(region) if region else None
         self.update()
 
     def set_playhead(self, t: float) -> None:
@@ -84,17 +97,37 @@ class WaveformView(QWidget):
     def paintEvent(self, event) -> None:  # noqa: N802
         p = QPainter(self)
         p.drawPixmap(0, 0, self._render())
+        band = None
+        if self._press_x is not None and self._drag_x is not None:
+            band = (min(self._press_x, self._drag_x), max(self._press_x, self._drag_x))
+        elif self.region is not None:
+            band = tuple(self.timeline.time_to_x(t) for t in self.region)
+        if band is not None:
+            p.fillRect(QRectF(band[0], 0, band[1] - band[0], self.height()), QColor(173, 150, 245, 50))
         x = self.timeline.time_to_x(self._playhead)
         p.setPen(QPen(theme.PLAYHEAD, 1.5))
         p.drawLine(QPointF(x, 0), QPointF(x, self.height()))
 
     def mousePressEvent(self, event: QMouseEvent) -> None:  # noqa: N802
         if event.button() == Qt.MouseButton.LeftButton and self._peaks is not None:
-            self.seekRequested.emit(max(0.0, self.timeline.x_to_time(event.position().x())))
+            self._press_x = event.position().x()
+            self._drag_x = None
+            self.seekRequested.emit(max(0.0, self.timeline.x_to_time(self._press_x)))
 
     def mouseMoveEvent(self, event: QMouseEvent) -> None:  # noqa: N802
-        if event.buttons() & Qt.MouseButton.LeftButton and self._peaks is not None:
-            self.seekRequested.emit(max(0.0, self.timeline.x_to_time(event.position().x())))
+        if event.buttons() & Qt.MouseButton.LeftButton and self._press_x is not None:
+            x = event.position().x()
+            if self._drag_x is not None or abs(x - self._press_x) >= DRAG_SELECT_PX:
+                self._drag_x = x
+                self.update()
+
+    def mouseReleaseEvent(self, event: QMouseEvent) -> None:  # noqa: N802
+        if event.button() == Qt.MouseButton.LeftButton and self._press_x is not None:
+            if self._drag_x is not None:
+                a, b = sorted((self.timeline.x_to_time(self._press_x), self.timeline.x_to_time(self._drag_x)))
+                self.regionSelected.emit(max(0.0, a), max(0.0, b))
+            self._press_x = self._drag_x = None
+            self.update()
 
     def wheelEvent(self, event: QWheelEvent) -> None:  # noqa: N802
         delta = event.angleDelta().y() or event.angleDelta().x()

@@ -45,6 +45,7 @@ from amp.app.dialogs import (
     StemImportDialog,
 )
 from amp.app.document import ProjectDocument
+from amp.app.listening_controller import ListeningController
 from amp.app.lyrics_controller import LyricsController
 from amp.app.vocal_controller import VocalDetailController
 from amp.app.pianoroll.view import PianoRollView
@@ -60,6 +61,7 @@ from amp.app.widgets.lyric_lane import LyricLane
 from amp.app.widgets.lyrics_panel import LyricsPanel
 from amp.app.widgets.ruler import TimeRuler
 from amp.app.widgets.track_panel import TRACK_HINTS, TRACK_LABELS, TrackPanel
+from amp.app.widgets.spectrogram import SpectrogramView
 from amp.app.widgets.waveform import WaveformView
 from amp.app.workers import TaskHandle, TaskRunner
 from amp.audio.decoder import SUPPORTED_EXTENSIONS
@@ -105,6 +107,17 @@ HELP_TEXT = """<h3>조작 방법</h3>
 </ul>
 <p>음표 구분: 꽉 찬 바이올렛 = 분석 원본 그대로, 점선 테두리 + 삼각 표식 = 수정함,
 옅은 채움 + '+' = 직접 추가, 점 테두리 = 장식음. 민트 곡선 = 실제 피치.</p>
+<h3>청취 도구 (STEP 5, 위쪽 두 번째 도구막대·재생 메뉴)</h3>
+<ul>
+<li>반복 구간: 파형을 끌어 고르기, 선택 음표 구간 반복(<b>Ctrl+Shift+R</b>), 가사 음절 '구간 반복', 시작·끝 직접 입력.
+음표·음절로 정할 때는 '여유'만큼 앞뒤를 넓힙니다. 반복 켜기·끄기 <b>Alt+L</b>, 시작·끝 = 재생 위치 <b>Alt+[</b> / <b>Alt+]</b></li>
+<li>속도 0.5·0.75·0.9·1배: 음높이를 유지합니다. 느리게 <b>Alt+,</b> 빠르게 <b>Alt+.</b> 정상 <b>Alt+/</b>.
+반복 구간(없으면 재생 위치부터 60초)만 미리 늘리며, 화면의 재생 위치는 원본 시간입니다.</li>
+<li>음표 미리 듣기: 음표를 누르거나 위아래로 옮기면 그 음높이를 내장 합성음으로 들려줍니다(가수 음색이 아님).
+선택 음표 소리 듣기 <b>Alt+P</b>, 음표 소리를 보컬과 함께 재생 <b>Alt+M</b></li>
+<li>보기 &gt; 파형·스펙트로그램: 숨기기·파형만·스펙트로그램만·둘 다·스펙트로그램 + 피치 곡선. 아래 가장자리를 끌어 높이 조절.
+트랙 패널에서 고른 트랙(원본·보컬·반주)을 보여 줍니다.</li>
+</ul>
 <h3>아직 없는 기능</h3>
 <p>발음 기호, 자음·모음 단위 시간, 고급 멜리스마 분석(STEP 4), MIDI·JSON 내보내기는 아직 구현하지 않았습니다.
 '샘플 데이터 생성'은 오디오 길이만 보고 고정 패턴을 만드는 시험용 기능입니다.</p>"""
@@ -140,8 +153,10 @@ class MainWindow(QMainWindow):
         self._build_actions()
         self.lyrics = LyricsController(self)
         self.vocal = VocalDetailController(self)
+        self.listening = ListeningController(self)
         self._build_menus()
         self._build_toolbar()
+        self.listening.build_toolbar()
         self._build_statusbar()
         self._build_log_dock()
         self._connect()
@@ -165,6 +180,7 @@ class MainWindow(QMainWindow):
         self.view = PianoRollView(self.doc, self.timeline)
         self.ruler = TimeRuler(self.timeline, lambda: self.doc.score.tempo)
         self.waveform = WaveformView(self.timeline)
+        self.spectrogram = SpectrogramView(self.timeline)
         self.keyboard = PianoKeyboard(self.view, self.view.mapper)
         corner = QLabel("시간")
         corner.setFixedWidth(KEYBOARD_WIDTH)
@@ -183,17 +199,27 @@ class MainWindow(QMainWindow):
         grid.addWidget(self.ruler, 0, 1)
         grid.addWidget(self.wave_label, 1, 0)
         grid.addWidget(self.waveform, 1, 1)
-        grid.addWidget(self.keyboard, 2, 0)
-        grid.addWidget(self.view, 2, 1)
+        # STEP 5: 스펙트로그램 레인 (보기 > 파형·스펙트로그램). 같은 시간축, 아래 가장자리를 끌어 높이 조절
+        self.spec_label = QLabel("스펙트로\n그램")
+        self.spec_label.setFixedWidth(KEYBOARD_WIDTH)
+        self.spec_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.spec_label.setProperty("role", "secondary")
+        self.spec_label.setWordWrap(True)
+        grid.addWidget(self.spec_label, 2, 0)
+        grid.addWidget(self.spectrogram, 2, 1)
+        self.spectrogram.setVisible(False)
+        self.spec_label.setVisible(False)
+        grid.addWidget(self.keyboard, 3, 0)
+        grid.addWidget(self.view, 3, 1)
         # 가사 레인 (명세 5장: 피아노 롤 아래 '가사·음절 정렬 영역'). 파형·피아노 롤과 같은 시간축
         self.lyric_label = QLabel("가사")
         self.lyric_label.setFixedWidth(KEYBOARD_WIDTH)
         self.lyric_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.lyric_label.setProperty("role", "secondary")
         self.lyric_lane = LyricLane(self.doc, self.timeline)
-        grid.addWidget(self.lyric_label, 3, 0)
-        grid.addWidget(self.lyric_lane, 3, 1)
-        grid.setRowStretch(2, 1)
+        grid.addWidget(self.lyric_label, 4, 0)
+        grid.addWidget(self.lyric_lane, 4, 1)
+        grid.setRowStretch(3, 1)
         grid.setColumnStretch(1, 1)
 
         self.tracks = TrackPanel()
@@ -299,6 +325,7 @@ class MainWindow(QMainWindow):
         m = mb.addMenu("재생(&L)")
         for a in (self.act_play, self.act_stop, self.act_home):
             m.addAction(a)
+        self.menu_play = m
         m = mb.addMenu("분석(&A)")
         for a in (self.act_analyze, self.act_redetect, self.act_reseparate, self.act_import_stems, self.act_cancel_analysis, None,
                   self.act_no_vocal, self.act_compare_runs, self.act_probe, self.act_clear_cache, None, self.act_sample):
@@ -311,6 +338,7 @@ class MainWindow(QMainWindow):
         for a in (self.act_zoom_in, self.act_zoom_out, self.act_zoom_fit, None, self.act_show_notes,
                   self.act_show_curve, self.act_follow):
             m.addSeparator() if a is None else m.addAction(a)
+        self.listening.build_menu(self.menu_play, m)
         m.addSeparator()
         self.vocal.build_menu(m, self.lyrics.menu)
         self.view_menu = m
@@ -447,6 +475,13 @@ class MainWindow(QMainWindow):
         self.doc.analysisChanged.connect(self._on_analysis_changed)
         self.doc.tempoChanged.connect(self._sync_tempo_widgets)
         self.doc.notesReplaced.connect(lambda *_: self._on_selection_changed())
+        self.doc.notesReplaced.connect(lambda *_: self.listening.notes_changed())
+        self.doc.analysisChanged.connect(self.listening.notes_changed)
+        self.doc.analysisChanged.connect(lambda: self.listening.set_lane_mode(self.listening.lane_mode))
+        self.doc.projectReset.connect(self.listening.notes_changed)
+        self.waveform.regionSelected.connect(lambda a, b: self.listening.set_region(a, b, enable=True))
+        self.spectrogram.seekRequested.connect(self.seek)
+        self.view.notePreviewRequested.connect(self.listening.preview_pitch)
 
         s = self.session
         s.opened.connect(self._on_session_opened)
@@ -673,6 +708,7 @@ class MainWindow(QMainWindow):
 
         self.waveform.set_peaks(peaks, QColor(T.TRACK_COLORS[name]), f"{TRACK_LABELS[name]}" if peaks else "")
         self.wave_label.setText(TRACK_HINTS[name])
+        self.spectrogram.set_source(TRACK_LABELS[name], self.session.track_audio(name))  # 파형과 같은 트랙
 
     def reveal_track(self, name: str) -> None:
         path = self.session.track_path(name)
@@ -701,6 +737,8 @@ class MainWindow(QMainWindow):
         self._time = t
         self.view.set_playhead(t)
         self.waveform.set_playhead(t)
+        if self.spectrogram.isVisible():
+            self.spectrogram.set_playhead(t)
         self.ruler.set_playhead(t)
         self.lyrics.on_position(t)
         self._update_time_label(t)
@@ -829,6 +867,7 @@ class MainWindow(QMainWindow):
             self.recent_menu.addAction(p, lambda p=p: self.maybe_save() and self.open_project(p))
 
     def _on_session_opened(self) -> None:
+        self.listening.project_closed()  # 이전 프로젝트의 미리 듣기·늘린 오디오·음표 소리 트랙 정리
         f = self.session.folder
         self._pending_ui = dict(f.meta.ui) if f else {}
         self._pending_playback = dict(f.meta.playback) if f else {}
@@ -1282,6 +1321,7 @@ class MainWindow(QMainWindow):
                 f.write_meta()
             except Exception:  # noqa: BLE001 - 닫기를 막지 않는다
                 log.exception("작업 공간 상태 저장 실패")
+        self.listening.shutdown()
         self.player.shutdown()
         if not self.runner.shutdown(5000):
             log.warning("백그라운드 작업이 5초 안에 끝나지 않았습니다.")

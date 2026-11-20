@@ -160,13 +160,21 @@ class PcmMixer:
         names = solo if solo else [n for n, s in state.items() if not s["mute"]]
         return [(n, state[n]["gain"]) for n in names if state[n]["gain"] > 0]
 
-    def read(self, start: int, count: int) -> bytes:
+    def read_float(self, start: int, count: int) -> np.ndarray:
+        """출력 프레임 [start, start+count)를 섞은 float32 (count', out_channels). 끝을 넘으면 짧다."""
         start = max(0, int(start))
         count = max(0, min(int(count), self.total_out_frames - start))
-        if count == 0:
-            return b""
         mix = np.zeros((count, self.out_channels), dtype=np.float32)
+        if count == 0:
+            return mix
         for name, gain in self.audible():
             conv = self._converters[name]
             mix += conv._map_channels(conv._resample(start, count)) * gain
-        return self._converters[next(iter(self._converters))]._quantize(mix).tobytes()
+        return mix
+
+    def quantize(self, block: np.ndarray) -> bytes:
+        return self._converters[next(iter(self._converters))]._quantize(block).tobytes()
+
+    def read(self, start: int, count: int) -> bytes:
+        mix = self.read_float(start, count)
+        return self.quantize(mix) if mix.shape[0] else b""

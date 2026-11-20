@@ -45,6 +45,7 @@ class PianoRollView(QGraphicsView):
     selectionInfoChanged = Signal(str)
     hoverInfoChanged = Signal(str)  # 마우스 위치의 음높이·시간
     noVocalRangeRequested = Signal(float, float)  # 선택 음표 구간 (시작초, 끝초)
+    notePreviewRequested = Signal(int)  # 음표를 누르거나 위아래로 옮길 때 그 음높이를 들려준다
 
     def __init__(self, doc: ProjectDocument, timeline: TimelineState, parent=None) -> None:
         super().__init__(parent)
@@ -219,6 +220,8 @@ class PianoRollView(QGraphicsView):
         self._anchor = item.note
         self._originals = [self.doc.score.get(i) for i in self.roll.selected_ids()]
         self._pending = None
+        self._preview_pitch = item.note.pitch
+        self.notePreviewRequested.emit(int(item.note.pitch))
         event.accept()
 
     def mouseMoveEvent(self, event: QMouseEvent) -> None:  # noqa: N802
@@ -283,6 +286,10 @@ class PianoRollView(QGraphicsView):
             dt, dpitch = editing.clamp_move(self._originals, dt, dpitch)
             preview = editing.move_notes(self._originals, dt, dpitch)
             self._pending = ("move", dt, dpitch)
+            new_pitch = anchor.pitch + dpitch
+            if new_pitch != getattr(self, "_preview_pitch", None):  # 높이가 바뀔 때만 (같은 칸에서는 다시 울리지 않음)
+                self._preview_pitch = new_pitch
+                self.notePreviewRequested.emit(int(new_pitch))
         else:
             edge = "start" if self._drag is _Drag.RESIZE_START else "end"
             base = anchor.start if edge == "start" else anchor.end
@@ -416,6 +423,10 @@ class PianoRollView(QGraphicsView):
         if ids and key in (Qt.Key.Key_Up, Qt.Key.Key_Down):
             step = 12 if shift else 1
             self._guard(lambda: self.doc.move_notes(ids, 0.0, step if key == Qt.Key.Key_Up else -step))
+            first = min((self.doc.score.get(i) for i in ids if self.doc.score.get(i) is not None),
+                        key=lambda n: n.start, default=None)
+            if first is not None:
+                self.notePreviewRequested.emit(int(first.pitch))
             event.accept()
             return
         if ids and key in (Qt.Key.Key_Left, Qt.Key.Key_Right):

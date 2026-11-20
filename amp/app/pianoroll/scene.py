@@ -38,6 +38,7 @@ class PianoRollScene(QGraphicsScene):
         self.addItem(self.playhead)
         self._playhead_time = 0.0
         self.no_vocal_ranges: tuple = ()  # 보컬 없는 구간 (초). 배경에 빗금 띠로 그린다
+        self.loop_region: tuple[float, float] | None = None  # 반복 재생 구간 (초). 배경에 옅은 바이올렛 띠
         self.lyrics_visible = True
         self.highlight_notes: set[str] = set()  # 선택한 음절에 연결된 음표 (민트 테두리)
         self.current_notes: set[str] = set()  # 재생 중인 음절에 연결된 음표 (글자 강조)
@@ -213,6 +214,10 @@ class PianoRollScene(QGraphicsScene):
             self.current_notes = set(current)
         self.invalidate(self.sceneRect(), QGraphicsScene.SceneLayer.ForegroundLayer)
 
+    def set_loop_region(self, region) -> None:
+        self.loop_region = tuple(region) if region else None
+        self.invalidate(self.sceneRect(), QGraphicsScene.SceneLayer.BackgroundLayer)
+
     def set_no_vocal_ranges(self, ranges) -> None:
         self.no_vocal_ranges = tuple(ranges)
         self.invalidate(self.sceneRect(), QGraphicsScene.SceneLayer.BackgroundLayer)
@@ -286,6 +291,17 @@ class PianoRollScene(QGraphicsScene):
                 band = QRectF(x0, rect.top(), x1 - x0, rect.height())
                 painter.fillRect(band, theme.NO_VOCAL_SHADE)
                 painter.fillRect(band, QBrush(theme.NO_VOCAL_HATCH, Qt.BrushStyle.BDiagPattern))
+        if self.loop_region is not None:  # 반복 구간: 옅은 바이올렛 + 양 끝 점선
+            a, b = self.loop_region
+            x0, x1 = max(left, m.time_to_x(a)), min(right, m.time_to_x(b))
+            if x1 > x0:
+                painter.fillRect(QRectF(x0, rect.top(), x1 - x0, rect.height()), QColor(173, 150, 245, 26))
+            pen = QPen(theme.ACCENT, 1.0, Qt.PenStyle.DashLine)
+            painter.setPen(pen)
+            for t in (a, b):
+                x = m.time_to_x(t)
+                if left <= x <= right:
+                    painter.drawLine(QLineF(x, rect.top(), x, rect.bottom()))
 
         tempo = self.doc.score.tempo
         t0 = max(0.0, m.x_to_time(left))

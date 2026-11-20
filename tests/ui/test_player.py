@@ -234,7 +234,11 @@ def test_no_output_left_stops_with_message(qapp, monkeypatch):
         def deleteLater(self):
             pass
 
-    p._sink, p._sink_device_id, p._state, p._base = Sink(), b"gone", PlaybackState.PLAYING, 1.0
+    from types import SimpleNamespace
+
+    # 1.0초에서 시작한 스트림 (출력 100Hz): 처리한 0.5초 → 원본 1.5초
+    p._sink, p._sink_device_id, p._state = Sink(), b"gone", PlaybackState.PLAYING
+    p._stream, p._start_frame = SimpleNamespace(out_rate=100, time_at=lambda n: 1.0 + n / 100, total_out_frames=10**9), 0
     monkeypatch.setattr("amp.app.player.QMediaDevices.defaultAudioOutput", staticmethod(lambda: QAudioDevice()))
     monkeypatch.setattr("amp.app.player.QMediaDevices.audioOutputs", staticmethod(lambda: []))
     errors = []

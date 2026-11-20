@@ -18,6 +18,7 @@ from PySide6.QtMultimedia import QAudioFormat, QAudioSink, QMediaDevices
 from amp.audio import windows_output
 from amp.audio.data import AudioData
 from amp.audio.pcm import PcmMixer, SampleFormat
+from amp.audio.stream import PlaybackStream
 
 log = logging.getLogger(__name__)
 
@@ -30,6 +31,7 @@ _FORMAT_MAP = {
     QAudioFormat.SampleFormat.Float: SampleFormat.FLOAT32,
 }
 BUFFER_USEC = 200_000  # 장치 버퍼 길이. UI가 잠깐 바빠도 소리가 끊기지 않을 만큼 둔다.
+SLOW_WINDOW_S = 60.0  # 반복 구간 없이 느리게 재생할 때 한 번에 늘리는 길이 (곡 전체를 미리 늘리지 않는다)
 
 
 class PlaybackState(Enum):
@@ -79,16 +81,26 @@ class PcmDevice(QIODevice):
             if self.finished:
                 return 0
             remaining = (self._conv.total_out_frames - self._frame) * self._conv.bytes_per_frame
-        return remaining + super().bytesAvailable()
+        # 구간 반복은 끝이 없다(LOOP_FRAMES). 아주 큰 값을 알리면 Qt 출력이 멈춰서 상한을 둔다 (이 환경에서 확인)
+        return min(remaining, 1 << 30) + super().bytesAvailable()
 
     def isSequential(self) -> bool:  # noqa: N802
         return True
 
 
 class AudioPlayer(QObject):
+    """여러 트랙 재생 + 구간 반복 + 음높이 유지 느린 재생.
+
+    느린 재생은 늘린 오디오가 필요하다. 없으면 stretchRequested(시작, 끝, 속도)를 내고 기다린다.
+    바깥(ListeningController)이 작업 스레드에서 늘린 뒤 set_stretched()로 넘기면 그때 재생한다.
+    재생 위치는 언제나 원본 시간이다.
+    """
+
     positionChanged = Signal(float)
     stateChanged = Signal(object)  # PlaybackState
     errorOccurred = Signal(str)
+    stretchRequested = Signal(float, float, float)  # 구간 시작, 끝(초), 속도
+    playbackChanged = Signal()  # 반복 구간·반복 켜기·속도가 바뀜
 
     def __init__(self, parent: QObject | None = None) -> None:
         super().__init__(parent)
@@ -100,8 +112,15 @@ class AudioPlayer(QObject):
         self._device: PcmDevice | None = None
         self._state = PlaybackState.STOPPED
         self._pos = 0.0  # 재생 중이 아닐 때의 위치
-        self._base = 0.0  # 장치를 시작한 시점의 위치
         self._play_from = 0.0  # 정지하면 돌아갈 위치
+        self._stream: PlaybackStream | None = None
+        self._start_frame = 0  # 장치를 시작한 스트림 프레임
+        self._region: tuple[float, float] | None = None  # 반복 구간 (원본 시간)
+        self._loop_on = False
+        self._speed = 1.0
+        self._stretched: tuple[tuple[float, float, float, int], dict] | None = None  # ((a, b, speed, 버전), 트랙)
+        self._tracks_version = 0  # 트랙이 바뀌면 늘린 오디오를 버린다
+        self._pending_play = False
         self._timer = QTimer(self)
         self._timer.setInterval(30)
         self._timer.timeout.connect(self._tick)
@@ -126,10 +145,105 @@ class AudioPlayer(QObject):
         return self._audio is not None
 
     def position(self) -> float:
-        if self._state is PlaybackState.PLAYING and self._sink is not None:
-            pos = self._base + self._sink.processedUSecs() / 1e6
-            return min(pos, self.duration)
+        if self._state is PlaybackState.PLAYING and self._sink is not None and self._stream is not None:
+            n = self._start_frame + int(round(self._sink.processedUSecs() * self._stream.out_rate / 1e6))
+            return min(self._stream.time_at(n), self.duration)
         return self._pos
+
+    # --- 반복·속도 -----------------------------------------------------------
+
+    @property
+    def speed(self) -> float:
+        return self._speed
+
+    @property
+    def loop_region(self) -> tuple[float, float] | None:
+        return self._region
+
+    @property
+    def loop_enabled(self) -> bool:
+        return self._loop_on and self._region is not None
+
+    @property
+    def waiting_for_stretch(self) -> bool:
+        return self._pending_play
+
+    def set_loop_region(self, region: tuple[float, float] | None) -> None:
+        if region is not None:
+            a, b = sorted((max(0.0, float(region[0])), min(float(region[1]), self.duration or float(region[1]))))
+            region = (a, b) if b - a >= 0.05 else None
+        if region == self._region:
+            return
+        self._region = region
+        self._restart_if_playing()
+        self.playbackChanged.emit()
+
+    def set_loop_enabled(self, on: bool) -> None:
+        if bool(on) == self._loop_on:
+            return
+        self._loop_on = bool(on)
+        self._restart_if_playing()
+        self.playbackChanged.emit()
+
+    def set_speed(self, speed: float) -> None:
+        speed = min(max(float(speed), 0.5), 1.0)
+        if abs(speed - self._speed) < 1e-6:
+            return
+        self._speed = speed
+        self._restart_if_playing()
+        self.playbackChanged.emit()
+
+    def play_region(self) -> tuple[float, float] | None:
+        """지금 재생에 쓰는 구간: 반복이 켜져 있으면 반복 구간, 느린 재생이면 위치부터 SLOW_WINDOW_S초, 아니면 None."""
+        if self.loop_enabled:
+            return self._region
+        if self._speed < 1.0 and self._audio is not None:
+            pos = self.position()
+            if self._stretched is not None:
+                (a, b, sp, ver), _t = self._stretched
+                if abs(sp - self._speed) < 1e-6 and ver == self._tracks_version and a <= pos < b - 0.05:
+                    return (a, b)
+            return (pos, min(pos + SLOW_WINDOW_S, self.duration))
+        return None
+
+    def stretch_inputs(self) -> dict[str, AudioData]:
+        return dict(self._tracks) or ({"original": self._audio} if self._audio is not None else {})
+
+    @property
+    def tracks_version(self) -> int:
+        return self._tracks_version
+
+    def set_stretched(self, a: float, b: float, speed: float, tracks: dict, version: int | None = None) -> None:
+        """늘린 오디오를 넘긴다(트랙 이름 → (frames, ch) 배열). 기다리던 재생이 있으면 시작한다."""
+        if version is not None and version != self._tracks_version:
+            return  # 계산하는 동안 트랙이 바뀜: 버린다
+        self._stretched = ((float(a), float(b), float(speed), self._tracks_version), dict(tracks))
+        if self._pending_play:
+            self._pending_play = False
+            self.play()
+
+    def _has_stretch(self, region: tuple[float, float]) -> bool:
+        if self._stretched is None:
+            return False
+        (a, b, sp, ver), _t = self._stretched
+        return abs(a - region[0]) < 1e-6 and abs(b - region[1]) < 1e-6 and abs(sp - self._speed) < 1e-6 \
+            and ver == self._tracks_version
+
+    def _restart_if_playing(self) -> None:
+        if self._state is PlaybackState.PAUSED:  # 일시정지 중이면 다음 재생 때 새 설정으로 연다
+            pos = self._pos
+            self._teardown()
+            self._pos = self._play_from = pos
+            self._set_state(PlaybackState.STOPPED)
+            return
+        if self._state is PlaybackState.PLAYING:
+            pos = self.position()
+            self._teardown()
+            self._pos = pos
+            if self._start_sink(pos):
+                self._timer.start()
+            elif not self._pending_play:
+                self._set_state(PlaybackState.STOPPED)
 
     @staticmethod
     def output_available() -> bool:
@@ -167,9 +281,14 @@ class AudioPlayer(QObject):
     # --- 제어 --------------------------------------------------------------
 
     def set_audio(self, audio: AudioData | None) -> None:
-        """원본 하나만 올린다 (다른 트랙은 지운다). 위치를 처음으로 돌린다."""
+        """원본 하나만 올린다 (다른 트랙은 지운다). 위치를 처음으로 돌린다. 반복 구간·늘린 오디오도 지운다."""
         self._teardown()
         self._audio = audio
+        self._region = None
+        self._loop_on = False
+        self._stretched = None
+        self._pending_play = False
+        self._tracks_version += 1
         self._tracks = {"original": audio} if audio is not None else {}
         self._pos = self._play_from = 0.0
         self._set_state(PlaybackState.STOPPED)
@@ -193,6 +312,8 @@ class AudioPlayer(QObject):
             self._tracks.pop(name, None)
         else:
             self._tracks[name] = audio
+        self._tracks_version += 1  # 늘린 오디오는 새 트랙으로 다시 만든다
+        self._stretched = None
         if playing:
             self._pos = pos
             if self._start_sink(pos):
@@ -232,6 +353,8 @@ class AudioPlayer(QObject):
             return
         if self._pos >= self.duration - 0.01:
             self._pos = 0.0
+        if self.loop_enabled and not (self._region[0] <= self._pos < self._region[1]):
+            self._pos = self._region[0]  # 반복 중에는 구간 안에서만 재생한다
         self._play_from = self._pos
         if self._start_sink(self._pos):
             self._set_state(PlaybackState.PLAYING)
@@ -248,6 +371,7 @@ class AudioPlayer(QObject):
 
     def stop(self) -> None:
         """정지하고 마지막으로 재생을 시작한 위치로 돌아간다."""
+        self._pending_play = False
         self._teardown()
         self._pos = self._play_from
         self._set_state(PlaybackState.STOPPED)
@@ -255,6 +379,8 @@ class AudioPlayer(QObject):
 
     def seek(self, seconds: float) -> None:
         seconds = min(max(seconds, 0.0), self.duration)
+        if self.loop_enabled and not (self._region[0] <= seconds < self._region[1]):
+            seconds = self._region[0]  # 반복 중 구간 밖으로 가면 구간 시작으로
         if self._state is PlaybackState.PLAYING:
             self._teardown()
             self._pos = seconds
@@ -299,21 +425,38 @@ class AudioPlayer(QObject):
             self.errorOccurred.emit("출력 장치가 지원하는 오디오 형식을 찾지 못했습니다.")
             return False
         fmt, sample_format = chosen
-        tracks = {name: a.samples for name, a in self._tracks.items()} or {"original": self._audio.samples}
-        conv = PcmMixer(tracks, self._audio.sample_rate, fmt.sampleRate(), fmt.channelCount(), sample_format)
+        region = self.play_region()
+        sr = self._audio.sample_rate
+        if self._speed < 1.0:
+            if not self._has_stretch(region):
+                self._pending_play = True  # 늘린 오디오가 오면 set_stretched()가 재생을 시작한다
+                self.stretchRequested.emit(region[0], region[1], self._speed)
+                return False
+            tracks = dict(self._stretched[1])
+        else:
+            tracks = {name: a.samples for name, a in self._tracks.items()} or {"original": self._audio.samples}
+        conv = PcmMixer(tracks, sr, fmt.sampleRate(), fmt.channelCount(), sample_format)
         for name in tracks:
             st = self.track_state(name)
             conv.set_state(name, gain=st["gain"], mute=st["mute"], solo=st["solo"])
         self._mixer = conv
+        loop = self.loop_enabled
+        if self._speed < 1.0:
+            stream = PlaybackStream(conv, 0, conv.total_out_frames, region[0], self._speed, loop)
+        elif loop:
+            stream = PlaybackStream(conv, conv.out_frame_at(region[0]), conv.out_frame_at(region[1]), region[0], 1.0, True)
+        else:
+            stream = PlaybackStream(conv, 0, conv.total_out_frames, 0.0, 1.0, False)
+        start = stream.frame_for_time(position)
+        self._stream, self._start_frame = stream, start
         sink = QAudioSink(device, fmt, self)
-        pcm = PcmDevice(conv, conv.out_frame_at(position), parent=sink)  # sink와 함께 지운다 (_teardown 참고)
+        pcm = PcmDevice(stream, start, parent=sink)  # sink와 함께 지운다 (_teardown 참고)
         pcm.open(QIODevice.OpenModeFlag.ReadOnly)
         sink.setBufferSize(int(fmt.bytesForDuration(BUFFER_USEC)))
         # stateChanged 시그널은 PySide6 6.12에서 QAudio::State 인자 변환에 실패한다.
         # 대신 _tick 타이머(30ms)에서 sink.state()를 확인한다.
         self._sink, self._device = sink, pcm
         self._sink_device_id = bytes(device.id())
-        self._base = conv.seconds_at(conv.out_frame_at(position))
         sink.start(pcm)
         if sink.error() != _QtAudio.Error.NoError:
             self._teardown()
@@ -326,6 +469,7 @@ class AudioPlayer(QObject):
         sink, pcm = self._sink, self._device
         self._sink = self._device = None
         self._mixer = None
+        self._stream = None
         if pcm is not None:
             pcm.finish()  # 닫지 않는다: 오디오 스레드가 늦게 읽어도 빈 데이터만 받는다
         if sink is not None:
@@ -368,10 +512,11 @@ class AudioPlayer(QObject):
         state = self._sink.state()
         drained = self._device is not None and self._device.at_end
         # 장치에 따라 데이터가 끝나도 IdleState로 바로 바뀌지 않을 수 있어 처리 시간도 함께 본다
-        if drained and (state == _QtAudio.State.IdleState or self.position() >= self.duration - 0.005):
-            # 끝까지 재생함
+        end_t = self._stream.time_at(self._stream.total_out_frames) if self._stream is not None else self.duration
+        if drained and (state == _QtAudio.State.IdleState or self.position() >= end_t - 0.005):
+            # 끝까지 재생함 (느린 재생 창이면 창의 끝)
             self._teardown()
-            self._pos = self.duration
+            self._pos = end_t
             self._set_state(PlaybackState.STOPPED)
             self.positionChanged.emit(self._pos)
         elif state == _QtAudio.State.StoppedState and self._sink.error() != _QtAudio.Error.NoError:

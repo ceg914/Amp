@@ -91,7 +91,6 @@ class LyricsController(QObject):
         self.lane = window.lyric_lane
         self.scene = window.view.roll
         self.settings: QSettings = window.settings
-        self.loop: tuple[float, float] | None = None
         self.chain: LyricsChain | None = None  # F6 연속 작업 (인식 → 정렬 → 연결)
         self._build_actions()
         self._connect()
@@ -182,7 +181,7 @@ class LyricsController(QObject):
         for a in (self.act_auto_link, self.panel.auto_link, self.act_offset):
             a.setEnabled(has_text)
         self.act_import.setEnabled(is_open)
-        self.act_loop_off.setEnabled(self.loop is not None)
+        self.act_loop_off.setEnabled(self.w.player.loop_enabled)
 
     # --- 상태 반영 -------------------------------------------------------------
 
@@ -200,8 +199,11 @@ class LyricsController(QObject):
         sid = self.lane.set_playhead(t)
         notes = set(self.doc.lyrics.alignment.linked_notes(sid)) if sid else set()
         self.scene.set_highlights(current=notes)
-        if self.loop is not None and self.w.player.state is PlaybackState.PLAYING and t >= self.loop[1]:
-            self.w.seek(self.loop[0])
+
+    @property
+    def loop(self) -> tuple[float, float] | None:
+        """지금 켜진 반복 구간 (재생기가 들고 있다. STEP 5부터 재생 스트림 안에서 끊김 없이 되돌아간다)."""
+        return self.w.player.loop_region if self.w.player.loop_enabled else None
 
     def on_syllables_selected(self, ids: list, select_notes: bool = True) -> None:
         self.panel.show_syllables(list(ids))
@@ -235,7 +237,7 @@ class LyricsController(QObject):
             self.w.toggle_play()
 
     def stop_loop(self) -> None:
-        self.loop = None
+        self.w.listening.clear_region()
         self.update_actions()
         self.w.statusBar().showMessage("구간 반복을 껐습니다.", 3000)
 
@@ -552,10 +554,12 @@ class LyricsController(QObject):
             if not ts:
                 self.w._show_status_error("정렬된 음절이 아니라 반복할 구간이 없습니다.")
                 return
-            self.loop = (min(t.start for t in ts), max(t.end for t in ts))
+            self.w.listening.loop_range(min(t.start for t in ts), max(t.end for t in ts))
             self.update_actions()
-            self.play_from(self.loop[0])
-            self.w.statusBar().showMessage(f"구간 반복 {self.loop[0]:.2f}~{self.loop[1]:.2f}초 (끄기: 가사 메뉴)", 6000)
+            if self.loop is not None:
+                a, b = self.loop
+                self.w.statusBar().showMessage(f"구간 반복 {a:.2f}~{b:.2f}초 (앞뒤 여유 {self.w.listening.padding:g}초 포함, "
+                                               "끄기: Alt+L)", 6000)
         elif kind in ("link_replace", "link_add"):
             if len(ids) != 1 or not notes_sel:
                 self.w._show_status_error("음절 하나와 피아노 롤의 음표(여러 개 가능)를 함께 고르세요.")

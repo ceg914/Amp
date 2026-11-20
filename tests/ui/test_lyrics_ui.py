@@ -493,12 +493,13 @@ def test_play_from_syllable_and_syllable_loop_on_real_player(qtbot, make_window,
     if can_play:
         qtbot.waitUntil(lambda: w.player.state is PlaybackState.PLAYING, timeout=3000)
     w.player.stop()
-    w.lyrics.on_syllable_action("loop", [ids[1]])  # 구간 반복 1.9~2.7초
-    assert w.lyrics.loop == (1.9, 2.7)
+    w.lyrics.on_syllable_action("loop", [ids[1]])  # 음절 1.9~2.7초 + 앞뒤 여유 0.25초 (STEP 5)
+    assert w.lyrics.loop == pytest.approx((1.65, 2.95))
     if can_play:
         qtbot.waitUntil(lambda: w.player.state is PlaybackState.PLAYING, timeout=3000)
-        w.lyrics.on_position(2.75)  # 끝을 지나면 처음으로
-        assert abs(w.player.position() - 1.9) < 0.1
+        qtbot.wait(1800)  # 구간(1.3초)보다 오래 재생해도 재생 스트림 안에서 구간 처음으로 돌아간다
+        assert 1.6 <= w.player.position() <= 3.0
     w.lyrics.stop_loop()
+    assert w.lyrics.loop is None
     w.player.stop()
     assert w.errors == []
