@@ -33,7 +33,7 @@ echo   %BASE_PY%
 if not exist "%VENV_PY%" goto venv_failed
 
 :venv_ready
-"%VENV_PY%" -c "import PySide6, numpy, soundfile, scipy, librosa" >nul 2>&1
+"%VENV_PY%" -c "import PySide6, numpy, soundfile, scipy, librosa, mido, yaml" >nul 2>&1
 if errorlevel 1 (
     type "%MSG%\installing_packages.txt"
     "%VENV_PY%" -m pip install --upgrade pip

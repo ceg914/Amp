@@ -14,7 +14,7 @@ import os
 import sys
 
 MIN_PYTHON = (3, 10)
-REQUIRED_MODULES = ("PySide6", "numpy", "soundfile", "scipy", "librosa")
+REQUIRED_MODULES = ("PySide6", "numpy", "soundfile", "scipy", "librosa", "mido", "yaml")  # yaml = PyYAML
 REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 

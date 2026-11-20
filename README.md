@@ -109,8 +109,8 @@ py -0p
 
 ### 1. 프로그램 실행
 
-저장소 폴더의 `run.bat`을 실행합니다. 처음에는 가상 환경(`.venv`)을 만들고 필요한 패키지(PySide6, numpy, soundfile, scipy, librosa)를
-설치한 뒤 켭니다. 두 번째부터는 바로 켜집니다. 이전 버전에서 만든 `.venv`가 있으면 빠진 패키지(librosa 등)를 알아서 보충합니다.
+저장소 폴더의 `run.bat`을 실행합니다. 처음에는 가상 환경(`.venv`)을 만들고 필요한 패키지(PySide6, numpy, soundfile, scipy, librosa, mido, PyYAML)를
+설치한 뒤 켭니다. 두 번째부터는 바로 켜집니다. 이전 버전에서 만든 `.venv`가 있으면 빠진 패키지(librosa, mido 등)를 알아서 보충합니다.
 
 ```bash
 run.bat
@@ -387,6 +387,8 @@ install_separation.bat --build cu126
 | Demucs (설치 시 사용) | MIT | pip 패키지 |
 | Mel-Band RoFormer 계산 코드 (ZFTurbo, lucidrains BS-RoFormer·rotary-embedding-torch에서 옮김) | MIT | `amp/engine/dsp/LICENSE-roformer.txt`. 가중치는 포함하지 않음 |
 | librosa | ISC | pip 패키지 |
+| mido (MIDI 읽기·쓰기) | MIT | pip 패키지 |
+| PyYAML (USTX·RoFormer 설정) | MIT | pip 패키지 |
 | OpenAI Whisper 코드·가중치 (설치 시 사용) | MIT | pip 패키지, 가중치는 처음 인식할 때 내려받음 |
 | MMS_FA 정렬 모델 가중치 (처음 정렬할 때 내려받음) | **CC-BY-NC 4.0 (비상업적 이용만)** | 모델 코드는 이 저장소에서 직접 작성 (`amp/lyrics/mms.py`) |
 | 한글 로마자 자모 표 | — | MMS 학습에 쓰인 uroman과 같은 결과가 나오도록 만든 표 (`amp/lyrics/text.py`) |
@@ -394,7 +396,7 @@ install_separation.bat --build cu126
 
 ## 다음 단계
 
-1. MIDI·JSON 내보내기
+1. Windows에서 STEP 5 확인: 반복·느린 재생·A/B 전환 소리, OpenUtau에서 USTX 열기, 실제 RoFormer로 모델 비교
 2. 멜리스마 뒤 음 누락·긴 끌어올림 등 음표 검출 보완 (STEP 4 평가에서 멜리스마 판정 누락의 주원인), 악보가 있는 곡 추가 확보
 3. 실제 노래(유형 A·B·C)로 `validate_audio.py` 검증, 결과에 따라 검출 기준 조정
 4. Windows 배포 패키지(PyInstaller 등)와 DPI 배율별 화면 검수

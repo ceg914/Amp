@@ -36,6 +36,22 @@ def test_unexpected_error(qtbot):
     assert "예상하지 못한" in blocker.args[0] and "ZeroDivisionError" in blocker.args[1]
 
 
+def test_missing_package_tells_how_to_install(qtbot):
+    """사용자 PC: 'No module named mido'가 '예상하지 못한 오류'로 나왔다. 패키지 이름과 설치 방법을 알린다."""
+    runner = TaskRunner()
+
+    def job(progress, token):
+        import importlib
+
+        return importlib.import_module("sonatlas_missing_pkg_for_test")
+
+    h = runner.submit("export", job)
+    with qtbot.waitSignal(h.failed, timeout=5000) as blocker:
+        pass
+    msg = blocker.args[0]
+    assert "sonatlas_missing_pkg_for_test" in msg and "run.bat" in msg and "예상하지 못한" not in msg
+
+
 def test_cancel(qtbot):
     runner = TaskRunner()
 
