@@ -46,6 +46,7 @@ from amp.app.dialogs import (
 )
 from amp.app.document import ProjectDocument
 from amp.app.compare_controller import CompareController
+from amp.app.export_controller import ExportController
 from amp.app.listening_controller import ListeningController
 from amp.app.review_controller import ReviewController
 from amp.app.lyrics_controller import LyricsController
@@ -121,7 +122,7 @@ HELP_TEXT = """<h3>조작 방법</h3>
 트랙 패널에서 고른 트랙(원본·보컬·반주)을 보여 줍니다.</li>
 </ul>
 <h3>아직 없는 기능</h3>
-<p>발음 기호, 자음·모음 단위 시간, 고급 멜리스마 분석(STEP 4), MIDI·JSON 내보내기는 아직 구현하지 않았습니다.
+<p>자음·모음 단위 시간은 아직 구현하지 않았습니다. 내보내기 &gt; 채보·가사 내보내기에서 USTX·MIDI·MusicXML·JSON·CSV·LRC로 저장합니다.
 '샘플 데이터 생성'은 오디오 길이만 보고 고정 패턴을 만드는 시험용 기능입니다.</p>"""
 
 
@@ -158,6 +159,7 @@ class MainWindow(QMainWindow):
         self.listening = ListeningController(self)
         self.review = ReviewController(self)
         self.compare = CompareController(self)
+        self.exporter = ExportController(self)
         self.right_tabs.addTab(self.review.panel, "검토")
         self.right_tabs.addTab(self.compare.panel, "악보 비교")
         self._build_menus()
@@ -297,8 +299,6 @@ class MainWindow(QMainWindow):
         self.act_sample = A("샘플 데이터 생성 (시험용, 실제 분석 아님)", self.run_sample_analysis)
 
         self.act_export = A("오디오 내보내기…", lambda: self.export_dialog([]), "Ctrl+Shift+E", icon_name="download")
-        self.act_export_midi = A("MIDI 내보내기 (예정)", lambda: None)
-        self.act_export_midi.setEnabled(False)
 
         self.act_play = A("재생", self.toggle_play, "Space", icon_name="play")
         self.act_stop = A("정지", self.stop, "Esc", icon_name="square")
@@ -340,7 +340,7 @@ class MainWindow(QMainWindow):
         self.lyrics.build_menu(mb)
         m = mb.addMenu("내보내기(&X)")
         m.addAction(self.act_export)
-        m.addAction(self.act_export_midi)
+        m.addAction(self.exporter.act)
         m = mb.addMenu("보기(&V)")
         for a in (self.act_zoom_in, self.act_zoom_out, self.act_zoom_fit, None, self.act_show_notes,
                   self.act_show_curve, self.act_follow):
