@@ -5,7 +5,10 @@
 조작
 - 클릭: 음절 선택 + 그 위치로 이동 / Ctrl+클릭: 선택 추가·빼기 / Shift+클릭: 범위 선택
 - 막대 끌기: 음절 시간 이동 / 양 끝 끌기: 시작·끝 조절. 이웃 음절과 맞닿은 경계는 둘을 함께 움직인다(경계 조절)
-- 끌 때 가까운 음표 경계(6px 안)에 붙는다. Alt를 누르면 붙지 않는다
+- 끌 때 가까운 음표 경계(6px 안)에 붙는다. Alt를 누르면 붙지 않는다. 붙이기는 끌 수 있다(가사 탭, v0.6)
+- 끄는 동안 지금 시각·처음 시각·차이(ms)·연결 음표·이웃 음절과의 겹침을 보여 준다 (v0.6)
+- 놓은 뒤 연결 처리 (가사 탭 '시간 수정 뒤 연결', v0.6): 시간만 / 바꾼 음절만 다시 연결 / 전체 다시 연결 / 연결 고정.
+  사용자가 확정한 연결은 어느 방식에서도 바꾸지 않는다
 - 더블클릭: 그 음절부터 재생 / 오른쪽 클릭: 나누기·합치기·음표 연결·반복 재생 메뉴
 - 휠: 가로 스크롤 / Ctrl+휠: 가로 확대
 
@@ -22,7 +25,7 @@ from enum import Enum, auto
 
 from PySide6.QtCore import QPointF, QRectF, Qt, Signal
 from PySide6.QtGui import QColor, QMouseEvent, QPainter, QPen, QWheelEvent
-from PySide6.QtWidgets import QMenu, QSizePolicy, QWidget
+from PySide6.QtWidgets import QMenu, QSizePolicy, QToolTip, QWidget
 
 from amp.app import theme
 from amp.app.document import ProjectDocument
@@ -35,6 +38,8 @@ EDGE_PX = 5.0
 SNAP_PX = 6.0
 TOUCH_S = 0.015  # 이웃 음절과 이만큼 가까우면 맞닿은 것으로 본다
 LOW_CONF = 0.1  # 실제 두 곡: 0.1 미만 음절의 오차율 8~9% vs 나머지 1~2% (약한 지표)
+RELINK_MODES = {"time": "시간만 (연결 그대로)", "selected": "바꾼 음절만 다시 연결", "all": "전체 다시 연결",
+                "keep": "연결 고정 (확정)"}
 
 
 class _Drag(Enum):
@@ -42,6 +47,18 @@ class _Drag(Enum):
     MOVE = auto()
     START = auto()
     END = auto()
+
+
+def relink(state, notes, changed: list[str], mode: str):
+    """음절 시간을 바꾼 뒤 연결 처리. 사용자가 확정한 연결은 auto_link가 건드리지 않는다."""
+    if mode == "selected":
+        return linking.auto_link(state, notes, only=changed)
+    if mode == "all":
+        return linking.auto_link(state, notes)
+    if mode == "keep":
+        linked = [sid for sid in changed if state.alignment.links.get(sid)]
+        return linking.confirm_links(state, linked) if linked else state
+    return state
 
 
 class LyricLane(QWidget):
@@ -57,6 +74,9 @@ class LyricLane(QWidget):
         super().__init__(parent)
         self.doc = doc
         self.timeline = timeline
+        self.snap_enabled = True
+        self.relink_mode = "time"
+        self.drag_info = ""  # 끄는 중 표시 글 (시험·상태 표시줄용)
         self.selected: list[str] = []
         self.current: str | None = None
         self.duration = 0.0
@@ -314,7 +334,7 @@ class LyricLane(QWidget):
                 self._orig[nxt] = self._times(nxt)
 
     def _snap(self, t: float, no_snap: bool) -> float:
-        if no_snap or not self.note_edges:
+        if no_snap or not self.snap_enabled or not self.note_edges:
             return t
         i = bisect.bisect_left(self.note_edges, t)
         best = t
@@ -366,7 +386,37 @@ class LyricLane(QWidget):
                     prev[sid] = (a0, nb)
                     prev[s] = (nb, b)
         self._preview = prev
+        self.drag_info = self._drag_text(sid, prev)
+        QToolTip.showText(event.globalPosition().toPoint(), self.drag_info, self)
         self.update()
+
+    def _drag_text(self, sid: str, prev: dict) -> str:
+        """끄는 동안 보여 줄 글: 지금·처음 시각, 차이, 연결 음표, 이웃 음절과의 겹침."""
+        a0, b0 = self._orig[sid]
+        a, b = prev.get(sid, (a0, b0))
+        lines = [f"시작 {a:.3f}s (처음 {a0:.3f}s, {(a - a0) * 1000:+.0f}ms)",
+                 f"끝 {b:.3f}s (처음 {b0:.3f}s, {(b - b0) * 1000:+.0f}ms)"]
+        links = self.doc.lyrics.alignment.links.get(sid, ())
+        if links:
+            names = []
+            for lk in links[:4]:
+                if lk.note_id in self.doc.score:
+                    n = self.doc.score.get(lk.note_id)
+                    names.append(f"{n.name} {n.start:.2f}s")
+            lines.append("연결 음표: " + ", ".join(names) + (" …" if len(links) > 4 else ""))
+        else:
+            lines.append("연결 음표 없음")
+        p, nx = self._neighbors(sid)
+        for other, side in ((p, "앞"), (nx, "뒤")):
+            if other is None or other in prev:
+                continue
+            oa, ob = self._times(other)
+            ov = (ob - a) if side == "앞" else (b - oa)
+            if ov > 1e-4:
+                lines.append(f"{side} 음절과 {ov * 1000:.0f}ms 겹침")
+        if not self.snap_enabled:
+            lines.append("음표 경계 붙이기 꺼짐")
+        return "\n".join(lines)
 
     def mouseReleaseEvent(self, event: QMouseEvent) -> None:  # noqa: N802
         if self._drag == _Drag.NONE:
@@ -375,6 +425,8 @@ class LyricLane(QWidget):
                    or abs(v[1] - self._orig[s][1]) > 1e-4}
         self._drag = _Drag.NONE
         self._preview = {}
+        self.drag_info = ""
+        QToolTip.hideText()
         if changes:
             from amp.core.errors import EditError
             from amp.lyrics import ops
@@ -382,6 +434,7 @@ class LyricLane(QWidget):
             try:
                 new = ops.set_times(self.doc.lyrics, changes, duration=self.duration or None,
                                     action="음절 경계 조절" if len(changes) > 1 and len(self._orig) == 2 else "음절 시간 수정")
+                new = relink(new, self.doc.score.notes(), list(changes), self.relink_mode)
                 self.doc.push_lyrics(new, "음절 시간 수정")
             except EditError as e:
                 self.editFailed.emit(str(e))

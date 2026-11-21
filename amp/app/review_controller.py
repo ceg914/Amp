@@ -78,7 +78,8 @@ class ReviewPanel(QWidget):
         lay.addWidget(self.table, 1)
         nav = QGridLayout()
         self.buttons = {}
-        for i, (key, text) in enumerate((("prev", "◀ 이전"), ("next", "다음 ▶"), ("loop", "구간 반복"), ("zoom", "구간 확대"),
+        for i, (key, text) in enumerate((("prev", "◀ 이전"), ("next", "다음 ▶"), ("loop", "구간 반복"),
+                                         ("slow_loop", "느리게 반복"), ("zoom", "구간 확대"),
                                          ("notes", "음표 편집"), ("lyrics", "가사 정렬"), ("checked", "확인 완료"),
                                          ("fixed", "수정 완료"), ("ignored", "무시"), ("open", "검토 필요로"),
                                          ("refresh", "다시 검사"))):
@@ -289,7 +290,9 @@ class ReviewController(QObject):
         if key in ("checked", "fixed", "ignored", "open"):
             w.doc.set_review_state(R.mark(w.doc.project.review, items, key), f"검토: {R.STATUSES[key]}")
             return
-        if key == "loop" and it.end > it.start:
+        if key in ("loop", "slow_loop") and it.end > it.start:
+            if key == "slow_loop":  # 음높이를 유지한 채 0.5배 (v0.6: 음절 정렬 검토)
+                w.listening.set_speed(0.5)
             w.listening.set_region(it.start - 0.3, it.end + 0.3, enable=True, play=True)
         elif key == "zoom" and it.end > it.start:
             span = max(it.end - it.start + 2.0, 1.0)

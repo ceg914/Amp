@@ -29,6 +29,8 @@ KIND_LABELS = {
     "note_octave": "옥타브 오류 의심", "note_repeat_merged": "반복 발성 병합 의심", "note_oversplit": "긴 음표 과분할 의심",
     "note_portamento": "포르타멘토가 따로 나뉨", "voiced_uncovered": "음표 누락 의심 (유성 구간)",
     "syl_unaligned": "정렬 안 된 음절", "syl_unlinked": "음표 없는 음절", "link_uncertain": "불확실한 연결",
+    "syl_crowded": "한 음표에 음절이 많음", "syl_overlap": "이웃 음절과 겹침", "syl_low_conf": "정렬 확신 낮은 음절",
+    "link_note_moved": "연결 음표가 음절 밖으로 바뀜",
     "onset_gap": "음절·음표 시작 차이", "link_review": "재확인 필요한 연결", "asr_low": "인식 신뢰도 낮은 가사",
     "mel_uncertain": "멜리스마 판정 불확실", "mel_review": "멜리스마 재확인 필요", "pron_unavailable": "발음 변환 불가",
     "pron_stale": "발음 재검토 필요", "sep_novocal_notes": "보컬 없는 구간 안의 음표", "sep_leak": "반주가 섞였을 수 있는 음표",
@@ -50,6 +52,10 @@ OVERSPLIT_GAP_S = 0.03
 PORTA_MAX_S = 0.15
 UNCOVERED_S = 0.25
 ONSET_GAP_S = 0.15
+CROWDED_SYLLABLES = 3  # 한 음표에 이 수 이상의 음절이 연결되면 (짧은 음표면 2)
+CROWDED_SHORT_S = 0.2
+SYL_LOW_CONF = 0.1  # 가사 레인의 LOW_CONF와 같은 값 (실제 두 곡에서 0.1 미만 음절의 오차율이 높았다)
+LINK_AWAY_S = 0.05  # 연결 음표가 음절 시간과 이만큼 넘게 떨어져 있으면 (겹침 없음)
 LINK_CONF = 0.5
 LEAK_DB = -6.0
 
@@ -258,12 +264,58 @@ def lyric_rules(state, notes_by_id: Mapping) -> list[ReviewItem]:
                 out.append(_item("onset_gap", "lyrics", min(t.start, first.start), max(t.start, first.start) + 0.05,
                                  f"'{s.text}' 음절 시작과 첫 음표 시작이 {diff * 1000:+.0f}ms 차이 (기준 ±{ONSET_GAP_S * 1000:.0f}ms)",
                                  "low", [first.id], [s.id], basis=(round(t.start, 2), round(first.start, 2))))
+    out += _alignment_rules(state, notes_by_id)
     rec = state.recognition
     if rec is not None:
         for seg in rec.segments:
             if seg.review:
                 out.append(_item("asr_low", "lyrics", seg.start, seg.end, f"인식 검토 사유: {', '.join(seg.review)} — '{seg.text}'",
                                  "medium", basis=(seg.id, seg.text)))
+    return out
+
+
+def _alignment_rules(state, notes_by_id: Mapping) -> list[ReviewItem]:
+    """v0.6 음절 정렬 검토: 한 음표에 몰린 음절, 이웃 음절과 겹침, 정렬 확신 낮음, 연결 음표가 음절 밖으로 바뀜."""
+    out: list[ReviewItem] = []
+    al = state.alignment
+    per_note: dict[str, list[str]] = {}
+    for sid, links in al.links.items():
+        for lk in links:
+            per_note.setdefault(lk.note_id, []).append(sid)
+    for nid, sids in per_note.items():
+        n = notes_by_id.get(nid)
+        if n is None:
+            continue
+        limit = 2 if n.end - n.start < CROWDED_SHORT_S else CROWDED_SYLLABLES
+        if len(sids) >= limit:
+            texts = [state.text.syllable(s).text for s in sids if s in state.text.index]
+            out.append(_item("syl_crowded", "lyrics", n.start, n.end,
+                             f"음표 하나({n.end - n.start:.2f}초)에 음절 {len(sids)}개가 연결됨: {' '.join(texts)}", "medium",
+                             [nid], sids, basis=(nid, tuple(sorted(sids)))))
+    timed = sorted(((s.id, al.timing(s.id)) for s in state.text.syllables if al.timing(s.id).aligned),
+                   key=lambda x: x[1].start)
+    for (sa, ta), (sb, tb) in zip(timed, timed[1:]):
+        ov = ta.end - tb.start
+        if ov > 1e-3:
+            out.append(_item("syl_overlap", "lyrics", tb.start, ta.end,
+                             f"'{state.text.syllable(sa).text}'·'{state.text.syllable(sb).text}' 시간이 {ov * 1000:.0f}ms 겹침",
+                             "low", syllable_ids=[sa, sb], basis=(round(ta.end, 3), round(tb.start, 3))))
+    for sid, t in timed:
+        text = state.text.syllable(sid).text
+        if not t.user_edited and t.confidence is not None and t.confidence < SYL_LOW_CONF:
+            out.append(_item("syl_low_conf", "lyrics", t.start, t.end,
+                             f"'{text}' 정렬 확신 {t.confidence:.2f} (기준 {SYL_LOW_CONF} 미만) — 들어 보고 시간을 확인하세요",
+                             "low", syllable_ids=[sid], basis=(round(t.start, 2), round(t.confidence, 2))))
+        for lk in al.links.get(sid, ()):
+            n = notes_by_id.get(lk.note_id)
+            if n is None:
+                continue
+            away = max(n.start - t.end, t.start - n.end)
+            if away > LINK_AWAY_S:
+                out.append(_item("link_note_moved", "lyrics", min(t.start, n.start), max(t.end, n.end),
+                                 f"'{text}'에 연결된 음표({n.name})가 음절 시간과 {away * 1000:.0f}ms 떨어져 있음 — 음표가 바뀌었으면 "
+                                 "연결을 다시 확인하세요" + (" (확정한 연결)" if lk.confirmed else ""),
+                                 "medium", [n.id], [sid], basis=(round(n.start, 2), round(n.end, 2), round(t.start, 2))))
     return out
 
 

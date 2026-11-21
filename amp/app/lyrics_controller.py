@@ -149,6 +149,8 @@ class LyricsController(QObject):
         lane.playFromRequested.connect(self.play_from)
         lane.actionRequested.connect(self.on_syllable_action)
         lane.editFailed.connect(self.w._show_status_error)
+        p.relink_mode.currentIndexChanged.connect(lambda _i: setattr(lane, "relink_mode", p.relink_mode.currentData()))
+        p.snap_notes.toggled.connect(lambda on: setattr(lane, "snap_enabled", bool(on)))
         self.w.view.roll.selectionChanged.connect(self.on_notes_selected)
 
     def _save_settings(self) -> None:

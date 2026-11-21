@@ -180,6 +180,20 @@ class LyricsPanel(QScrollArea):
         self.link_after = QCheckBox("정렬한 뒤 음표와 자동 연결 (확정한 연결은 유지)")
         self.link_after.setChecked(True)
         v.addWidget(self.link_after)
+        # v0.6: 레인에서 음절 시간을 끌어 고친 뒤의 연결 처리와 음표 경계 붙이기
+        row = QHBoxLayout()
+        row.addWidget(QLabel("시간 수정 뒤 연결"))
+        self.relink_mode = QComboBox()
+        from amp.app.widgets.lyric_lane import RELINK_MODES
+
+        for k, label in RELINK_MODES.items():
+            self.relink_mode.addItem(label, k)
+        self.relink_mode.setToolTip("가사 레인에서 음절 시간을 고친 뒤 음표 연결을 어떻게 할지. 확정한 연결은 바꾸지 않습니다")
+        row.addWidget(self.relink_mode, 1)
+        v.addLayout(row)
+        self.snap_notes = QCheckBox("끌 때 음표 경계에 붙이기 (Alt: 이번만 끄기)")
+        self.snap_notes.setChecked(True)
+        v.addWidget(self.snap_notes)
         self.align_info = QLabel("")
         self.align_info.setWordWrap(True)
         self.align_info.setProperty("role", "secondary")
