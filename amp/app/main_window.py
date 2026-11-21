@@ -49,6 +49,7 @@ from amp.app.compare_controller import CompareController
 from amp.app.export_controller import ExportController
 from amp.app.hybrid_controller import HybridController
 from amp.app.model_compare_controller import ModelCompareController
+from amp.app.quality_controller import QualityController
 from amp.app.suggestions_controller import SuggestionsController
 from amp.app.listening_controller import ListeningController
 from amp.app.review_controller import ReviewController
@@ -193,6 +194,8 @@ class MainWindow(QMainWindow):
         self.right_tabs.addTab(self.review.panel, "검토")
         self.suggest = SuggestionsController(self)
         self.right_tabs.addTab(self.suggest.panel, "교정 제안")
+        self.quality = QualityController(self)
+        self.right_tabs.addTab(self.quality.panel, "품질")
         for seq, step in (("Alt+[", -1), ("Alt+]", 1)):
             act = QAction(self)
             act.setShortcut(QKeySequence(seq))

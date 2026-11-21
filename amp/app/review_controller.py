@@ -12,6 +12,7 @@ from PySide6.QtWidgets import (
     QCheckBox,
     QComboBox,
     QGridLayout,
+    QHBoxLayout,
     QHeaderView,
     QLabel,
     QPushButton,
@@ -60,6 +61,17 @@ class ReviewPanel(QWidget):
         filt.addWidget(self.severity, 0, 1)
         filt.addWidget(self.unreviewed, 0, 2)
         lay.addLayout(filt)
+        # v0.6: 품질 탭에서 숫자를 누르면 그 종류만 보여 준다
+        self.kind_bar = QWidget()
+        kb = QHBoxLayout(self.kind_bar)
+        kb.setContentsMargins(0, 0, 0, 0)
+        self.kind_label = QLabel()
+        self.kind_label.setProperty("role", "secondary")
+        self.kind_clear = QPushButton("종류 필터 해제")
+        kb.addWidget(self.kind_label, 1)
+        kb.addWidget(self.kind_clear)
+        self.kind_bar.hide()
+        lay.addWidget(self.kind_bar)
         self.summary = QLabel("—")
         self.summary.setProperty("role", "secondary")
         self.summary.setWordWrap(True)
@@ -177,6 +189,7 @@ class ReviewController(QObject):
         self.items: list[R.ReviewItem] = []
         self.extra_items: list[R.ReviewItem] = []  # 다른 기능(모델 비교 등)이 넣는 항목
         self.leak_items: list[R.ReviewItem] = []
+        self.kind_filter: frozenset[str] | None = None  # v0.6: 품질 탭 숫자 → 종류 필터
         self._timer = QTimer(self)
         self._timer.setSingleShot(True)
         self._timer.setInterval(500)
@@ -187,6 +200,7 @@ class ReviewController(QObject):
         for w in (self.panel.category, self.panel.severity):
             w.currentIndexChanged.connect(self._show)
         self.panel.unreviewed.toggled.connect(self._show)
+        self.panel.kind_clear.clicked.connect(lambda: self.set_kind_filter(None))
         doc = window.doc
         for sig in (doc.notesReplaced, doc.analysisChanged, doc.lyricsChanged, doc.projectReset):
             sig.connect(self.schedule)
@@ -243,8 +257,19 @@ class ReviewController(QObject):
         p = self.panel
         cat, sev, only = p.category.currentData(), p.severity.currentData(), p.unreviewed.isChecked()
         rows = R.merge_states(self.all_items(), self.w.doc.project.review)
+        kinds = self.kind_filter
         return [(it, st) for it, st in rows if (not cat or it.category == cat) and (not sev or it.severity == sev)
-                and (not only or st in ("open", "recheck"))]
+                and (not only or st in ("open", "recheck")) and (not kinds or it.kind in kinds)]
+
+    def set_kind_filter(self, kinds, label: str = "") -> None:
+        """v0.6: 이 종류의 항목만 보여 준다 (None이면 해제). 품질 탭의 숫자를 누를 때 쓴다."""
+        self.kind_filter = frozenset(kinds) if kinds else None
+        p = self.panel
+        p.kind_bar.setVisible(self.kind_filter is not None)
+        p.kind_label.setText(f"종류 필터: {label}" if self.kind_filter else "")
+        if self.kind_filter is not None:
+            p.unreviewed.setChecked(True)
+        self._show()
 
     def _show(self, *_a) -> None:
         rows = self._filtered()

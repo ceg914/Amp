@@ -50,6 +50,8 @@ class RunRecord:
     score_summary: dict = field(default_factory=dict)  # 실행 시점의 사용자 편집 현황 (개수만)
     seq: int = 0  # 프로젝트 안 저장 순번 (save_run이 매긴다). 시각이 같아도 순서가 정해진다
     audio_duration_s: float | None = None  # 곡 길이 (처리 시간을 실시간 대비로 보기 위해)
+    # v0.6: 실행 시점의 품질 지표 (교정 제안 대기·적용 수, 분리 소스 키, 음표 검출 버전 등). 정답 없는 지표다
+    quality: dict = field(default_factory=dict)
     version: int = RECORD_VERSION
 
     @property
@@ -78,7 +80,7 @@ def new_run_id(now: datetime | None = None) -> str:
 
 def record_from_result(result, kind: str, *, timings: dict | None = None, reused: dict | None = None,
                        resources: dict | None = None, score_summary: dict | None = None,
-                       app_version: str = "") -> RunRecord:
+                       app_version: str = "", quality: dict | None = None) -> RunRecord:
     """AnalysisResult → 실행 기록. result는 바꾸지 않는다."""
     notes = []
     for n in sorted(result.notes, key=lambda n: (n.start, n.pitch)):
@@ -102,6 +104,8 @@ def record_from_result(result, kind: str, *, timings: dict | None = None, reused
         reused=dict(reused or {}), resources=dict(resources or {}), tempo=tempo, notes=notes,
         warnings=list(result.warnings or ()), score_summary=dict(score_summary or {}),
         audio_duration_s=_finite(getattr(result, "duration", None), 3),
+        quality={"source_key": (models.get("separation", {}).get("params") or {}).get("store_key"),
+                 "notes_version": models.get("notes", {}).get("version"), **dict(quality or {})},
     )
 
 
@@ -217,7 +221,14 @@ def _pair(a_notes: list[dict], b_notes: list[dict], same_pitch: bool) -> list[tu
     return out
 
 
+class RunCompareError(ValueError):
+    pass
+
+
 def compare_runs(a: RunRecord, b: RunRecord) -> RunComparison:
+    """두 실행의 음표 차이. 다른 오디오(원본 해시가 다름)의 실행은 비교하지 않는다 (v0.6)."""
+    if a.audio_sha256 and b.audio_sha256 and a.audio_sha256 != b.audio_sha256:
+        raise RunCompareError("두 실행의 원본 오디오가 달라 비교하지 않습니다. 같은 곡의 실행끼리만 비교하세요.")
     pairs = _pair(a.notes, b.notes, same_pitch=True)
     ia, ib = {i for i, _ in pairs}, {j for _, j in pairs}
     rest_a = [n for i, n in enumerate(a.notes) if i not in ia]
@@ -264,6 +275,10 @@ def markdown_report(cmp: RunComparison, max_rows: int = 200) -> str:
                      f"{_mem(b.resources.get(stage))} |")
     if a.score_summary or b.score_summary:
         lines.append(f"| 실행 시점 사용자 편집 (수정/추가) | {_edits(a.score_summary)} | {_edits(b.score_summary)} |")
+    for key, label in (("source_key", "분리 소스 (보관 키)"), ("notes_version", "음표 검출 버전"),
+                       ("suggestions_pending", "교정 제안 대기"), ("suggestions_applied", "교정 제안 적용")):
+        if key in a.quality or key in b.quality:
+            lines.append(f"| {label} | {a.quality.get(key, '-')} | {b.quality.get(key, '-')} |")
     lines += ["", "## 음표 비교", "",
               f"시작 시각 ±{int(MATCH_ONSET_TOL * 1000)}ms 안이고 음높이가 같으면 같은 음표로 본다.", "",
               f"- 일치: {len(cmp.matched)}개 (시작 이동 평균 {_ms(cmp.mean_onset_shift_ms)}, "

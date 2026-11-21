@@ -671,13 +671,22 @@ class ProjectSession(QObject):
         try:
             record = runs.record_from_result(
                 result, kind, timings=timings, reused=reused, resources=resources,
-                score_summary=dataclasses.asdict(summarize(self.doc.project)), app_version=__version__)
+                score_summary=dataclasses.asdict(summarize(self.doc.project)), app_version=__version__,
+                quality=self._run_quality())
             path = runs.save_run(self.folder.paths.analysis, record)
             log.info("분석 실행 기록 저장: %s (음표 %d개, %s)", path.name, len(record.notes),
                      ", ".join(f"{k} {v:.2f}s" for k, v in record.timings_s.items()))
         except Exception as e:  # noqa: BLE001 - 기록 실패가 분석 결과 반영을 막으면 안 된다
             log.exception("분석 실행 기록을 저장하지 못했습니다: %s", e)
             self.message.emit("분석 실행 기록을 저장하지 못했습니다 (분석 결과에는 영향이 없습니다).", 8000)
+
+    def _run_quality(self) -> dict:
+        """실행 기록에 남길 v0.6 지표: 교정 제안 대기·적용 수 (정답 없는 지표)."""
+        st = self.doc.project.suggestions
+        if st is None:
+            return {}
+        c = st.counts()
+        return {"suggestions_pending": c.get("pending", 0), "suggestions_applied": c.get("accepted", 0)}
 
     def compare_recent_runs(self) -> tuple[Path, runs.RunComparison]:
         """가장 최근 두 실행을 비교해 analysis/reports/에 Markdown 보고서를 쓴다."""
@@ -687,7 +696,10 @@ class ProjectSession(QObject):
         if len(records) < 2:
             raise AmpError(f"비교하려면 분석 실행 기록이 2개 이상 필요합니다 (현재 {len(records)}개).")
         a, b = records[-2], records[-1]
-        path = runs.write_report(self.folder.paths.analysis, a, b)
+        try:
+            path = runs.write_report(self.folder.paths.analysis, a, b)
+        except runs.RunCompareError as e:  # 원본을 다른 파일로 다시 연결한 뒤의 실행 등
+            raise AmpError(str(e)) from e
         log.info("실행 비교 보고서: %s", path)
         return path, runs.compare_runs(a, b)
 
