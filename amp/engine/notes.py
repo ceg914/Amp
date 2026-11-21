@@ -59,7 +59,10 @@ GLIDE_MIN_DRIFT = 0.4  # 반음. 조각 안에서 이만큼 이상 한 방향으
 REF_WINDOW_S = 0.5  # 현재 음 높이를 추정할 때 볼 최근 구간
 # 접근음(끌어올림) 흡수. 값은 원리에서 정했다: 16분음표(90~100BPM에서 0.15~0.17초)보다 조금 긴 길이까지,
 # 재발음 지표는 표준 민감도의 같은 음 분할 임계(4.0)의 절반 미만이면 '다시 부른 근거 없음'으로 본다.
-APPROACH_MAX_S = 0.25
+APPROACH_MAX_S = 0.25  # v3의 고정 상한. v4는 아래 상대 상한을 쓴다 (APPROACH_TARGET_RATIO가 None이면 이 값)
+# v4: 접근 구간 상한을 뒤 음 길이에 비례해 정한다 (짧은 목표 음 앞의 긴 '접근'은 따로 부른 음일 가능성이 크다).
+APPROACH_TARGET_RATIO: float | None = None  # 실험 결과 이득이 없어 기본은 끔 (보고서 7장)
+APPROACH_CAP_MIN_S, APPROACH_CAP_MAX_S = 0.12, 0.35
 APPROACH_GAP_S = 0.08
 APPROACH_MAX_INTERVAL = 7
 APPROACH_BIG_INTERVAL = 4  # 이 이상 떨어져 있으면 짧은 음 안에서 실제로 1반음 이상 올라가야 한다
@@ -508,13 +511,20 @@ def longest_plateau(filled: np.ndarray, s: int, e: int, band: float = APPROACH_P
     return best
 
 
+def approach_cap(target_frames: int, fr: float) -> float:
+    """접근 구간 최대 길이(초). v4: 뒤 음 길이 × 비율을 [최소, 최대]로 자름. 비율이 None이면 v3 고정값."""
+    if APPROACH_TARGET_RATIO is None:
+        return APPROACH_MAX_S
+    return min(APPROACH_CAP_MAX_S, max(APPROACH_CAP_MIN_S, APPROACH_TARGET_RATIO * target_frames / fr))
+
+
 def is_approach(a: _Seg, b: _Seg, prev_end: int | None, onset: np.ndarray, filled: np.ndarray, fr: float) -> bool:
     """a가 b로 올라가는 접근 구간(끌어올림)인가. 규칙은 모듈 설명 9번."""
     if a.ornament or b.ornament:
         return False
     if not (prev_end is None or prev_end < a.s or a.onset_start):
         return False  # 앞 음에서 이어지는 중간 음은 미끄러짐 흡수(6번)가 다룬다
-    if (a.e - a.s) > APPROACH_MAX_S * fr or (b.e - b.s) < (a.e - a.s):
+    if (a.e - a.s) > approach_cap(b.e - b.s, fr) * fr or (b.e - b.s) < (a.e - a.s):
         return False
     if b.s - a.e > APPROACH_GAP_S * fr or b.s < a.e:
         return False

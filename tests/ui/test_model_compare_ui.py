@@ -43,7 +43,7 @@ def compared(qtbot, window, song):
 def test_compare_mode_layout_and_exit_restores_editor(compared):
     w, folder = compared
     mc = w.model_compare
-    assert mc.active and w.splitter.widget(0) is mc.panel and not w.tracks.isVisible()
+    assert mc.active and w.splitter.widget(0) is mc.left_tabs and mc.left_tabs.currentWidget() is mc.panel and not w.tracks.isVisible()
     assert w.right_tabs.indexOf(mc.diff_panel) >= 0
     assert len(mc.outputs) == 2 and mc.keys["a"] and mc.keys["b"] and mc.keys["a"] != mc.keys["b"]
     assert {MC.CMP_A, MC.CMP_B} <= set(w.player.tracks)

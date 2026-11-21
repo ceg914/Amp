@@ -8,6 +8,11 @@
   합성 음원에서 실제 발성 시작보다 40~80ms 늦게 피크가 찍혔다 (STEP 2.5에서 측정, 기준선 v1).
   RMS는 64ms 창(``rms``)과 20ms 창(``rms_fine``) 두 가지다. 40ms 남짓한 음절 사이 틈은 20ms 창에서만 보인다.
 
+v0.6 Hybrid: 청크 k의 pYIN 결과는 16kHz 신호의 [청크 시작 - 1초, 청크 끝 + 1초] 표본만으로 정해진다.
+``reuse`` 로 받은 이전 결과(다른 분리 결과·이전 Hybrid)의 16kHz 신호가 그 창에서 비트 단위로 같으면
+그 청크는 다시 계산하지 않고 이전 f0·확률을 옮긴다. 결과는 처음부터 계산한 것과 똑같다.
+온셋·RMS는 곡 전체 기준값(top_db 등)이 있어 늘 새로 계산한다(전체 계산에 1초 남짓).
+
 후처리(옥타브 오류·튐 보정)는 결과를 캐시한 뒤 GUI 쪽 ``amp.engine.pitch_post`` 가 한다.
 그래서 후처리 방법을 바꿔도 pYIN을 다시 돌릴 필요가 없다.
 """
@@ -64,6 +69,24 @@ def _fit(a: np.ndarray, n: int) -> np.ndarray:
     return np.concatenate([a, np.zeros(n - a.shape[0], dtype=np.float32)])
 
 
+def to_pitch_sr(mono: np.ndarray, sr: int) -> np.ndarray:
+    import librosa
+
+    y = np.asarray(mono, dtype=np.float32)
+    if sr != PITCH_SR:
+        y = librosa.resample(y, orig_sr=sr, target_sr=PITCH_SR, res_type="soxr_hq").astype(np.float32)
+    return y
+
+
+@dataclass
+class ReuseSource:
+    """다시 쓸 수 있는 이전 피치 결과: 그 결과를 만든 16kHz 신호와 f0·확률."""
+    y16: np.ndarray
+    f0_hz: np.ndarray
+    voiced_prob: np.ndarray
+    label: str = ""
+
+
 def track_pitch(
     mono: np.ndarray,
     sr: int,
@@ -71,12 +94,12 @@ def track_pitch(
     is_cancelled: Callable[[], bool] | None = None,
     fmin: float = FMIN_HZ,
     fmax: float = FMAX_HZ,
+    reuse: list[ReuseSource] | None = None,
+    stats: dict | None = None,
 ) -> PitchFrames:
     import librosa
 
-    y = np.asarray(mono, dtype=np.float32)
-    if sr != PITCH_SR:
-        y = librosa.resample(y, orig_sr=sr, target_sr=PITCH_SR, res_type="soxr_hq").astype(np.float32)
+    y = to_pitch_sr(mono, sr)
     n_frames = 1 + len(y) // HOP
     f0 = np.full(n_frames, np.nan, dtype=np.float32)
     prob = np.zeros(n_frames, dtype=np.float32)
@@ -94,11 +117,23 @@ def track_pitch(
         seg = y[a:b]
         if float(np.max(np.abs(seg))) < 1e-6:  # 완전 무음 청크는 계산하지 않는다
             continue
+        g0 = start // HOP
+        g1 = n_frames if k == len(starts) - 1 else (start + chunk) // HOP
+        src = next((r for r in reuse or () if len(r.y16) == len(y) and len(r.f0_hz) == n_frames
+                    and np.array_equal(r.y16[a:b], seg)), None)
+        if src is not None:  # 이 청크의 입력이 이전 결과와 같다: 같은 결과를 옮긴다
+            f0[g0:g1] = src.f0_hz[g0:g1]
+            prob[g0:g1] = src.voiced_prob[g0:g1]
+            if stats is not None:
+                stats["reused"] = stats.get("reused", 0) + 1
+            if progress:
+                progress((k + 1) / len(starts) * 0.9, "피치 추출 중 (바뀌지 않은 구간은 이전 결과 사용)")
+            continue
+        if stats is not None:
+            stats["computed"] = stats.get("computed", 0) + 1
         f, voiced, vprob = librosa.pyin(
             seg, fmin=fmin, fmax=fmax, sr=PITCH_SR, frame_length=FRAME_LENGTH, hop_length=HOP, center=True
         )
-        g0 = start // HOP
-        g1 = n_frames if k == len(starts) - 1 else (start + chunk) // HOP
         j0 = g0 - a // HOP
         take = slice(j0, j0 + (g1 - g0))
         fs = np.where(voiced[take], f[take], np.nan)

@@ -49,6 +49,47 @@ def _overlap(a: Note, b: Note) -> float:
     return max(0.0, min(a.end, b.end) - max(a.start, b.start))
 
 
+CARRY_TOL_S = 1e-6
+
+
+def carry_note_ids(project: Project, new: AnalysisResult) -> AnalysisResult:
+    """새 분석에서 이전 자동 음표와 시작·끝·음높이가 같은 음표는 이전 id를 이어받는다 (v0.6).
+
+    Hybrid 구간 하나만 바꿔 다시 분석하면 나머지 구간의 음표는 그대로 나온다. id가 같으면 가사 연결·검토 상태·
+    제안이 그 음표를 계속 가리킨다. 작업본에서 사용자가 고친 음표(수정·추가)가 쓰는 id는 이어받지 않는다
+    (같은 id의 음표가 두 개가 되지 않게).
+    """
+    old = project.analysis
+    if old is None or not old.notes or not new.notes:
+        return new
+    reserved = {n.id for n in project.score.notes() if project.note_status(n) != "original"}
+    by_key: dict[tuple, list[Note]] = {}
+    for n in old.notes:
+        if n.id not in reserved:
+            by_key.setdefault((n.pitch, round(n.start, 4), round(n.end, 4)), []).append(n)
+    used: set[str] = set()
+    fresh_ids = {n.id for n in new.notes}
+    out = []
+    changed = False
+    for n in new.notes:
+        cands = by_key.get((n.pitch, round(n.start, 4), round(n.end, 4)), [])
+        hit = next((o for o in cands if o.id not in used and abs(o.start - n.start) < CARRY_TOL_S
+                    and abs(o.end - n.end) < CARRY_TOL_S and (o.id == n.id or o.id not in fresh_ids)), None)
+        if hit is not None and hit.id != n.id:
+            used.add(hit.id)
+            out.append(n.with_(id=hit.id))
+            changed = True
+        else:
+            if hit is not None:
+                used.add(hit.id)
+            out.append(n)
+    if not changed:
+        return new
+    import dataclasses
+
+    return dataclasses.replace(new, notes=tuple(out))
+
+
 def plan_reanalysis(project: Project, new: AnalysisResult, mode: str = KEEP_EDITS) -> ReanalysisPlan:
     current = project.score.notes()
     fresh = Score.from_analysis(new).notes()

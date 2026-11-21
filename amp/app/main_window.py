@@ -47,7 +47,9 @@ from amp.app.dialogs import (
 from amp.app.document import ProjectDocument
 from amp.app.compare_controller import CompareController
 from amp.app.export_controller import ExportController
+from amp.app.hybrid_controller import HybridController
 from amp.app.model_compare_controller import ModelCompareController
+from amp.app.suggestions_controller import SuggestionsController
 from amp.app.listening_controller import ListeningController
 from amp.app.review_controller import ReviewController
 from amp.app.lyrics_controller import LyricsController
@@ -132,6 +134,14 @@ HELP_TEXT = """<h3>조작 방법</h3>
 <li>'모델 차이' 탭과 검토 탭의 '모델 비교' 항목은 차이만 보여 줍니다. 정답 채보가 없으므로 어느 쪽이 정확하다고 판정하지 않습니다.</li>
 <li>[A/B를 분석에 사용…]: 바뀔 항목을 먼저 보여 주고, 사용자 편집은 '수정 유지'로 지킵니다. 다른 모델 결과 파일은 지우지 않습니다.</li>
 </ul>
+<h3>Hybrid 보컬 (v0.6, 분석 &gt; Hybrid 편집 모드 <b>Ctrl+Shift+H</b>)</h3>
+<ul>
+<li>구간마다 분리 모델을 골라 하나의 보컬로 합칩니다. 파형 위 Hybrid 레인에서 경계를 끌어 옮기고, 오른쪽 클릭으로
+나누기·합치기·모델 지정·지우기를 합니다. 모델 이름이 구간 안에 쓰이고, 검증이 필요한 구간은 빗금과 '!'로 표시합니다.</li>
+<li>경계는 샘플 단위로 맞추고 기본 30ms 직선 교차(크로스페이드)로 잇습니다. 원본 분리 파일은 바꾸지 않습니다.</li>
+<li>[전후 비교 듣기]: A = 지금 분석 소스, B = 새 Hybrid (Ctrl+B 전환). [분석 소스로 사용]: 바뀐 범위 근처의 피치만 다시
+계산하고, 바뀔 항목을 보여 준 뒤 사용자 편집을 지키며 반영합니다.</li>
+</ul>
 <h3>아직 없는 기능</h3>
 <p>자음·모음 단위 시간은 아직 구현하지 않았습니다. 내보내기 &gt; 채보·가사 내보내기에서 USTX·UFData·MIDI·MusicXML·JSON·CSV·LRC로 저장합니다(조옮김·곡 음역 표시).
 '샘플 데이터 생성'은 오디오 길이만 보고 고정 패턴을 만드는 시험용 기능입니다.</p>"""
@@ -172,7 +182,22 @@ class MainWindow(QMainWindow):
         self.compare = CompareController(self)
         self.exporter = ExportController(self)
         self.model_compare = ModelCompareController(self)
+        self.hybrid = HybridController(self, self.model_compare)
+        self.hybrid.lane_label.setFixedWidth(KEYBOARD_WIDTH)
+        self.hybrid.lane_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.hybrid.lane_label.setProperty("role", "secondary")
+        self.center_grid.addWidget(self.hybrid.lane_label, 1, 0)
+        self.center_grid.addWidget(self.hybrid.lane, 1, 1)
+        self.hybrid.lane.hide()
+        self.hybrid.lane_label.hide()
         self.right_tabs.addTab(self.review.panel, "검토")
+        self.suggest = SuggestionsController(self)
+        self.right_tabs.addTab(self.suggest.panel, "교정 제안")
+        for seq, step in (("Alt+[", -1), ("Alt+]", 1)):
+            act = QAction(self)
+            act.setShortcut(QKeySequence(seq))
+            act.triggered.connect(lambda _c=False, s=step: self.suggest.go(s))
+            self.addAction(act)
         self.right_tabs.addTab(self.compare.panel, "악보 비교")
         self._build_menus()
         self._build_toolbar()
@@ -217,29 +242,31 @@ class MainWindow(QMainWindow):
         grid.setSpacing(0)
         grid.addWidget(corner, 0, 0)
         grid.addWidget(self.ruler, 0, 1)
-        grid.addWidget(self.wave_label, 1, 0)
-        grid.addWidget(self.waveform, 1, 1)
+        # 1행: v0.6 Hybrid 구간 레인 (컨트롤러를 만든 뒤 넣는다)
+        self.center_grid = grid
+        grid.addWidget(self.wave_label, 2, 0)
+        grid.addWidget(self.waveform, 2, 1)
         # STEP 5: 스펙트로그램 레인 (보기 > 파형·스펙트로그램). 같은 시간축, 아래 가장자리를 끌어 높이 조절
         self.spec_label = QLabel("스펙트로\n그램")
         self.spec_label.setFixedWidth(KEYBOARD_WIDTH)
         self.spec_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.spec_label.setProperty("role", "secondary")
         self.spec_label.setWordWrap(True)
-        grid.addWidget(self.spec_label, 2, 0)
-        grid.addWidget(self.spectrogram, 2, 1)
+        grid.addWidget(self.spec_label, 3, 0)
+        grid.addWidget(self.spectrogram, 3, 1)
         self.spectrogram.setVisible(False)
         self.spec_label.setVisible(False)
-        grid.addWidget(self.keyboard, 3, 0)
-        grid.addWidget(self.view, 3, 1)
+        grid.addWidget(self.keyboard, 4, 0)
+        grid.addWidget(self.view, 4, 1)
         # 가사 레인 (명세 5장: 피아노 롤 아래 '가사·음절 정렬 영역'). 파형·피아노 롤과 같은 시간축
         self.lyric_label = QLabel("가사")
         self.lyric_label.setFixedWidth(KEYBOARD_WIDTH)
         self.lyric_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.lyric_label.setProperty("role", "secondary")
         self.lyric_lane = LyricLane(self.doc, self.timeline)
-        grid.addWidget(self.lyric_label, 4, 0)
-        grid.addWidget(self.lyric_lane, 4, 1)
-        grid.setRowStretch(3, 1)
+        grid.addWidget(self.lyric_label, 5, 0)
+        grid.addWidget(self.lyric_lane, 5, 1)
+        grid.setRowStretch(4, 1)
         grid.setColumnStretch(1, 1)
 
         self.tracks = TrackPanel()
@@ -350,6 +377,7 @@ class MainWindow(QMainWindow):
                   self.act_no_vocal, self.act_compare_runs, self.act_probe, self.act_clear_cache, None, self.act_sample):
             m.addSeparator() if a is None else m.addAction(a)
         self.model_compare.build_menu(m)
+        self.hybrid.build_menu(m)
         self.lyrics.build_menu(mb)
         m = mb.addMenu("내보내기(&X)")
         m.addAction(self.act_export)
@@ -437,6 +465,10 @@ class MainWindow(QMainWindow):
         self.compare_button.setDefaultAction(self.model_compare.act_mode)
         self.compare_button.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextOnly)
         tb.addWidget(self.compare_button)
+        self.hybrid_button = QToolButton()
+        self.hybrid_button.setDefaultAction(self.hybrid.act_mode)
+        self.hybrid_button.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextOnly)
+        tb.addWidget(self.hybrid_button)
         self._update_time_label(0.0)
 
     def _build_statusbar(self) -> None:
@@ -572,6 +604,7 @@ class MainWindow(QMainWindow):
         self.act_reseparate.setEnabled(has_audio and is_open and not busy)
         self.act_import_stems.setEnabled(has_audio and is_open and not busy)
         self.model_compare.update_actions(has_audio, is_open, busy)
+        self.hybrid.update_actions(has_audio, is_open, busy)
         self.act_redetect.setEnabled(has_pitch and not busy)
         self.act_sample.setEnabled(has_audio and not busy)
         self.act_cancel_analysis.setEnabled(busy)

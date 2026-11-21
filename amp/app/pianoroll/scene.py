@@ -47,6 +47,8 @@ class PianoRollScene(QGraphicsScene):
         # STEP 5 모델 비교: "a"/"b" → {"notes": [(시작, 끝, 음높이)], "curve": PitchCurve | None, "label": str}
         # 비교용 자동 결과는 편집할 수 없는 그림이다. A는 행 위쪽 절반 바이올렛 점선, B는 아래쪽 절반 민트 점점선
         self.model_layers: dict[str, dict] = {}
+        # v0.6 교정 제안 미리보기: 사라질 음표(사선)·생길 음표(점선 테두리 + 반투명). 편집되지 않는 그림이다
+        self.preview: dict[str, list] = {}
         self.model_show = {"a_notes": True, "b_notes": True, "a_curve": True, "b_curve": True}
         self.lyrics_visible = True
         self.highlight_notes: set[str] = set()  # 선택한 음절에 연결된 음표 (민트 테두리)
@@ -253,6 +255,40 @@ class PianoRollScene(QGraphicsScene):
                 painter.setPen(theme.LYRIC_WARN if flag != "uncertain" else theme.TEXT_DIM)
                 painter.drawText(QRectF(r.left() + 1, r.top() - 1, 12, r.height() + 2), Qt.AlignmentFlag.AlignCenter, marks[flag])
 
+    def set_preview(self, removed=(), added=()) -> None:
+        """교정 제안 미리보기. removed·added는 Note 목록. 둘 다 비면 지운다."""
+        self.preview = {"removed": [(n.start, n.end, n.pitch) for n in removed],
+                        "added": [(n.start, n.end, n.pitch) for n in added]} if (removed or added) else {}
+        self.update()
+
+    def _draw_preview(self, painter: QPainter, rect: QRectF) -> None:
+        m = self.mapper
+        t0, t1 = m.x_to_time(rect.left()), m.x_to_time(rect.right())
+        h = m.row_height
+        gone = QPen(theme.LYRIC_WARN, 1.6)
+        gone.setCosmetic(True)
+        for a, b, p in self.preview.get("removed", ()):
+            if b < t0 or a > t1:
+                continue
+            r = QRectF(m.time_to_x(a), m.pitch_to_y(p), max(m.time_to_x(b) - m.time_to_x(a), 2.0), h)
+            painter.setPen(gone)
+            painter.drawLine(r.topLeft(), r.bottomRight())
+        pen = QPen(theme.TEXT, 1.6, Qt.PenStyle.DashLine)
+        pen.setCosmetic(True)
+        fill = QColor(theme.MODEL_B)
+        fill.setAlpha(70)
+        painter.setFont(theme.mono_font(8))
+        for a, b, p in self.preview.get("added", ()):
+            if b < t0 or a > t1:
+                continue
+            r = QRectF(m.time_to_x(a), m.pitch_to_y(p) + 1, max(m.time_to_x(b) - m.time_to_x(a), 2.0), h - 2)
+            painter.fillRect(r, fill)
+            painter.setPen(pen)
+            painter.drawRect(r)
+            if r.width() >= 30 and h >= 12:
+                painter.setPen(theme.TEXT)
+                painter.drawText(r.adjusted(2, 0, 0, 0), Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignLeft, "제안")
+
     def set_model_layers(self, layers: dict[str, dict] | None) -> None:
         self.model_layers = dict(layers or {})
         self.invalidate(self.sceneRect(), QGraphicsScene.SceneLayer.BackgroundLayer | QGraphicsScene.SceneLayer.ForegroundLayer)
@@ -457,6 +493,8 @@ class PianoRollScene(QGraphicsScene):
         멜리스마는 음표를 민트 선으로 잇고 아래에 괄호선을 긋는다(사용자 확정: 굵은 실선, 자동: 실선, 판정 불확실: 점선)."""
         if self.model_layers:
             self._draw_model_curves(painter, rect)  # A/B 피치 곡선은 음표 위에 그린다 (가려지지 않게)
+        if self.preview:
+            self._draw_preview(painter, rect)
         if not self.lyrics_visible:
             return
         grow = QRectF(rect).adjusted(-200, -40, 200, 40)

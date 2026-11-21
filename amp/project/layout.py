@@ -85,6 +85,16 @@ class ProjectPaths:
         return self.analysis / "reference_score.json"
 
     @property
+    def hybrid_json(self) -> Path:
+        """v0.6: Hybrid 보컬 구간 계획 (구간마다 고른 분리 모델)."""
+        return self.analysis / "hybrid.json"
+
+    @property
+    def suggestions_json(self) -> Path:
+        """v0.6: 교정 제안과 사용자 처리 상태."""
+        return self.analysis / "suggestions.json"
+
+    @property
     def scores(self) -> Path:
         """가져온 악보 파일 사본 (프로젝트를 옮겨도 다시 읽을 수 있게 복사해 둔다)."""
         return self.root / "scores"

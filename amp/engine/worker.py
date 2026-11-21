@@ -91,14 +91,29 @@ def cmd_separate(args: dict) -> dict:
 
 
 def cmd_pitch(args: dict) -> dict:
-    from amp.engine.dsp.pitch import FMAX_HZ, FMIN_HZ, track_pitch
+    from amp.engine.dsp.pitch import FMAX_HZ, FMIN_HZ, PitchFrames, ReuseSource, to_pitch_sr, track_pitch
 
     audio = _load(args["input"])
+    reuse = []
+    for r in args.get("reuse") or ():  # v0.6 Hybrid: 바뀌지 않은 청크는 이전 결과를 옮긴다 (입력 신호가 같을 때만)
+        try:
+            ra = _load(r["audio"])
+            if ra.sample_rate != audio.sample_rate or ra.frames != audio.frames:
+                continue
+            old = PitchFrames.load(r["pitch"])
+            reuse.append(ReuseSource(to_pitch_sr(ra.mono(), ra.sample_rate), old.f0_hz, old.voiced_prob,
+                                     str(r.get("label", ""))))
+            del ra
+        except Exception as e:  # noqa: BLE001 - 이전 결과를 못 읽으면 그 청크를 새로 계산하면 된다
+            print(f"이전 피치 결과를 쓰지 못함: {e}", file=sys.stderr)
+    stats: dict = {}
     frames = track_pitch(audio.mono(), audio.sample_rate, _progress,
-                         fmin=float(args.get("fmin", FMIN_HZ)), fmax=float(args.get("fmax", FMAX_HZ)))
+                         fmin=float(args.get("fmin", FMIN_HZ)), fmax=float(args.get("fmax", FMAX_HZ)),
+                         reuse=reuse, stats=stats)
     frames.save(os.path.join(args["out_dir"], "pitch.npz"))
     meta = {"tracker": "pyin", "frames": int(frames.f0_hz.shape[0]), "frame_rate": frames.frame_rate,
-            "fmin": float(args.get("fmin", FMIN_HZ)), "fmax": float(args.get("fmax", FMAX_HZ)), "versions": _versions()}
+            "fmin": float(args.get("fmin", FMIN_HZ)), "fmax": float(args.get("fmax", FMAX_HZ)), "versions": _versions(),
+            "chunks": {"computed": int(stats.get("computed", 0)), "reused": int(stats.get("reused", 0))}}
     with open(os.path.join(args["out_dir"], "meta.json"), "w", encoding="utf-8") as f:
         json.dump(meta, f)
     return meta

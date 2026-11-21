@@ -31,7 +31,8 @@ from amp.engine import stems as stem_store
 MODELS_DIR = "models"
 POINTER = "store_key"
 ROFORMER_CODE_VERSION = "1"
-MODEL_LABELS = {"htdemucs": "Demucs htdemucs", "mel_roformer": "Mel-Band RoFormer", "external": "가져온 결과"}
+MODEL_LABELS = {"htdemucs": "Demucs htdemucs", "mel_roformer": "Mel-Band RoFormer", "external": "가져온 결과",
+                "hybrid": "Hybrid"}
 _SHA_CACHE: dict[tuple, str] = {}
 
 
@@ -102,6 +103,10 @@ class StoreEntry:
             base += f" ({info['checkpoint']})"
         if self.model == "external" and info.get("tool"):
             base += f" ({info['tool']})"
+        if self.model == "hybrid" and info.get("segments"):
+            n = len(info["segments"])
+            models = sorted({str(v.get("label") or v.get("model")) for v in (info.get("sources") or {}).values()})
+            base += f" (구간 {n}개: {' + '.join(models)})" if models else f" (구간 {n}개)"
         return base
 
     @property

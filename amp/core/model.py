@@ -280,6 +280,10 @@ class Project:
     # STEP 5: 분석 오류 검토 상태(항목 키 → 상태)와 가져온 참조 악보(자동 채보 음표와 따로)
     review: "ReviewState" = field(default_factory=lambda: _review_state())
     reference: "ReferenceScore | None" = None
+    # v0.6: Hybrid 보컬 구간 계획 (amp.engine.hybrid.HybridPlan). None이면 Hybrid를 쓰지 않음
+    hybrid: "HybridPlan | None" = None
+    # v0.6: 교정 제안과 처리 상태 (amp.compare.suggestions.SuggestionState). None이면 아직 찾지 않음
+    suggestions: "SuggestionState | None" = None
 
     def note_status(self, note: Note) -> str:
         """'original'(원본 그대로), 'modified'(수정됨), 'user'(사용자 추가) 중 하나."""

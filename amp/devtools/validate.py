@@ -300,7 +300,8 @@ def validate(audio_path: str, kind: str = "A", ref_path: str | None = None, out_
 
     t0 = time.perf_counter()
     curve = post_v2.build_curve(frames.f0_hz, frames.voiced_prob, frames.rms, frames.frame_rate, rms_fine=frames.rms_fine)
-    artic = post_v2.articulation_envelope(frames.onset, frames.rms, frames.frame_rate, rms_fine=frames.rms_fine)
+    artic = post_v2.articulation_envelope(frames.onset, frames.rms, frames.frame_rate, rms_fine=frames.rms_fine,
+                                          voiced_prob=frames.voiced_prob, f0_hz=frames.f0_hz)
     data["pitch"] = pitch_metrics(frames, curve)
     ref = read_reference(ref_path) if ref_path else None
     data["notes"], data["reference"], keep = {}, {}, {}

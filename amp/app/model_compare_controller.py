@@ -35,6 +35,7 @@ from PySide6.QtWidgets import (
     QScrollArea,
     QSlider,
     QTableWidget,
+    QTabWidget,
     QTableWidgetItem,
     QVBoxLayout,
     QWidget,
@@ -375,6 +376,11 @@ class ModelCompareController(QObject):
         self.w = window
         self.panel = ModelComparePanel()
         self.diff_panel = ModelDiffPanel()
+        # 왼쪽 영역: 모델 비교 + (v0.6) Hybrid 구간 탭. Hybrid 컨트롤러가 탭을 더한다
+        self.left_tabs = QTabWidget()
+        self.left_tabs.setDocumentMode(True)
+        self.left_tabs.addTab(self.panel, "모델 비교")
+        self.left_tabs.hide()
         self.active = False
         self.keys = {"a": None, "b": None}
         self.outputs: dict[str, object] = {}  # 결과 키 → TranscriptionOutput (이번 실행 동안)
@@ -433,8 +439,8 @@ class ModelCompareController(QObject):
         if on:
             self._saved_states = {n: w.player.track_state(n) for n in w.player.tracks}
             self.tracks_loaded = False
-            w.splitter.replaceWidget(0, self.panel)
-            self.panel.show()
+            w.splitter.replaceWidget(0, self.left_tabs)
+            self.left_tabs.show()
             w.tracks.hide()
             w.right_tabs.addTab(self.diff_panel, "모델 차이")
             self._saved_lane = w.listening.lane_mode
@@ -457,10 +463,12 @@ class ModelCompareController(QObject):
                 w.right_tabs.removeTab(i)
             w.splitter.replaceWidget(0, w.tracks)
             w.tracks.show()
-            self.panel.hide()
+            self.left_tabs.hide()
             if self._saved_lane is not None:
                 w.listening.set_lane_mode(self._saved_lane)
             self._saved_lane = None
+            if getattr(w, "hybrid", None) is not None:
+                w.hybrid.on_compare_closed()
         w._update_actions()
 
     def _on_project_changed(self, *_a) -> None:
@@ -949,12 +957,23 @@ class ModelCompareController(QObject):
         self.refresh_entries()
         self._update_overlays()
 
+    def set_pair(self, a: str | None, b: str | None) -> None:
+        """A·B 결과를 바꾼다 (Hybrid 전후 비교 등). 비교 모드가 켜져 있어야 트랙이 올라간다."""
+        self.refresh_entries()
+        for role, key, combo in (("a", a, self.panel.combo_a), ("b", b, self.panel.combo_b)):
+            self.keys[role] = key
+            combo.blockSignals(True)
+            combo.setCurrentIndex(max(0, combo.findData(key)))
+            combo.blockSignals(False)
+        self._save_keys()
+        self._load_tracks()
+        self._update_overlays()
+
     def use_as_source(self, role: str) -> None:
         """A 또는 B 분리 결과를 실제 분석 소스로. 바뀔 항목을 먼저 보여 주고, 사용자 편집은 수정 유지로 지킨다."""
         w = self.w
         key = self.keys[role]
-        e = self.entry(key)
-        if e is None:
+        if self.entry(key) is None:
             w.statusBar().showMessage(f"{role.upper()}에 고른 분리 결과가 없습니다.", 4000)
             return
         out = self.outputs.get(key)
@@ -963,15 +982,27 @@ class ModelCompareController(QObject):
                                     "이 결과로 만든 채보가 아직 없습니다. [모델별 채보]를 먼저 실행하세요. "
                                     "(바뀔 항목을 미리 보여 주려면 새 채보 결과가 필요합니다.)")
             return
+        self.apply_source(key, out)
+
+    def apply_source(self, key: str, out, extra_lines: list[str] | None = None) -> bool:
+        """보관한 결과 key와 그 채보 out을 분석 소스로. 미리보기 → 확인 → stems.json 교체 → 수정 유지로 반영."""
+        w = self.w
+        if self.entry(key) is None:
+            self.refresh_entries()
+        e = self.entry(key)
+        if e is None:
+            w.statusBar().showMessage("분리 결과를 찾을 수 없습니다.", 4000)
+            return False
+        self.outputs[key] = out
         pv = source_switch.preview(w.doc.project, out.result)
-        dlg = SourceSwitchDialog(e.label, pv.lines(), w)
+        dlg = SourceSwitchDialog(e.label, (extra_lines or []) + pv.lines(), w)
         if dlg.exec() != QDialog.DialogCode.Accepted:
-            return
+            return False
         try:
             w.session.activate_stems(key)
         except Exception as ex:  # noqa: BLE001
             w._show_error("분석 소스를 바꾸지 못했습니다", str(ex))
-            return
+            return False
         if e.model in ("htdemucs", "mel_roformer"):  # 다음 '보컬 분석 실행'이 이 결과를 그대로 쓰게 설정도 맞춘다
             from dataclasses import replace
 
@@ -988,6 +1019,7 @@ class ModelCompareController(QObject):
             msg += (f" 음표 없는 음절 {len(pv.unlinked)}개·멜리스마 재확인 {len(pv.melisma_review)}개는 검토 탭에서 확인하세요.")
         w.statusBar().showMessage(msg, 12000)
         log.info(msg)
+        return True
 
     def build_menu(self, analysis_menu) -> None:
         analysis_menu.addSeparator()

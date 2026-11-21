@@ -547,6 +547,43 @@ class ProjectSession(QObject):
             if out is not None:  # 모델별 자동 분석도 실행 기록으로 남긴다 (나중에 비교·복구용)
                 self._record_run(out.result, f"compare:{oc.spec.model}", out.timings, out.reused, out.resources)
 
+    def render_hybrid(self, plan, current_keys: dict | None = None) -> TaskHandle | None:
+        """v0.6: Hybrid 구간 계획대로 보컬·반주를 합쳐 보관소 항목으로 만든다 (작업 스레드). 원본 stem은 읽기만 한다."""
+        if self.busy:
+            return None
+        store = self.model_store()
+        if store is None:
+            self.error.emit("Hybrid 트랙을 만들 수 없습니다", "열린 프로젝트가 없습니다.", "")
+            return None
+        from amp.engine import hybrid
+
+        def job(progress, token):
+            return hybrid.render(plan, store, progress, lambda: token.cancelled, current_keys)
+
+        handle = self._submit("Hybrid 트랙 만들기", job)
+        self._track_analysis(handle)
+        return handle
+
+    def current_store_keys(self) -> dict[str, str]:
+        """모델 → 지금 설정(Demucs 버전·RoFormer 체크포인트·설정 파일)으로 분리하면 쓰일 보관소 키.
+        Hybrid 구간이 이전 체크포인트 결과를 쓰는지 판단할 때 쓴다. 체크포인트를 고르지 않았으면 RoFormer는 뺀다."""
+        store = self.model_store()
+        if store is None:
+            return {}
+        from amp.engine.model_store import identity_for, store_key
+
+        out = {}
+        for model in ("htdemucs", "mel_roformer"):
+            if model == "mel_roformer" and not (self.model_files or {}).get("checkpoint"):
+                continue
+            try:
+                ident = identity_for(model, store.source_sha256, dict(self.model_files))
+            except OSError:
+                continue
+            found = store.find(ident)
+            out[model] = found.key if found is not None else store_key(ident)
+        return out
+
     def activate_stems(self, key: str) -> None:
         """이 분리 결과를 분석에 쓴다 (stems/stems.json만 바꿈, 다른 결과 파일은 그대로). 재생 트랙을 다시 불러온다."""
         store = self.model_store()

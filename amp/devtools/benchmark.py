@@ -192,9 +192,15 @@ def run_versions(frames, settings: AnalysisSettings, onset_v1: np.ndarray) -> di
     t0 = time.perf_counter()
     curve = post_v2.build_curve(frames.f0_hz, frames.voiced_prob, frames.rms, frames.frame_rate, frames.start_time,
                                 rms_fine=frames.rms_fine)
-    artic = post_v2.articulation_envelope(frames.onset, frames.rms, frames.frame_rate, rms_fine=frames.rms_fine)
+    artic3 = post_v2.articulation_envelope(frames.onset, frames.rms, frames.frame_rate, rms_fine=frames.rms_fine)
+    notes = notes_v2.detect_notes(curve, artic3, settings.note_params())
+    out["v3"] = VersionResult(notes, curve.midi(), time.perf_counter() - t0)  # STEP 3.5 (유성 확률 근거 없음)
+
+    t0 = time.perf_counter()
+    artic = post_v2.articulation_envelope(frames.onset, frames.rms, frames.frame_rate, rms_fine=frames.rms_fine,
+                                          voiced_prob=frames.voiced_prob, f0_hz=frames.f0_hz)
     notes = notes_v2.detect_notes(curve, artic, settings.note_params())
-    out["v2"] = VersionResult(notes, curve.midi(), time.perf_counter() - t0)
+    out["v2"] = VersionResult(notes, curve.midi(), time.perf_counter() - t0)  # 'v2' = 지금 검출기 (v0.6: 음표 v4)
     return out
 
 

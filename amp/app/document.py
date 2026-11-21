@@ -144,6 +144,8 @@ class ProjectDocument(QObject):
     tempoChanged = Signal()
     reviewChanged = Signal()  # STEP 5: 검토 상태
     referenceChanged = Signal()  # STEP 5: 참조 악보·정렬
+    hybridChanged = Signal()  # v0.6: Hybrid 보컬 구간 계획
+    suggestionsChanged = Signal()  # v0.6: 교정 제안 상태
     selectionRequested = Signal(list)  # 선택할 음표 id 목록
     dirtyChanged = Signal(bool)
     filePathChanged = Signal(str)
@@ -260,10 +262,67 @@ class ProjectDocument(QObject):
         self.undo_stack.push(SetFieldCommand(self, "reference", self.project.reference, new, text))
         return True
 
+    def set_hybrid(self, new, text: str = "Hybrid 구간") -> bool:
+        """v0.6: Hybrid 구간 계획 교체 (실행 취소 가능). None이면 계획을 지운다."""
+        if new == self.project.hybrid:
+            return False
+        self.undo_stack.push(SetFieldCommand(self, "hybrid", self.project.hybrid, new, text))
+        return True
+
+    def set_suggestions(self, new, text: str = "교정 제안") -> bool:
+        """v0.6: 교정 제안 목록·처리 상태 교체 (실행 취소 가능)."""
+        if new == self.project.suggestions:
+            return False
+        self.undo_stack.push(SetFieldCommand(self, "suggestions", self.project.suggestions, new, text))
+        return True
+
+    def apply_suggestions(self, ids: Iterable[str]) -> tuple[int, list[str]]:
+        """v0.6: 고른 교정 제안을 적용한다. 한 번에 실행 취소된다. (적용 수, 적용하지 못한 이유 목록).
+
+        제안마다 지금 음표 기준으로 다시 계산하므로, 앞 제안이 뒤 제안의 대상 음표를 바꿨으면 뒤 제안은 건너뛴다.
+        적용한 음표는 사용자 수정 음표가 되어 재분석이 덮어쓰지 않는다. 가사 연결은 음표 교체 명령이 다시 잇는다.
+        """
+        from amp.compare import suggestions as S
+
+        state = self.project.suggestions
+        if state is None:
+            return 0, ["제안이 없습니다."]
+        items = sorted((s for s in (state.get(i) for i in dict.fromkeys(ids)) if s is not None),
+                       key=lambda s: s.start_time)
+        applied, skipped, done = 0, [], []
+        ready = []
+        for s in items:  # 지금 상태로 적용할 수 있는 것이 하나도 없으면 빈 실행 취소 기록을 만들지 않는다
+            try:
+                S.plan_apply(self.project, s)
+                ready.append(s)
+            except EditError as e:
+                skipped.append(f"{s.type_label} {s.start_time:.2f}s: {e}")
+        items = ready
+        if not items:
+            return 0, skipped
+        self.undo_stack.beginMacro(f"교정 제안 {len(items)}개 적용")
+        try:
+            for s in items:
+                try:
+                    removed, added = S.plan_apply(self.project, s)
+                except EditError as e:
+                    skipped.append(f"{s.type_label} {s.start_time:.2f}s: {e}")
+                    continue
+                self._push(removed, added, f"교정 제안: {s.type_label}")
+                done.append(s.suggestion_id)
+                applied += 1
+            if done:
+                self.undo_stack.push(SetFieldCommand(self, "suggestions", state,
+                                                     state.with_status(done, S.ACCEPTED), "교정 제안 상태"))
+        finally:
+            self.undo_stack.endMacro()
+        return applied, skipped
+
     def _apply_field(self, name: str, value) -> None:
         setattr(self.project, name, value)  # Project는 다른 곳도 같은 객체를 들고 있어 자리에서 바꾼다
         self._touch()
-        (self.reviewChanged if name == "review" else self.referenceChanged).emit()
+        {"review": self.reviewChanged, "reference": self.referenceChanged, "hybrid": self.hybridChanged,
+         "suggestions": self.suggestionsChanged}[name].emit()
 
     def push_lyrics(self, new: LyricsState, text: str) -> bool:
         """가사 편집 결과를 실행 취소 기록에 넣는다. 바뀐 것이 없으면 넣지 않는다.
@@ -370,8 +429,9 @@ class ProjectDocument(QObject):
 
     def apply_analysis(self, result: AnalysisResult, mode: str = "keep_edits", text: str = "분석 결과 적용"):
         """재분석 결과 반영. keep_edits면 사용자가 고친 음표·템포를 지킨다. 반영 계획을 돌려준다."""
-        from amp.engine.merge import plan_reanalysis
+        from amp.engine.merge import carry_note_ids, plan_reanalysis
 
+        result = carry_note_ids(self.project, result)  # 그대로인 자동 음표는 id를 이어받아 가사 연결·검토 상태를 지킨다
         plan = plan_reanalysis(self.project, result, mode)
         self.undo_stack.push(ApplyAnalysisCommand(self, result, plan, text))
         return plan

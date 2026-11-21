@@ -11,7 +11,7 @@ from amp.app.autosave import AutosaveManager
 from amp.app.main_window import MainWindow
 from amp.core.model import AudioRef, Project, Score
 from amp.engine.settings import AnalysisSettings
-from amp.engine.transcription import TranscriptionPipeline
+from amp.engine.transcription import NOTES_VERSION, TranscriptionPipeline
 from amp.storage.project_file import save_project
 from amp.devtools.synth import SR
 from tests.conftest import note
@@ -287,7 +287,7 @@ def test_analysis_runs_are_recorded_and_compared(qtbot, window, song, monkeypatc
     assert [r.kind for r in records] == ["full", "redetect"]
     full, again = records
     assert {"pitch", "tempo", "notes", "total"} <= set(full.timings_s) and full.timings_s["total"] > 0
-    assert full.models["pitch"]["name"] == "pyin" and full.models["notes"]["version"] == "3"
+    assert full.models["pitch"]["name"] == "pyin" and full.models["notes"]["version"] == NOTES_VERSION
     assert [n["pitch"] for n in full.notes] == [64, 67, 69]
     assert all(0.0 <= n["confidence"] <= 1.0 for n in full.notes)
     assert again.score_summary["modified"] == 1  # 실행 시점 편집 현황은 개수만 기록

@@ -170,6 +170,43 @@ def save_step5_files(paths: ProjectPaths, project: Project) -> None:
     elif paths.reference_json.exists():  # 참조 악보를 지웠다: 파일은 백업으로 남기고 지운다
         backup = paths.reference_json.with_name(paths.reference_json.name + ".removed.bak")
         paths.reference_json.replace(backup)
+    save_v06_files(paths, project)
+
+
+def save_v06_files(paths: ProjectPaths, project: Project) -> None:
+    """Hybrid 구간 계획·교정 제안. 없고 파일도 없으면 만들지 않는다. 계획을 지웠으면 파일을 백업으로 돌린다."""
+    from amp.compare import suggestions as sug
+    from amp.engine import hybrid
+
+    if project.suggestions is not None and (project.suggestions.items or paths.suggestions_json.exists()):
+        state = sug.refresh(project.suggestions, project)  # 대상이 바뀐 제안은 '지난 제안'으로 저장
+        atomic_write_json(paths.suggestions_json, schema.stamp(schema.SUGGESTIONS, sug.to_dict(state)), backup=True)
+
+    if project.hybrid is not None:
+        atomic_write_json(paths.hybrid_json, schema.stamp(schema.HYBRID, {"plan": hybrid.plan_to_dict(project.hybrid)}),
+                          backup=True)
+    elif paths.hybrid_json.exists():
+        paths.hybrid_json.replace(paths.hybrid_json.with_name(paths.hybrid_json.name + ".removed.bak"))
+
+
+def load_v06_files(paths: ProjectPaths, report: "LoadReport"):
+    """(Hybrid 계획 또는 None, 교정 제안 또는 None). 파일이 깨져도 프로젝트는 열고 경고만 남긴다(파일은 그대로 둔다)."""
+    from amp.compare import suggestions as sug
+    from amp.engine import hybrid
+
+    plan = None
+    state = None
+    if paths.suggestions_json.exists():
+        try:
+            state = sug.from_dict(_load(paths.suggestions_json, schema.SUGGESTIONS, report))
+        except Exception as e:  # noqa: BLE001
+            report.warnings.append(f"교정 제안 파일을 읽지 못해 제안 없이 엽니다 (파일은 그대로 둡니다): {e}")
+    if paths.hybrid_json.exists():
+        try:
+            plan = hybrid.plan_from_dict(_load(paths.hybrid_json, schema.HYBRID, report)["plan"])
+        except Exception as e:  # noqa: BLE001
+            report.warnings.append(f"Hybrid 구간 파일을 읽지 못해 Hybrid 계획 없이 엽니다 (파일은 그대로 둡니다): {e}")
+    return plan, state
 
 
 def load_step5_files(paths: ProjectPaths, report: LoadReport):

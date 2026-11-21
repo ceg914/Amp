@@ -39,6 +39,7 @@ from amp.engine.cache import AnalysisCache
 from amp.engine.context import CancelToken, ProgressFn
 from amp.engine.dsp.pitch import FMAX_HZ, FMIN_HZ, PitchFrames
 from amp.engine.features import vocal_presence
+from amp.engine.hybrid import HYBRID
 from amp.engine.model_store import ModelStore, StoreEntry, identity_for
 from amp.engine.notes import detect_notes
 from amp.engine.pitch_post import articulation_envelope, build_curve
@@ -51,7 +52,9 @@ PITCH_VERSION = 2  # 2: 온셋 32ms 창·비중심, 20ms RMS 추가 (STEP 2.5)
 TEMPO_VERSION = 1
 OLD_FEATURES_WARNING = ("이전 버전(STEP 2)에서 추출한 피치·온셋 정보로 음표를 다시 검출했습니다. "
                         "개선된 음표 시작·끝 판정을 모두 반영하려면 전체 분석을 다시 실행하세요.")
-NOTES_VERSION = "3"  # 2: 틈 게이트·재발음 절대 임계·미끄러짐 흡수·발음된 꾸밈음 (STEP 2.5), 3: 접근음(끌어올림) 흡수 (STEP 3.5)
+# 2: 틈 게이트·재발음 절대 임계·미끄러짐 흡수·발음된 꾸밈음 (STEP 2.5), 3: 접근음(끌어올림) 흡수 (STEP 3.5),
+# 4: 재발음 지표에 유성 확률 하락 근거 추가 (v0.6). 음표 검출 규칙은 3과 같고 입력 지표만 다르다
+NOTES_VERSION = "4"
 SEPARATION_MODEL = "htdemucs"
 
 Runner = Callable[..., dict]
@@ -190,9 +193,12 @@ class TranscriptionPipeline:
             token.raise_if_cancelled()
             pitch_params = {"tracker": "pyin", "v": PITCH_VERSION, "fmin": FMIN_HZ, "fmax": FMAX_HZ, "input": input_id}
             expected = int(req.audio.duration * 100) + 1
+            pitch_args = {"input": pitch_input}
+            if manifest is not None and manifest.model == HYBRID and cache is not None and st.use_cache:
+                pitch_args["reuse"] = _pitch_reuse_candidates(req, cache, key, pitch_params, stems_dir, manifest)
             (frames, pmeta), reused["pitch"] = self._cached(
                 cache, key, "pitch", pitch_params, st.use_cache, scratch,
-                lambda out, p: self._call("pitch", {"input": pitch_input, "out_dir": str(out)}, p, token, req.numba_cache_dir),
+                lambda out, p: self._call("pitch", {**pitch_args, "out_dir": str(out)}, p, token, req.numba_cache_dir),
                 lambda d: _load_pitch(d, expected), prog.stage("pitch"), warnings)
             lap("pitch")
 
@@ -210,7 +216,8 @@ class TranscriptionPipeline:
         curve = build_curve(frames.f0_hz, frames.voiced_prob, frames.rms, frames.frame_rate, frames.start_time,
                             rms_fine=frames.rms_fine)
         params = dataclasses.replace(st.note_params(), syllable_starts=tuple(req.syllable_starts))
-        artic = articulation_envelope(frames.onset, frames.rms, frames.frame_rate, rms_fine=frames.rms_fine)
+        artic = articulation_envelope(frames.onset, frames.rms, frames.frame_rate, rms_fine=frames.rms_fine,
+                                      voiced_prob=frames.voiced_prob, f0_hz=frames.f0_hz)
         notes = detect_notes(curve, artic, params)
         notes_report(1.0, f"음표 {len(notes)}개 검출")
         if not separate and (w := unseparated_sparse_warning(notes, req.audio.duration)):
@@ -223,7 +230,8 @@ class TranscriptionPipeline:
         pv = pmeta.get("versions", {})
         models["pitch"] = ModelInfo("pyin", f"librosa {pv.get('librosa', '')}".strip(),
                                     params={**{k: pmeta.get(k) for k in ("fmin", "fmax", "frame_rate")},
-                                            "features_version": PITCH_VERSION})
+                                            "features_version": PITCH_VERSION,
+                                            **({"chunks": pmeta["chunks"]} if pmeta.get("chunks") else {})})
         models["tempo"] = ModelInfo("librosa-beat", str(tempo.get("versions", {}).get("librosa", "")),
                                     params={"reliable": tempo.get("reliable", False)})
         models["notes"] = ModelInfo("segment", NOTES_VERSION, params=dataclasses.asdict(params))
@@ -261,10 +269,12 @@ class TranscriptionPipeline:
         manifest = store.pointer()
         ok, reason = stem_store.validate(stems_dir, manifest, req.source_sha256)
         model = self.separation_model or req.settings.separation
-        reusable = manifest is not None and manifest.model in (model, EXTERNAL) and _same_model_file(manifest, req)
+        reusable = manifest is not None and manifest.model in (model, EXTERNAL, HYBRID) and _same_model_file(manifest, req)
         if ok and reusable and not req.force_separation:
-            # 사용자가 가져온 외부 분리 결과(model='external')도 그대로 쓴다. Demucs로 덮어쓰지 않는다
-            report(1.0, "가져온 분리 결과 사용" if manifest.model == EXTERNAL else "기존 분리 결과 사용")
+            # 사용자가 가져온 외부 분리 결과(model='external')와 사용자가 고른 Hybrid 결과도 그대로 쓴다.
+            # 분석 설정의 모델로 덮어쓰지 않는다
+            msg = {EXTERNAL: "가져온 분리 결과 사용", HYBRID: "Hybrid 보컬 사용"}.get(manifest.model, "기존 분리 결과 사용")
+            report(1.0, msg)
             return manifest, True
         if manifest is not None and not ok:
             log.info("기존 분리 결과를 쓸 수 없음: %s", reason)
@@ -325,6 +335,35 @@ class TranscriptionPipeline:
         out.mkdir(parents=True, exist_ok=True)
         compute(out, report)
         return load(out), False
+
+
+MAX_REUSE_CANDIDATES = 4
+
+
+def _pitch_reuse_candidates(req: TranscriptionRequest, cache: AnalysisCache, key: str, pitch_params: dict,
+                            stems_dir: Path, manifest: stem_store.StemManifest) -> list[dict]:
+    """Hybrid 보컬의 피치를 계산할 때 청크 단위로 다시 쓸 수 있는 이전 결과 (같은 원본의 다른 분리 결과·이전 Hybrid).
+
+    피치 캐시가 있는 것만 고른다. 실제로 옮길지는 작업 프로세스가 16kHz 신호를 비교해 정한다(같을 때만)."""
+    store = ModelStore(stems_dir, req.source_sha256)
+    me = manifest.model_info.get("store_key")
+    sources = list((manifest.model_info.get("sources") or {}).keys())
+    entries = [e for e in store.entries() if e.key != me]
+    # 이전 Hybrid(구간 대부분이 같을 가능성이 큼)를 먼저, 그다음 이 Hybrid가 쓰는 소스
+    entries.sort(key=lambda e: e.manifest.created, reverse=True)
+    entries.sort(key=lambda e: (e.model != HYBRID, e.key not in sources))
+    out: list[dict] = []
+    for e in entries:
+        if e.model != HYBRID and e.key not in sources:
+            continue
+        hit = cache.lookup(key, "pitch", {**pitch_params, "input": f"stems:{e.manifest.stems_id}"})
+        if hit is None or not (hit / "pitch.npz").is_file():
+            continue
+        out.append({"audio": str(e.path / e.manifest.files["vocals"]["path"]), "pitch": str(hit / "pitch.npz"),
+                    "label": e.key})
+        if len(out) >= MAX_REUSE_CANDIDATES:
+            break
+    return out
 
 
 class CacheEntryError(AnalysisError):
