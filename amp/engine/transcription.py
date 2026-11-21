@@ -39,7 +39,7 @@ from amp.engine.cache import AnalysisCache
 from amp.engine.context import CancelToken, ProgressFn
 from amp.engine.dsp.pitch import FMAX_HZ, FMIN_HZ, PitchFrames
 from amp.engine.features import vocal_presence
-from amp.engine.model_store import ModelStore, StoreEntry, identity_for, store_key
+from amp.engine.model_store import ModelStore, StoreEntry, identity_for
 from amp.engine.notes import detect_notes
 from amp.engine.pitch_post import articulation_envelope, build_curve
 from amp.engine.settings import AnalysisSettings
@@ -272,10 +272,10 @@ class TranscriptionPipeline:
             raise AnalysisError("Mel-Band RoFormer 모델 파일(.ckpt)을 고르지 않았습니다. 분석 설정의 보컬 분리에서 "
                                 "[모델 파일…]로 지정하세요.")
         identity = identity_for(model, req.source_sha256, req.model_files)
-        key = store_key(identity)
-        if not req.force_separation and store.entry(key) is not None:
-            report(1.0, "보관한 분리 결과 사용")  # 예전에 이 모델·설정으로 분리해 둔 결과
-            return store.activate(key), True
+        found = None if req.force_separation else store.find(identity)
+        if found is not None:
+            report(1.0, "보관한 분리 결과 사용")  # 예전에 이 모델·설정으로 분리해 둔 결과 (이전 버전에서 옮겨 온 것 포함)
+            return store.activate(found.key), True
         entry = self.separate_into(store, model, identity, req, report, token)
         return store.activate(entry.key), False
 

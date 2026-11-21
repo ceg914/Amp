@@ -288,7 +288,7 @@ class ListeningController(QObject):
         version = self.player.tracks_version
         self._stretch_seq += 1
         seq = self._stretch_seq
-        inputs = {name: (f"{name}:{id(audio)}", audio.samples) for name, audio in tracks.items()}
+        inputs = {name: (f"{name}:{audio.token}", audio.samples) for name, audio in tracks.items()}
         start, end = int(round(a * sr)), int(round(b * sr))
         self.status.setText(f"느린 재생 준비 중 ({b - a:.1f}초 구간, {speed:g}×)…")
         handle = self.w.runner.submit("느린 재생 준비", lambda p, t: self.cache.stretch_tracks(inputs, start, end, speed, sr))

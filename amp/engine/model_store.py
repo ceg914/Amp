@@ -143,6 +143,26 @@ class ModelStore:
     def entry(self, key: str) -> StoreEntry | None:
         return next((e for e in self.entries() if e.key == key), None)
 
+    def find(self, identity: dict) -> StoreEntry | None:
+        """같은 결과로 볼 수 있는 보관 결과. 키가 같으면 그것, 아니면 이전 버전에서 옮겨 온 결과 중 같은 원본·모델·
+        (Demucs 버전 / RoFormer 체크포인트 내용)인 것. 옮겨 온 결과는 만들 때 옵션을 다 적지 않아 키가 다르다."""
+        key = store_key(identity)
+        entries = self.entries()
+        hit = next((e for e in entries if e.key == key), None)
+        if hit is not None:
+            return hit
+        for e in entries:
+            old = e.identity
+            if "legacy_created" not in old or old.get("model") != identity.get("model") \
+                    or old.get("source") != identity.get("source"):
+                continue
+            if identity.get("model") == "htdemucs" and old.get("demucs", identity.get("demucs")) == identity.get("demucs"):
+                return e
+            if identity.get("model") == "mel_roformer" and old.get("checkpoint_sha256") \
+                    and old.get("checkpoint_sha256") == identity.get("checkpoint_sha256") and not identity.get("config_sha256"):
+                return e
+        return None
+
     # --- 쓰기 -------------------------------------------------------------------
 
     def new_tmp(self) -> Path:

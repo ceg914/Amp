@@ -379,7 +379,9 @@ class ModelCompareController(QObject):
         self.keys = {"a": None, "b": None}
         self.outputs: dict[str, object] = {}  # 결과 키 → TranscriptionOutput (이번 실행 동안)
         self.audio: dict[tuple, object] = {}  # (결과 키, 트랙 종류) → AudioData. 지금 A/B의 고른 트랙만 메모리에 둔다
-        self._saved_states: dict[str, dict] = {}  # 비교 모드 전 트랙 음량·음소거·솔로 (나올 때 되돌림)
+        self._saved_states: dict[str, dict] | None = {}  # 비교 모드 전 트랙 음량·음소거·솔로 (나올 때 되돌림)
+        self._load_seq = 0
+        self.tracks_loaded = False  # 시험용: A/B 트랙을 마지막으로 올린 뒤 True
         self.levels: dict[tuple, float | None] = {}  # (키, 트랙) → 청취 음량 dB
         self.listening = "a"
         self.diff: model_diff.ModelDiff | None = None
@@ -430,6 +432,7 @@ class ModelCompareController(QObject):
             self.act_mode.blockSignals(False)
         if on:
             self._saved_states = {n: w.player.track_state(n) for n in w.player.tracks}
+            self.tracks_loaded = False
             w.splitter.replaceWidget(0, self.panel)
             self.panel.show()
             w.tracks.hide()
@@ -461,6 +464,9 @@ class ModelCompareController(QObject):
         w._update_actions()
 
     def _on_project_changed(self, *_a) -> None:
+        # 다른 프로젝트: 이전 프로젝트의 트랙 상태를 새 프로젝트 트랙에 되돌려 놓지 않는다
+        self._saved_states = None
+        self._load_seq += 1
         self.outputs.clear()
         self.audio.clear()
         self.levels.clear()
@@ -569,32 +575,59 @@ class ModelCompareController(QObject):
     # --- 청취 -----------------------------------------------------------------------
 
     def _load_tracks(self) -> None:
-        """A·B의 고른 트랙(보컬/반주)을 재생 트랙 cmp_a·cmp_b로 올린다. WAV는 읽기만 한다."""
+        """A·B의 고른 트랙(보컬/반주)을 재생 트랙 cmp_a·cmp_b로 올린다. WAV는 읽기만 한다.
+        파일 읽기와 음량 측정은 작업 스레드에서 한다 (5분 곡 두 개를 화면 스레드에서 하면 1초 넘게 멈췄다)."""
         if not self.active:
             return
-        import numpy as np
-        import soundfile as sf
-
-        from amp.audio.data import AudioData
-
-        w = self.w
         kind = self.panel.track.currentData()
-        loaded = {}
+        jobs = []
         for role in ("a", "b"):
             key = self.keys[role]
             e = self.entry(key)
-            if e is None or kind not in e.manifest.files:
-                loaded[role] = None
-                continue
-            if (key, kind) not in self.audio:
+            if e is not None and kind in e.manifest.files and (key, kind) not in self.audio:
+                jobs.append((key, e.label, str(e.path / e.manifest.files[kind]["path"])))
+        self._load_seq += 1
+        seq = self._load_seq
+        if not jobs:
+            self._apply_tracks()
+            return
+
+        def job(progress, token):
+            import numpy as np
+            import soundfile as sf
+
+            from amp.audio.data import AudioData
+
+            out, errors = {}, []
+            for key, label, path in jobs:
                 try:  # 읽기 전용으로 연다. 분리 WAV는 바꾸지 않는다
-                    data, sr = sf.read(str(e.path / e.manifest.files[kind]["path"]), dtype="float32", always_2d=True)
-                    self.audio[(key, kind)] = AudioData(np.ascontiguousarray(data), sr)
+                    data, sr = sf.read(path, dtype="float32", always_2d=True)
                 except Exception as ex:  # noqa: BLE001 - 파일 손상·삭제
-                    w._show_error("분리 결과를 읽지 못했습니다", f"{e.label}: {ex}")
-                    loaded[role] = None
+                    errors.append(f"{label}: {ex}")
                     continue
-            loaded[role] = self.audio[(key, kind)]
+                a = AudioData(np.ascontiguousarray(data), sr)
+                out[(key, kind)] = (a, loudness.gated_level_db(a.samples, a.sample_rate))
+            return out, errors
+
+        self.tracks_loaded = False
+        self.panel.now.setText("A/B 트랙 불러오는 중…")
+        handle = self.w.runner.submit("비교 트랙 불러오기", job)
+        handle.finished.connect(lambda r, seq=seq: self._on_tracks_loaded(seq, *r))
+
+    def _on_tracks_loaded(self, seq: int, out: dict, errors: list) -> None:
+        if seq != self._load_seq or not self.active:
+            return
+        for k, (audio, level) in out.items():
+            self.audio[k] = audio
+            self.levels[k] = level
+        if errors:
+            self.w._show_error("분리 결과를 읽지 못했습니다", "\n".join(errors))
+        self._apply_tracks()
+
+    def _apply_tracks(self) -> None:
+        w = self.w
+        kind = self.panel.track.currentData()
+        loaded = {role: self.audio.get((self.keys[role], kind)) for role in ("a", "b")}
         keep = {(self.keys["a"], kind), (self.keys["b"], kind)}
         for k in [k for k in self.audio if k not in keep]:
             self.audio.pop(k)  # A/B의 고른 트랙이 아닌 것은 메모리에서 내린다
@@ -608,6 +641,7 @@ class ModelCompareController(QObject):
         self._measure_levels()
         self._apply_gains()
         self._update_paths()
+        self.tracks_loaded = True
 
     def _measure_levels(self) -> None:
         kind = self.panel.track.currentData()
@@ -620,9 +654,11 @@ class ModelCompareController(QObject):
 
     def _remove_tracks(self) -> None:
         w = self.w
-        restore = {n: dict(self._saved_states.get(n, {"gain": 1.0, "mute": False, "solo": False}))
-                   for n in w.player.tracks if n not in (CMP_A, CMP_B)}
-        w.player.set_track_states(restore)  # 비교 모드 전 음량·음소거·솔로로
+        if self._saved_states is not None:
+            restore = {n: dict(self._saved_states.get(n, {"gain": 1.0, "mute": False, "solo": False}))
+                       for n in w.player.tracks if n not in (CMP_A, CMP_B)}
+            w.player.set_track_states(restore)  # 비교 모드 전 음량·음소거·솔로로
+        self._saved_states = {}
         for name in (CMP_A, CMP_B):
             if name in w.player.tracks:
                 w.player.set_track(name, None)
@@ -776,16 +812,35 @@ class ModelCompareController(QObject):
             lines.append("취소됨 — 이미 끝난 결과는 보관소에 남았습니다.")
         self.panel.status.setText("\n".join(lines))
         ok = [oc.key for oc in run.available()]
-        if ok:
-            self.keys["a"] = ok[0]
-            if len(ok) > 1:
-                self.keys["b"] = ok[1]
-            self._save_keys()
         self.refresh_entries()
+        if ok:
+            self._assign_keys(ok)
+            self._save_keys()
+            self.refresh_entries()
         self._load_tracks()
         self._update_overlays()
         if oom:  # 완료 처리 중에는 세션이 아직 '작업 중'이라 새 실행을 받지 않는다: 다음 이벤트 루프에서 묻는다
             QTimer.singleShot(0, lambda specs=list(oom): self._ask_cpu_retry(specs))
+
+    def _assign_keys(self, ok: list[str]) -> None:
+        """새로 끝난 결과를 A/B에 넣는다. 사용자가 고른 A/B는 되도록 지킨다: 같은 모델 자리를 바꾸거나 빈 자리를 채운다.
+        A·B가 모두 새 결과(처음 비교, 두 모델 실행)일 때만 둘 다 바꾼다."""
+        current = set(self.keys.values())
+        if len(ok) >= 2 and not current.intersection(ok):
+            self.keys["a"], self.keys["b"] = ok[0], ok[1]
+            return
+
+        def model(k):
+            e = self.entry(k)
+            return e.model if e is not None else None
+
+        for k in ok:
+            if k in self.keys.values():
+                continue
+            role = next((r for r in ("a", "b") if self.keys[r] and model(self.keys[r]) == model(k)), None) \
+                or next((r for r in ("a", "b") if not self.keys[r]), None)
+            if role is not None:
+                self.keys[role] = k
 
     def _ask_cpu_retry(self, oom: list[ModelSpec]) -> None:
         names = ", ".join(s.label for s in oom)

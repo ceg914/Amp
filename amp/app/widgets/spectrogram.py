@@ -101,7 +101,7 @@ class SpectrogramView(QWidget):
         if audio is None:
             self._holder, self._track_id = None, ""
         else:
-            tid = f"{name}:{id(audio)}"
+            tid = f"{name}:{audio.token}"
             if tid != self._track_id:
                 self._holder = {"audio": audio, "lock": threading.Lock()}
                 self._track_id = tid
@@ -116,7 +116,7 @@ class SpectrogramView(QWidget):
                 self._cmp.pop(role, None)
                 continue
             name, audio = src
-            tid = f"cmp-{role}:{name}:{id(audio)}"
+            tid = f"cmp-{role}:{audio.token}"
             if self._cmp.get(role, {}).get("id") != tid:
                 self._cmp[role] = {"holder": {"audio": audio, "lock": threading.Lock()}, "id": tid, "label": name}
                 self._sr = audio.sample_rate
@@ -207,8 +207,8 @@ class SpectrogramView(QWidget):
             self._images.popitem(last=False)
         return img
 
-    def _diff_image(self, ka: tuple, ta: np.ndarray, tb: np.ndarray, rows: int) -> QImage:
-        ikey = ("diff", ka, rows, self.fmin, self.fmax, self.log_axis, self.db_floor, self.db_ceil)
+    def _diff_image(self, ka: tuple, kb: tuple, ta: np.ndarray, tb: np.ndarray, rows: int) -> QImage:
+        ikey = ("diff", ka, kb, rows, self.fmin, self.fmax, self.log_axis, self.db_floor, self.db_ceil)
         img = self._images.get(ikey)
         if img is not None:
             self._images.move_to_end(ikey)
@@ -255,7 +255,7 @@ class SpectrogramView(QWidget):
                     self._request(kb, "b")
                 continue
             n = min(ta.shape[1], tb.shape[1])
-            p.drawImage(self._tile_rect(ka, 0, height), self._diff_image(ka, ta[:, :n], tb[:, :n], rows))
+            p.drawImage(self._tile_rect(ka, 0, height), self._diff_image(ka, kb, ta[:, :n], tb[:, :n], rows))
         return missing
 
     def _paint_compare(self, p: QPainter, w: int, body_h: int) -> tuple[int, str]:

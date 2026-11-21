@@ -11,7 +11,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 
 import numpy as np
 
@@ -280,6 +280,8 @@ def review_items(d: ModelDiff, max_items: int = 400) -> list[ReviewItem]:
             out.append(_item(f"model_novocal_{side}", "model", s, e,
                              f"사용자가 지정한 '보컬 없는 구간' 안에 {label} 기반 음표가 {len(notes)}개 (기준 {NOVOCAL_MANY}개) — "
                              "반주가 보컬로 분리됐을 수 있음", "medium", basis=(side, len(notes))))
+    # 음표 id가 없는 항목의 기본 키(종류:시작 0.1초)는 가까운 두 항목이 겹칠 수 있다: 시작·끝(0.01초)과 근거로 구분한다
+    out = [replace(it, key=f"{it.kind}:{it.start:.2f}-{it.end:.2f}:{it.fingerprint}") for it in out]
     out.sort(key=lambda x: (x.start, x.kind))
     return out[:max_items]
 

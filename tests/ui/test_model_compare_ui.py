@@ -28,6 +28,8 @@ def _compare(qtbot, w, specs, timeout=180_000):
     h = w.model_compare.run(specs)
     assert h is not None and w.session.busy  # 바쁨 표시는 제출과 함께 켜진다
     qtbot.waitUntil(lambda: not w.session.busy, timeout=timeout)
+    # A/B 트랙은 작업 스레드에서 읽어 올린다 (화면 멈춤 방지)
+    qtbot.waitUntil(lambda: w.model_compare.tracks_loaded or not w.model_compare.active, timeout=30_000)
     return h
 
 
@@ -261,3 +263,71 @@ def test_old_project_with_flat_stems_opens_then_moves_into_store(qtbot, make_win
     req = w2.session.lyrics_request(w2.lyrics_panel.settings(), AnalysisSettings())
     assert os.path.isfile(req.vocals_path) and "models" in req.vocals_path
     assert np.allclose(w2.session.raw_stems["vocals"].samples, y * 0.8, atol=2 ** -20)
+
+
+def test_diff_view_recomputes_when_b_changes(qtbot, compared):
+    """차이 보기 그림 캐시가 A 타일만 키로 써서 B를 바꿔도 옛 차이를 그렸다."""
+    w, _folder = compared
+    spec = w.spectrogram
+    mc = w.model_compare
+    mc.panel.spec_mode.setCurrentIndex(mc.panel.spec_mode.findData("diff"))
+    for _ in range(3):
+        spec.grab()
+        spec.wait_idle()
+    keys_before = {k for k in spec._images if k[0] == "diff"}
+    assert keys_before
+    mc.keys["a"], mc.keys["b"] = mc.keys["b"], mc.keys["a"]  # B를 다른 결과로
+    mc._load_tracks()
+    qtbot.waitUntil(lambda: mc.tracks_loaded, timeout=30_000)
+    for _ in range(3):
+        spec.grab()
+        spec.wait_idle()
+    keys_after = {k for k in spec._images if k[0] == "diff"} - keys_before
+    assert keys_after  # 새 B로 새 그림을 만든다
+
+
+def test_compare_track_loading_runs_off_the_ui_thread(qtbot, compared, monkeypatch):
+    import threading
+
+    w, _folder = compared
+    mc = w.model_compare
+    main = threading.get_ident()
+    seen = []
+    import soundfile as sf
+
+    real = sf.read
+    monkeypatch.setattr(sf, "read", lambda *a, **k: (seen.append(threading.get_ident()), real(*a, **k))[1])
+    mc.panel.track.setCurrentIndex(mc.panel.track.findData("instrumental"))
+    qtbot.waitUntil(lambda: mc.tracks_loaded, timeout=30_000)
+    assert seen and main not in seen
+    assert w.player.tracks[MC.CMP_A].frames > 0
+
+
+def test_run_keeps_users_ab_choice_and_project_switch_keeps_new_states(qtbot, compared, make_window, song):
+    w, _folder = compared
+    mc = w.model_compare
+    a, b = mc.keys["a"], mc.keys["b"]
+    mc.keys["a"], mc.keys["b"] = b, a  # 사용자가 바꿔 고름
+    _compare(qtbot, w, [ModelSpec("_identity")])  # 한 모델만 다시 (재사용)
+    assert (mc.keys["a"], mc.keys["b"]) == (b, a)
+    # 다른 프로젝트를 열면 이전 프로젝트의 트랙 상태를 새 프로젝트에 되돌려 놓지 않는다
+    mc._saved_states = {"original": {"gain": 0.25, "mute": True, "solo": False}}
+    mc._on_project_changed()
+    assert not mc.active
+    assert not w.player.track_state("original")["mute"]
+
+
+def test_export_range_follows_chosen_note_source(qtbot, window, song):
+    from amp.app.export_controller import DataExportDialog
+
+    w = window
+    folder = create(qtbot, w, song)
+    dlg = DataExportDialog(str(folder.paths.exports), True, None, None,
+                           notes_for_range={"user": [(60, 1.0), (64, 1.0)], "auto": [(48, 1.0), (50, 1.0)],
+                                            "reference": [(72, 1.0), (76, 1.0)]})
+    qtbot.addWidget(dlg)
+    assert dlg.range_info.text().startswith("C4(60) ~ E4(64)")
+    dlg.source.setCurrentIndex(dlg.source.findData("reference"))
+    assert dlg.range_info.text().startswith("C5(72) ~ E5(76)")
+    dlg.source.setCurrentIndex(dlg.source.findData("auto"))
+    assert dlg.range_info.text().startswith("C3(48) ~ D3(50)")

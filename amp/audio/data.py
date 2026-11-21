@@ -2,9 +2,12 @@
 
 from __future__ import annotations
 
+import itertools
 from dataclasses import dataclass
 
 import numpy as np
+
+_TOKENS = itertools.count(1)
 
 
 @dataclass(frozen=True)
@@ -24,6 +27,8 @@ class AudioData:
             raise ValueError("sample_rate는 0보다 커야 합니다.")
         s.flags.writeable = False  # 여러 스레드가 함께 읽으므로 실수로 바꾸지 못하게 한다
         object.__setattr__(self, "samples", s)
+        # 캐시 키용 고유 번호. id()는 객체가 사라진 뒤 새 객체에 다시 쓰여, 이전 분리 결과의 캐시가 새 오디오에 붙을 수 있다
+        object.__setattr__(self, "token", next(_TOKENS))
 
     @property
     def frames(self) -> int:

@@ -19,7 +19,7 @@ from dataclasses import dataclass, field
 
 from amp.core.errors import AnalysisCancelled, AnalysisError
 from amp.engine.context import CancelToken, ProgressFn
-from amp.engine.model_store import MODEL_LABELS, ModelStore, identity_for, store_key
+from amp.engine.model_store import MODEL_LABELS, ModelStore, identity_for
 from amp.engine.transcription import TranscriptionPipeline, TranscriptionRequest
 from amp.engine.worker_client import WorkerError, run_worker
 
@@ -93,10 +93,9 @@ def run_compare(base: TranscriptionRequest, specs: list[ModelSpec], progress: Pr
                 raise AnalysisError("Mel-Band RoFormer 모델 파일(.ckpt)을 고르지 않았습니다. 분석 설정의 보컬 분리에서 "
                                     "[모델 파일…]로 지정하세요.")
             ident = identity_for(spec.model, base.source_sha256, spec.model_files)
-            key = store_key(ident)
-            entry = None if force else store.entry(key)
+            entry = None if force else store.find(ident)
             if entry is not None:
-                oc.status, oc.key = "reused", key
+                oc.status, oc.key = "reused", entry.key
                 oc.device = str(entry.manifest.model_info.get("device", ""))
                 rep(1.0, "보관한 분리 결과 사용")
             else:
@@ -104,6 +103,8 @@ def run_compare(base: TranscriptionRequest, specs: list[ModelSpec], progress: Pr
                 req = dataclasses.replace(base, settings=st, model_files=dict(spec.model_files), cpu_fallback=False)
                 pipe.resources = {}
                 entry = pipe.separate_into(store, spec.model, ident, req, rep, token)
+                if store.active_key() == entry.key:  # 지금 쓰는 결과를 다시 만들었다: 위쪽 목록(만든 시각·크기)도 새로
+                    store.activate(entry.key)
                 oc.status, oc.key = "done", entry.key
                 oc.device = str(entry.manifest.model_info.get("device", ""))
                 oc.resources = dict(pipe.resources.get("separation", {}))

@@ -335,3 +335,71 @@ def test_diff_wording_never_claims_accuracy():
     items = review_items(d)
     assert {"model_pitch", "model_only_b", "model_novocal_b"} <= {it.kind for it in items}
     assert all(it.category == "model" and not it.note_ids for it in items)  # 작업본 음표 id를 건드리지 않는다
+
+
+# --- 코드 검토에서 찾은 문제 ----------------------------------------------------------
+
+
+def test_audio_cache_token_is_unique_even_when_id_is_reused():
+    """느린 재생·스펙트로그램 캐시 키에 id()를 쓰면, 사라진 오디오의 id를 새 오디오가 받아 옛 캐시가 붙었다."""
+    import gc
+
+    from amp.audio.data import AudioData
+
+    seen = set()
+    for _ in range(50):
+        a = AudioData(np.zeros((10, 2), np.float32), SR)
+        assert a.token not in seen
+        seen.add(a.token)
+        del a
+        gc.collect()
+
+
+def test_migrated_legacy_demucs_result_is_reused_by_compare(song, tmp_path):
+    """이전 버전 프로젝트의 htdemucs 결과는 옮긴 뒤에도 비교 실행에서 다시 분리하지 않는다."""
+    import json
+
+    from amp.engine.model_compare import ModelSpec, run_compare
+    from amp.engine.model_store import package_version
+
+    req = _request(song, tmp_path)
+    stems = tmp_path / "proj" / "stems"
+    tmp = stems / ".tmp-old"
+    tmp.mkdir(parents=True)
+    a = req.audio
+    for name in ("vocals", "instrumental"):
+        sf.write(tmp / f"{name}.wav", a.samples * 0.5, a.sample_rate, subtype="PCM_24")
+    (tmp / "info.json").write_text(json.dumps({"model": "htdemucs", "sample_rate": a.sample_rate, "frames": a.frames,
+                                               "demucs": package_version("demucs")}), encoding="utf-8")
+    stem_store.commit(tmp, stems, req.source_sha256, {"device": "cpu"})
+    shutil.rmtree(tmp)
+    calls = Counter()
+    run = run_compare(req, [ModelSpec("htdemucs")], runner=_in_process(calls), transcribe=False)
+    assert run.outcomes[0].status == "reused" and calls["separate"] == 0
+    assert [e.model for e in ModelStore(stems, req.source_sha256).entries()] == ["htdemucs"]
+
+
+def test_forced_rerun_of_active_entry_refreshes_pointer(song, tmp_path):
+    from amp.engine.model_compare import ModelSpec, run_compare
+    from amp.engine.transcription import TranscriptionPipeline
+
+    req = _request(song, tmp_path)
+    TranscriptionPipeline(_in_process(Counter()), separation_model="_identity").run(req)
+    store = ModelStore(req.stems_dir, req.source_sha256)
+    before = store.pointer().created
+    import time
+
+    time.sleep(1.1)  # created는 초 단위
+    run_compare(req, [ModelSpec("_identity")], runner=_in_process(Counter()), transcribe=False, force=True)
+    entry = store.entry(store.active_key())
+    assert store.pointer().created == entry.manifest.created != before
+    assert store.pointer().stems_id == entry.manifest.stems_id
+
+
+def test_model_diff_review_keys_are_unique_for_nearby_items():
+    from amp.compare.model_diff import compare, review_items
+
+    a = [_n(1, 12.31, 12.36, 60), _n(2, 12.34, 12.40, 62)]
+    d = compare(_result(a), _result([]), "A", "B")
+    items = [it for it in review_items(d) if it.kind == "model_only_a"]
+    assert len(items) == 2 and len({it.key for it in items}) == 2

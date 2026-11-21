@@ -61,6 +61,7 @@ EXTEND_CHOICES = (("-", "'-' (Synthesizer V·ACE Studio 등)"), ("+", "'+'"), ("
 class DataExportDialog(QDialog):
     def __init__(self, export_dir: str, has_reference: bool, region, selection, parent=None,
                  notes_for_range=None) -> None:
+        """notes_for_range: 음표 출처(user / auto / reference) → [(음높이, 길이)] 또는 그냥 목록(지금 악보)."""
         super().__init__(parent)
         self.setWindowTitle("채보·가사 내보내기")
         self.setMinimumWidth(560)
@@ -94,7 +95,8 @@ class DataExportDialog(QDialog):
         self.range_info = QLabel("")
         self.range_info.setWordWrap(True)
         self.range_info.setProperty("role", "secondary")
-        self._range = note_range(notes_for_range or [])
+        src_notes = notes_for_range if isinstance(notes_for_range, dict) else {"user": notes_for_range or []}
+        self._ranges = {k: note_range(v) for k, v in src_notes.items()}
         self.midi_encoding = QComboBox()
         self.midi_encoding.addItem("UTF-8", "utf-8")
         self.midi_encoding.addItem("CP949 (EUC-KR, 한국어 Windows 프로그램)", "cp949")
@@ -131,13 +133,15 @@ class DataExportDialog(QDialog):
         lay.addWidget(bb)
         self.format.currentIndexChanged.connect(self._on_format)
         self.transpose.valueChanged.connect(self._show_range)
+        self.source.currentIndexChanged.connect(self._show_range)
         self._on_format()
 
     def _show_range(self, *_a) -> None:
         t = self.transpose.value() if self.transpose.isEnabled() else 0
-        text = range_text(self._range)
-        if t and self._range is not None:
-            text += f"\n조옮김 뒤: {range_text(self._range, t)}"
+        r = self._ranges.get(self.source.currentData(), self._ranges.get("user"))
+        text = range_text(r)
+        if t and r is not None:
+            text += f"\n조옮김 뒤: {range_text(r, t)}"
         self.range_info.setText(text)
 
     def _on_format(self, *_a) -> None:
@@ -185,6 +189,16 @@ class ExportController(QObject):
         notes = [self.w.doc.score.get(i) for i in ids if i in self.w.doc.score]
         return (min(n.start for n in notes), max(n.end for n in notes) + 1e-6) if notes else None
 
+    def _range_notes(self) -> dict:
+        """음표 출처별 (음높이, 길이): 내보내기 창의 곡 음역이 실제로 내보낼 음표를 기준으로 하게."""
+        p = self.w.doc.project
+        out = {"user": [(n.pitch, n.end - n.start) for n in self.w.doc.score.notes()]}
+        if p.analysis is not None:
+            out["auto"] = [(n.pitch, n.end - n.start) for n in p.analysis.notes]
+        if p.reference is not None:
+            out["reference"] = [(n.pitch, b - a) for n, a, b in p.reference.aligned_notes()]
+        return out
+
     def dialog(self) -> None:
         w = self.w
         folder = w.session.folder
@@ -194,7 +208,7 @@ class ExportController(QObject):
         folder.paths.exports.mkdir(parents=True, exist_ok=True)
         dlg = DataExportDialog(str(folder.paths.exports), w.doc.project.reference is not None,
                                w.player.loop_region, self.selection_span(), w,
-                               notes_for_range=[(n.pitch, n.end - n.start) for n in w.doc.score.notes()])
+                               notes_for_range=self._range_notes())
         if dlg.exec() != QDialog.DialogCode.Accepted:
             return
         kind, path, opts = dlg.values()
