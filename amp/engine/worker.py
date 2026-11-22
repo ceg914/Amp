@@ -119,6 +119,26 @@ def cmd_pitch(args: dict) -> dict:
     return meta
 
 
+def cmd_pitch_region(args: dict) -> dict:
+    """v0.6.1: 한 구간만 좁은 음역·완화한 유성 판정으로 다시 추적한다 (여러 소리가 겹친 구간)."""
+    import numpy as np
+
+    from amp.engine.dsp.pitch import track_region
+
+    audio = _load(args["input"])
+    _progress(0.1, "구간 피치 다시 찾는 중")
+    stats: dict = {}
+    f0, prob, g0 = track_region(audio.mono(), audio.sample_rate, float(args["start"]), float(args["end"]),
+                                float(args["fmin"]), float(args["fmax"]), stats=stats)
+    np.savez_compressed(os.path.join(args["out_dir"], "region.npz"), f0_hz=f0, voiced_prob=prob, g0=np.int64(g0))
+    meta = {"frames": int(len(f0)), "g0": int(g0), "voiced": float(np.isfinite(f0).mean()) if len(f0) else 0.0,
+            "subharmonic_frames": int(stats.get("subharmonic_frames", 0)), "versions": _versions()}
+    with open(os.path.join(args["out_dir"], "meta.json"), "w", encoding="utf-8") as f:
+        json.dump(meta, f)
+    _progress(1.0, "구간 피치 완료")
+    return meta
+
+
 def cmd_tempo(args: dict) -> dict:
     from amp.engine.dsp.tempo import estimate_tempo
 
@@ -289,7 +309,7 @@ def cmd_probe(args: dict) -> dict:
     return probe()
 
 
-COMMANDS = {"separate": cmd_separate, "pitch": cmd_pitch, "tempo": cmd_tempo, "probe": cmd_probe,
+COMMANDS = {"separate": cmd_separate, "pitch": cmd_pitch, "pitch_region": cmd_pitch_region, "tempo": cmd_tempo, "probe": cmd_probe,
             "check_model": cmd_check_model, "asr": cmd_asr,
             "emissions": cmd_emissions, "ctc_align": cmd_ctc_align}
 

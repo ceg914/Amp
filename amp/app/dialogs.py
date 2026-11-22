@@ -30,7 +30,7 @@ from PySide6.QtWidgets import (
 
 from amp.app.widgets.track_panel import TRACK_HINTS, TRACK_LABELS
 from amp.engine.merge import KEEP_EDITS, REPLACE_ALL, ScoreSummary
-from amp.engine.settings import SettingsError, normalize_ranges
+from amp.engine.settings import VOICE_LABELS, VOICE_PRESETS, SettingsError, normalize_pitch_regions, normalize_ranges
 from amp.project.export import MP3_BITRATES, WAV_SUBTYPES, ExportOptions
 from amp.project.layout import sanitize_name
 from amp.project.workspace import COPY, LINK
@@ -546,3 +546,103 @@ class ScoreImportDialog(QDialog):
     def part_id(self) -> str | None:
         it = self.list.currentItem()
         return None if it is None else it.data(256)
+
+
+class PitchRegionsDialog(QDialog):
+    """v0.6.1: 피치 다시 찾기 구간 목록. 여러 목소리·악기가 겹쳐 음표가 빠진 구간을 목소리 음역을 정해 다시 추적한다."""
+
+    def __init__(self, regions, duration: float, region: tuple | None = None, playhead: float = 0.0, parent=None) -> None:
+        super().__init__(parent)
+        self.setWindowTitle("피치 다시 찾기 구간")
+        self.duration = max(0.0, float(duration))
+        self.playhead = max(0.0, float(playhead))
+        self.region = region
+        self._regions: tuple = tuple(regions)
+        self.table = QTableWidget(0, 4)
+        self.table.setHorizontalHeaderLabels(["시작", "끝", "목소리", "음역(Hz)"])
+        self.table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
+        self.table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
+        for a, b, lo, hi in self._regions:
+            self._append(a, b, lo, hi)
+        add = QPushButton("반복 구간 추가" if region else "재생 위치에 추가")
+        add.setToolTip("파형에서 고른 반복 구간(없으면 재생 위치부터 5초)을 남성 음역으로 추가합니다. 시간과 음역은 표에서 고칩니다.")
+        remove = QPushButton("선택 삭제")
+        add.clicked.connect(self._add)
+        remove.clicked.connect(self._remove)
+        buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
+        buttons.accepted.connect(self.accept)
+        buttons.rejected.connect(self.reject)
+        row = QHBoxLayout()
+        row.addWidget(add)
+        row.addWidget(remove)
+        row.addStretch(1)
+        lay = QVBoxLayout(self)
+        lay.addWidget(_hint("여러 목소리나 악기가 겹쳐 피치를 놓친 구간을 적습니다. 그 구간만 고른 목소리 음역으로 좁히고 "
+                            "유성 판정을 늦춰 다시 찾습니다. 한 번에 한 목소리만 따라가므로, 남성을 고르면 그 구간의 높은 목소리 "
+                            "음표는 남지 않습니다. 다시 찾은 음표는 신뢰도가 낮게 표시되니 들어 보고 확인하세요. "
+                            "직접 고친 음표는 바꾸지 않습니다. 시간은 '분:초' 또는 초 (예: 0:34.0)."))
+        lay.addWidget(self.table)
+        lay.addLayout(row)
+        lay.addWidget(buttons)
+        self.resize(520, 360)
+
+    def _append(self, a: float, b: float, lo: float, hi: float) -> None:
+        r = self.table.rowCount()
+        self.table.insertRow(r)
+        self.table.setItem(r, 0, QTableWidgetItem(format_time(a)))
+        self.table.setItem(r, 1, QTableWidgetItem(format_time(b)))
+        combo = QComboBox()
+        for k, label in VOICE_LABELS.items():
+            combo.addItem(label, k)
+        combo.addItem("직접 입력", "custom")
+        preset = next((k for k, v in VOICE_PRESETS.items() if v == (float(lo), float(hi))), "custom")
+        combo.setCurrentIndex(combo.findData(preset))
+        self.table.setCellWidget(r, 2, combo)
+        self.table.setItem(r, 3, QTableWidgetItem(f"{lo:g}-{hi:g}"))
+        combo.currentIndexChanged.connect(lambda _i, c=combo, row=r: self._on_preset(c, row))
+
+    def _on_preset(self, combo, row: int) -> None:
+        k = combo.currentData()
+        if k in VOICE_PRESETS:
+            lo, hi = VOICE_PRESETS[k]
+            self.table.setItem(row, 3, QTableWidgetItem(f"{lo:g}-{hi:g}"))
+
+    def _add(self) -> None:
+        if self.region is not None:
+            a, b = self.region
+        else:
+            a = self.playhead
+            b = a + 5.0 if not self.duration else min(self.duration, a + 5.0)
+        lo, hi = VOICE_PRESETS["male"]
+        self._append(a, b, lo, hi)
+
+    def _remove(self) -> None:
+        for r in sorted({i.row() for i in self.table.selectedIndexes()}, reverse=True):
+            self.table.removeRow(r)
+
+    def parsed(self) -> tuple:
+        out = []
+        for r in range(self.table.rowCount()):
+            a = parse_time(self.table.item(r, 0).text() if self.table.item(r, 0) else "")
+            b = parse_time(self.table.item(r, 1).text() if self.table.item(r, 1) else "")
+            if b <= a:
+                raise ValueError(f"{r + 1}번째 줄: 끝({format_time(b)})이 시작({format_time(a)})보다 뒤여야 합니다.")
+            text = (self.table.item(r, 3).text() if self.table.item(r, 3) else "").replace("~", "-")
+            try:
+                lo, hi = (float(x) for x in text.split("-")[:2])
+            except ValueError:
+                raise ValueError(f"{r + 1}번째 줄: 음역은 '최저-최고'(Hz)로 적습니다 (예: 70-420).") from None
+            out.append((a, b, lo, hi))
+        return normalize_pitch_regions(out)
+
+    def accept(self) -> None:
+        try:
+            self._regions = self.parsed()
+        except (ValueError, SettingsError) as e:
+            QMessageBox.warning(self, "피치 다시 찾기 구간", str(e))
+            return
+        super().accept()
+
+    def regions(self) -> tuple:
+        return self._regions
+

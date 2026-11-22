@@ -290,3 +290,11 @@ stems/
 저장: `analysis/hybrid.json`(sonatlas.hybrid v1), `analysis/suggestions.json`(sonatlas.suggestions v1). 둘 다 원자적 쓰기 +
 `.bak`. 깨진 파일은 프로젝트를 열고 경고만 남기며 지우지 않는다. 더 새로운 버전 파일은 읽지 않는다. 계획을 지우면 파일은
 `.removed.bak`으로 돌린다. 문서 필드 `hybrid`·`suggestions`는 `SetFieldCommand`로 바뀌어 실행 취소된다.
+
+### v0.6.1 피치 다시 찾기 구간
+
+`AnalysisSettings.pitch_regions` = [(시작초, 끝초, 최저Hz, 최고Hz)] (프로젝트에만 저장). 파이프라인은 곡 전체 피치(캐시)를 읽은 뒤
+구간마다 작업 프로세스 명령 `pitch_region`을 부른다(`dsp/pitch.track_region`: 같은 100fps 격자, 앞뒤 1초 덧붙임, pYIN 문턱 분포 베타(1,4),
+좁은 음역). 홀/짝 배음 비가 0.15 미만인 프레임(높은 목소리의 서브하모닉)은 버린다. 다시 찾은 프레임만 바꾸고 나머지는 원래 피치를 둔다.
+구간 결과는 `pitch_region` 단계로 따로 캐시한다(구간·음역·입력 결과 id가 키). 음표 재검출은 끼워 넣은 피치 곡선을 그대로 쓴다.
+

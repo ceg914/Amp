@@ -40,6 +40,7 @@ from amp.app.dialogs import (
     ExportDialog,
     NewProjectDialog,
     NoVocalRangesDialog,
+    PitchRegionsDialog,
     ReanalysisDialog,
     RoformerModelDialog,
     StemImportDialog,
@@ -337,6 +338,7 @@ class MainWindow(QMainWindow):
         self.act_clear_cache = A("캐시 비우기", self.clear_cache)
         self.act_compare_runs = A("최근 두 실행 비교 보고서", self.compare_recent_runs)
         self.act_no_vocal = A("보컬 없는 구간…", self.edit_no_vocal_ranges)
+        self.act_pitch_regions = A("피치 다시 찾기 구간 (겹친 목소리)…", self.edit_pitch_regions)
         self.act_probe = A("GPU 확인", self.probe_gpu, icon_name="cpu")
         self.act_sample = A("샘플 데이터 생성 (시험용, 실제 분석 아님)", self.run_sample_analysis)
 
@@ -377,7 +379,8 @@ class MainWindow(QMainWindow):
         self.menu_play = m
         m = mb.addMenu("분석(&A)")
         for a in (self.act_analyze, self.act_redetect, self.act_reseparate, self.act_import_stems, self.act_cancel_analysis, None,
-                  self.act_no_vocal, self.act_compare_runs, self.act_probe, self.act_clear_cache, None, self.act_sample):
+                  self.act_no_vocal, self.act_pitch_regions, self.act_compare_runs, self.act_probe, self.act_clear_cache,
+                  None, self.act_sample):
             m.addSeparator() if a is None else m.addAction(a)
         self.model_compare.build_menu(m)
         self.hybrid.build_menu(m)
@@ -575,6 +578,7 @@ class MainWindow(QMainWindow):
         a.clearCacheRequested.connect(self.clear_cache)
         a.probeRequested.connect(self.probe_gpu)
         a.noVocalEditRequested.connect(self.edit_no_vocal_ranges)
+        a.pitchRegionsEditRequested.connect(self.edit_pitch_regions)
         a.modelFilesRequested.connect(self.choose_model_files)
         a.settingsChanged.connect(self._on_analysis_settings_changed)
         self.view.noVocalRangeRequested.connect(self.mark_no_vocal)
@@ -614,7 +618,7 @@ class MainWindow(QMainWindow):
         self.act_play.setEnabled(has_audio)
         self.act_stop.setEnabled(has_audio)
         for a in (self.act_save, self.act_save_as, self.act_open_folder, self.act_clear_cache, self.act_export,
-                  self.act_compare_runs, self.act_no_vocal):
+                  self.act_compare_runs, self.act_no_vocal, self.act_pitch_regions):
             a.setEnabled(is_open)
         self.act_relink.setEnabled(is_open and self.session.folder.meta.original.mode == "link")
         panel = self.inspector.analysis
@@ -940,7 +944,7 @@ class MainWindow(QMainWindow):
         if f and f.meta.analysis_settings:
             panel.set_settings(AnalysisSettings.from_dict(f.meta.analysis_settings))
         else:  # 보컬 없는 구간은 곡마다 다르므로 이전 프로젝트 것을 가져오지 않는다
-            panel.set_settings(dataclasses.replace(panel.settings(), no_vocal_ranges=()))
+            panel.set_settings(dataclasses.replace(panel.settings(), no_vocal_ranges=(), pitch_regions=()))
         self.view.roll.set_no_vocal_ranges(panel.settings().no_vocal_ranges)
         self._sync_stem_mask(panel.settings())
         self._apply_ui_state(self._pending_ui)
@@ -1250,7 +1254,7 @@ class MainWindow(QMainWindow):
         if hasattr(self, "review"):
             self.review.schedule()
         # 프로그램 기본 설정에는 곡마다 다른 보컬 없는 구간을 넣지 않는다 (프로젝트 저장 때 project.json에 남는다)
-        self.settings.setValue(SETTINGS_KEY, {**s.to_dict(), "no_vocal_ranges": []})
+        self.settings.setValue(SETTINGS_KEY, {**s.to_dict(), "no_vocal_ranges": [], "pitch_regions": []})
         self.view.roll.set_no_vocal_ranges(s.no_vocal_ranges)
         self._sync_stem_mask(s)
 
@@ -1279,6 +1283,22 @@ class MainWindow(QMainWindow):
                                   audio.duration if audio is not None else 0.0, self.player.position(), self)
         if dlg.exec() == NoVocalRangesDialog.DialogCode.Accepted:
             self._apply_no_vocal(dlg.ranges())
+
+    def edit_pitch_regions(self) -> None:
+        """v0.6.1: 여러 소리가 겹쳐 음표가 빠진 구간을 목소리 음역을 정해 다시 찾는다. 바꾸면 분석을 다시 돌린다
+        (분리·곡 전체 피치는 캐시를 쓰고 지정 구간만 새로 계산). 직접 고친 음표는 '수정 유지'로 남는다."""
+        audio = self.session.audio
+        panel = self.inspector.analysis
+        dlg = PitchRegionsDialog(panel.settings().pitch_regions, audio.duration if audio is not None else 0.0,
+                                 self.player.loop_region, self.player.position(), self)
+        if dlg.exec() != PitchRegionsDialog.DialogCode.Accepted or tuple(dlg.regions()) == panel.settings().pitch_regions:
+            return
+        panel.set_pitch_regions(dlg.regions())
+        if self.doc.project.analysis is not None and not self.session.busy and self.session.folder is not None:
+            self.statusBar().showMessage("피치 다시 찾기 구간을 적용해 다시 분석합니다 (분리·곡 전체 피치는 캐시 사용).", 8000)
+            self.run_analysis()
+        else:
+            self.statusBar().showMessage("피치 다시 찾기 구간을 바꿨습니다. 다음 분석부터 적용됩니다.", 8000)
 
     def run_sample_analysis(self) -> None:
         self.session.run_sample()

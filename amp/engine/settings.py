@@ -47,6 +47,41 @@ class SettingsError(AmpError):
     pass
 
 
+# 피치 다시 찾기 구간의 목소리 음역 (Hz). 남성 70Hz ≈ C#2, 420Hz ≈ G#4 / 여성 140Hz ≈ C#3, 1100Hz ≈ C#6
+VOICE_PRESETS = {"male": (70.0, 420.0), "female": (140.0, 1100.0)}
+VOICE_LABELS = {"male": "남성 (70~420Hz)", "female": "여성 (140~1100Hz)"}
+MAX_PITCH_REGIONS = 50
+
+
+def normalize_pitch_regions(regions, strict: bool = True) -> tuple[tuple[float, float, float, float], ...]:
+    """[(시작초, 끝초, 최저Hz, 최고Hz)] → 시간순 튜플. 겹치는 구간은 앞 구간만 남긴다(strict면 오류)."""
+    clean = []
+    for r in regions or ():
+        try:
+            a, b, lo, hi = (float(x) for x in r[:4])
+            ok = all(math.isfinite(v) for v in (a, b, lo, hi)) and a >= 0.0 and b - a >= 0.2 and 40.0 <= lo < hi <= 2000.0
+        except (TypeError, ValueError, IndexError):
+            ok = False
+        if not ok:
+            if strict:
+                raise SettingsError(f"피치 다시 찾기 구간이 올바르지 않습니다: {r!r} (0.2초 이상, 음역 40~2000Hz)")
+            continue
+        clean.append((round(a, 3), round(b, 3), round(lo, 1), round(hi, 1)))
+    clean.sort()
+    out: list[tuple] = []
+    for r in clean:
+        if out and r[0] < out[-1][1]:
+            if strict:
+                raise SettingsError("피치 다시 찾기 구간이 서로 겹칩니다.")
+            continue
+        out.append(r)
+    if len(out) > MAX_PITCH_REGIONS:
+        if strict:
+            raise SettingsError(f"피치 다시 찾기 구간은 {MAX_PITCH_REGIONS}개까지입니다.")
+        out = out[:MAX_PITCH_REGIONS]
+    return tuple(out)
+
+
 def normalize_ranges(ranges, strict: bool = True) -> tuple[tuple[float, float], ...]:
     """[(시작초, 끝초)] → 정렬하고 겹치거나 맞닿은 구간은 합친 튜플.
 
@@ -114,9 +149,13 @@ class AnalysisSettings:
     merge_approach: bool = True
     # 보컬 없는 구간을 보컬 트랙에도 적용한다(재생·파형·내보내기에서 보컬을 비우고 그 소리를 반주에 더함). 분석에는 영향 없음
     mute_no_vocal: bool = True
+    # 여러 소리가 겹쳐 피치를 놓치는 구간을 목소리 음역을 좁히고 유성 판정을 늦춰 다시 찾는다 (v0.6.1).
+    # [(시작초, 끝초, 최저Hz, 최고Hz)]. 곡마다 다르므로 프로젝트에만 저장한다
+    pitch_regions: tuple = ()
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "no_vocal_ranges", normalize_ranges(self.no_vocal_ranges))
+        object.__setattr__(self, "pitch_regions", normalize_pitch_regions(self.pitch_regions))
         if self.sensitivity not in SENSITIVITIES:
             raise SettingsError(f"알 수 없는 민감도: {self.sensitivity}")
         if self.device not in DEVICES:
@@ -166,6 +205,8 @@ class AnalysisSettings:
         values = {k: v for k, v in d.items() if k in names}
         if "no_vocal_ranges" in values:  # 잘못된 구간 하나 때문에 다른 설정까지 기본값이 되지 않게
             values["no_vocal_ranges"] = normalize_ranges(values["no_vocal_ranges"], strict=False)
+        if "pitch_regions" in values:
+            values["pitch_regions"] = normalize_pitch_regions(values["pitch_regions"], strict=False)
         try:
             return cls(**values)
         except (SettingsError, TypeError, ValueError):

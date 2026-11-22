@@ -124,6 +124,7 @@ class AnalysisPanel(QGroupBox):
     clearCacheRequested = Signal()
     probeRequested = Signal()
     noVocalEditRequested = Signal()
+    pitchRegionsEditRequested = Signal()  # v0.6.1: 피치 다시 찾기 구간
     modelFilesRequested = Signal()
     settingsChanged = Signal(object)  # AnalysisSettings
 
@@ -182,6 +183,11 @@ class AnalysisPanel(QGroupBox):
         self.no_vocal_info.setProperty("role", "secondary")
         self.no_vocal_edit = QPushButton("편집…")
         self.no_vocal_edit.setToolTip("보컬이 없는 구간(전주·간주 등)을 지정하면 그 구간에서는 음표를 만들지 않습니다.")
+        self.pitch_regions_info = QLabel("없음")
+        self.pitch_regions_info.setProperty("role", "secondary")
+        self.pitch_regions_edit = QPushButton("편집…")
+        self.pitch_regions_edit.setToolTip("여러 목소리·악기가 겹쳐 음표가 빠지는 구간을 목소리 음역(남성·여성)을 정해 다시 찾습니다.")
+        self._pitch_regions: tuple = ()
         self.mute_no_vocal = QCheckBox("보컬 트랙에서도 비우기 (재생·내보내기)")
         self.mute_no_vocal.setChecked(True)
         self.mute_no_vocal.setToolTip("보컬 없는 구간에서 보컬 트랙을 무음으로 만들고, 뺀 소리는 반주 트랙에 더합니다"
@@ -218,6 +224,10 @@ class AnalysisPanel(QGroupBox):
         nv.addWidget(self.no_vocal_edit)
         form.addRow("보컬 없는 구간", nv)
         form.addRow("", self.mute_no_vocal)
+        pr = QHBoxLayout()
+        pr.addWidget(self.pitch_regions_info, 1)
+        pr.addWidget(self.pitch_regions_edit)
+        form.addRow("피치 다시 찾기", pr)
         lay = QVBoxLayout(self)
         lay.addLayout(form)
         lay.addWidget(self.merge_approach)
@@ -250,6 +260,7 @@ class AnalysisPanel(QGroupBox):
         self.clear_cache.clicked.connect(self.clearCacheRequested)
         self.probe.clicked.connect(self.probeRequested)
         self.no_vocal_edit.clicked.connect(self.noVocalEditRequested)
+        self.pitch_regions_edit.clicked.connect(self.pitchRegionsEditRequested)
         self.model_file_btn.clicked.connect(self.modelFilesRequested)
         self.separation.currentIndexChanged.connect(self._update_model_row)
         for combo in (self.sensitivity, self.low, self.high, self.separation, self.device):
@@ -297,6 +308,7 @@ class AnalysisPanel(QGroupBox):
             device=self.device.currentData(), use_cache=self.use_cache.isChecked(),
             separation=self.separation.currentData(), no_vocal_ranges=self._no_vocal,
             merge_approach=self.merge_approach.isChecked(), mute_no_vocal=self.mute_no_vocal.isChecked(),
+            pitch_regions=self._pitch_regions,
         )
 
     def set_settings(self, s: AnalysisSettings) -> None:
@@ -314,6 +326,7 @@ class AnalysisPanel(QGroupBox):
             self.merge_approach.setChecked(s.merge_approach)
             self.mute_no_vocal.setChecked(s.mute_no_vocal)
             self._set_no_vocal(s.no_vocal_ranges)
+            self._set_pitch_regions(s.pitch_regions)
         finally:
             self._updating = False
 
@@ -341,6 +354,16 @@ class AnalysisPanel(QGroupBox):
         self._no_vocal = tuple(ranges)
         total = sum(b - a for a, b in self._no_vocal)
         self.no_vocal_info.setText(f"{len(self._no_vocal)}개 · 합계 {total:.1f}초" if self._no_vocal else "없음")
+
+    def _set_pitch_regions(self, regions) -> None:
+        self._pitch_regions = tuple(tuple(r) for r in regions)
+        total = sum(r[1] - r[0] for r in self._pitch_regions)
+        self.pitch_regions_info.setText(f"{len(self._pitch_regions)}개 · 합계 {total:.1f}초" if self._pitch_regions else "없음")
+
+    def set_pitch_regions(self, regions) -> None:
+        """v0.6.1: 피치 다시 찾기 구간을 바꾸고 settingsChanged를 보낸다."""
+        self._set_pitch_regions(regions)
+        self._emit()
 
     def set_no_vocal_ranges(self, ranges) -> None:
         """구간을 바꾸고 settingsChanged를 보낸다."""

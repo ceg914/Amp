@@ -200,6 +200,10 @@ class TranscriptionPipeline:
                 cache, key, "pitch", pitch_params, st.use_cache, scratch,
                 lambda out, p: self._call("pitch", {**pitch_args, "out_dir": str(out)}, p, token, req.numba_cache_dir),
                 lambda d: _load_pitch(d, expected), prog.stage("pitch"), warnings)
+            if st.pitch_regions:
+                frames, region_info = self._pitch_regions(req, cache, key, pitch_input, input_id, frames, scratch,
+                                                          prog.stage("pitch"), token, warnings)
+                pmeta = {**pmeta, "regions": region_info}
             lap("pitch")
 
             token.raise_if_cancelled()
@@ -231,7 +235,8 @@ class TranscriptionPipeline:
         models["pitch"] = ModelInfo("pyin", f"librosa {pv.get('librosa', '')}".strip(),
                                     params={**{k: pmeta.get(k) for k in ("fmin", "fmax", "frame_rate")},
                                             "features_version": PITCH_VERSION,
-                                            **({"chunks": pmeta["chunks"]} if pmeta.get("chunks") else {})})
+                                            **({"chunks": pmeta["chunks"]} if pmeta.get("chunks") else {}),
+                                            **({"regions": pmeta["regions"]} if pmeta.get("regions") else {})})
         models["tempo"] = ModelInfo("librosa-beat", str(tempo.get("versions", {}).get("librosa", "")),
                                     params={"reliable": tempo.get("reliable", False)})
         models["notes"] = ModelInfo("segment", NOTES_VERSION, params=dataclasses.asdict(params))
@@ -289,6 +294,42 @@ class TranscriptionPipeline:
         entry = self.separate_into(store, model, identity, req, report, token)
         return store.activate(entry.key), False
 
+    def _pitch_regions(self, req, cache, key, pitch_input, input_id, frames, scratch, report, token, warnings):
+        """사용자가 지정한 구간만 좁은 음역·완화한 유성 판정으로 다시 추적해 곡 전체 피치에 끼워 넣는다 (v0.6.1).
+
+        곡 전체 피치 캐시는 바꾸지 않는다. 구간 결과는 따로 캐시한다(구간·음역·입력이 같으면 재사용).
+        다시 찾은 프레임의 유성 확률은 REGION_MIN_CONF 이상으로 올린다(완화한 판정이라 pYIN 확률이 아주 낮게 나온다).
+        음표 신뢰도는 이 값으로 정해지므로 검토 목록에서 '신뢰도 낮은 음표'로 함께 확인할 수 있다."""
+        from amp.engine.dsp.pitch import REGION_BETA
+
+        f0 = np.array(frames.f0_hz, dtype=np.float32, copy=True)
+        vp = np.array(frames.voiced_prob, dtype=np.float32, copy=True)
+        info = []
+        for a, b, lo, hi in req.settings.pitch_regions:
+            token.raise_if_cancelled()
+            params = {"tracker": "pyin-region", "v": REGION_VERSION, "start": a, "end": b, "fmin": lo, "fmax": hi,
+                      "beta": list(REGION_BETA), "input": input_id}
+            args = {"input": pitch_input, "start": a, "end": b, "fmin": lo, "fmax": hi}
+            reg, _reused = self._cached(
+                cache, key, "pitch_region", params, req.settings.use_cache, scratch,
+                lambda out, p, args=args: self._call("pitch_region", {**args, "out_dir": str(out)}, p, token,
+                                                     req.numba_cache_dir),
+                _load_region, report, warnings)
+            rf0, rvp, g0 = reg
+            g1 = min(len(f0), g0 + len(rf0))
+            if g1 <= g0:
+                continue
+            k = g1 - g0
+            before = float(np.isfinite(f0[g0:g1]).mean())
+            ok = np.isfinite(rf0[:k])
+            # 다시 찾은 프레임만 바꾼다. 못 찾았거나 서브하모닉이라 버린 프레임은 원래 피치(다른 목소리일 수 있음)를 둔다
+            f0[g0:g1] = np.where(ok, rf0[:k], f0[g0:g1])
+            vp[g0:g1] = np.where(ok, np.maximum(rvp[:k], REGION_MIN_CONF), vp[g0:g1])
+            info.append({"start": a, "end": b, "fmin": lo, "fmax": hi, "voiced_before": round(before, 3),
+                         "replaced": round(float(ok.mean()), 3),
+                         "voiced_after": round(float(np.isfinite(f0[g0:g1]).mean()), 3)})
+        return dataclasses.replace(frames, f0_hz=f0, voiced_prob=vp), info
+
     def separate_into(self, store: ModelStore, model: str, identity: dict, req: TranscriptionRequest,
                       report: ProgressFn, token: CancelToken) -> StoreEntry:
         """작업 프로세스로 분리해 보관소에 넣는다. 지금 쓰는 결과(stems.json)는 바꾸지 않는다.
@@ -338,6 +379,19 @@ class TranscriptionPipeline:
 
 
 MAX_REUSE_CANDIDATES = 4
+REGION_VERSION = 2  # 2: 서브하모닉 프레임 버림, 찾지 못한 프레임은 원래 피치 유지
+REGION_MIN_CONF = 0.1  # 다시 찾은 유성 프레임의 신뢰도 하한 (음표 검출의 유성 문턱 0.01~0.05보다 높게)
+
+
+def _load_region(d: Path):
+    try:
+        with np.load(d / "region.npz", allow_pickle=False) as z:
+            f0, vp, g0 = z["f0_hz"].astype(np.float32), z["voiced_prob"].astype(np.float32), int(z["g0"])
+    except Exception as e:  # noqa: BLE001
+        raise CacheEntryError(f"region.npz를 읽을 수 없습니다: {e}") from e
+    if len(f0) != len(vp) or g0 < 0:
+        raise CacheEntryError("구간 피치 배열이 올바르지 않습니다.")
+    return f0, vp, g0
 
 
 def _pitch_reuse_candidates(req: TranscriptionRequest, cache: AnalysisCache, key: str, pitch_params: dict,

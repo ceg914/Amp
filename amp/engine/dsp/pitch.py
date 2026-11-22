@@ -150,6 +150,74 @@ def track_pitch(
     return PitchFrames(f0, prob, _fit(onset, n_frames), _fit(rms, n_frames), rms_fine=_fit(fine, n_frames))
 
 
+# 피치 다시 찾기 구간 (v0.6.1): pYIN 문턱 분포를 넓게(베타 1,4) 잡아 주기성이 약한 프레임도 유성으로 받아들인다.
+# 기본(2,18)은 여러 목소리·악기가 겹친 구간에서 대부분을 무성으로 버렸다 (사용자 곡 0:34~0:46, YIN 최소값 중앙 0.46~0.52).
+REGION_BETA = (1.0, 4.0)
+# 낮은 음역으로 좁히면 높은 목소리의 절반 주파수(서브하모닉)를 낮은 목소리로 잘못 잡을 수 있다. 진짜 낮은 목소리는
+# 홀수 배음(1·3·5배)에도 에너지가 있지만, 서브하모닉은 짝수 배음(= 높은 목소리의 배음)에만 있다.
+# 홀/짝 배음 크기 비(앞뒤 50ms 중앙값)가 이 값보다 작은 프레임은 버린다.
+# 측정: 합성 남성 단독 1.54, 합성 남+여에서 잡힌 서브하모닉 0.08, 사용자 곡 0:50~0:51.5 (높은 목소리 E5의 절반) 0.03~0.12,
+# 같은 곡에서 기본 분석도 남성으로 잡은 0:47~0:49.5는 0.41~0.98.
+SUBHARMONIC_MIN = 0.15
+
+
+def odd_even_ratio(y16: np.ndarray, f0: np.ndarray) -> np.ndarray:
+    """프레임별 (1·3·5배 배음 크기 합) / (2·4·6배 배음 크기 합). f0와 y16은 같은 격자(hop 160, center)."""
+    import librosa
+
+    S = np.abs(librosa.stft(y16, n_fft=2048, hop_length=HOP, center=True))
+    df = PITCH_SR / 2048
+    out = np.full(len(f0), np.nan)
+    for j, f in enumerate(f0):
+        if not np.isfinite(f) or j >= S.shape[1]:
+            continue
+
+        def amp(k: int) -> float:
+            fk = k * f
+            if fk > 0.47 * PITCH_SR:
+                return 0.0
+            i = int(round(fk / df))
+            return float(S[max(0, i - 2):i + 3, j].max())
+
+        out[j] = (amp(1) + amp(3) + amp(5)) / (amp(2) + amp(4) + amp(6) + 1e-9)
+    return out
+
+
+def track_region(mono: np.ndarray, sr: int, start: float, end: float, fmin: float, fmax: float,
+                 pad_s: float = PAD_S, stats: dict | None = None) -> tuple[np.ndarray, np.ndarray, int]:
+    """[start, end) 구간만 좁은 음역·완화한 유성 판정으로 다시 추적한다. (f0, 유성 확률, 첫 프레임 번호).
+
+    프레임 격자는 곡 전체 추적과 같다(프레임 g = g/100초 중심). 앞뒤 pad_s초를 붙여 계산하고 구간만 돌려준다.
+    서브하모닉으로 보이는 프레임(홀/짝 배음 비 < SUBHARMONIC_MIN)은 무성(NaN)으로 돌려준다."""
+    import librosa
+
+    y = to_pitch_sr(mono, sr)
+    n_frames = 1 + len(y) // HOP
+    g0 = max(0, int(np.ceil(start * FRAME_RATE - 1e-9)))
+    g1 = min(n_frames, int(np.floor(end * FRAME_RATE + 1e-9)))
+    if g1 <= g0 or len(y) < FRAME_LENGTH:
+        return np.zeros(0, np.float32), np.zeros(0, np.float32), g0
+    pad = int(round(pad_s * FRAME_RATE))
+    a = max(0, g0 - pad) * HOP
+    b = min(len(y), (g1 + pad) * HOP)
+    seg = y[a:b]
+    f, voiced, prob = librosa.pyin(seg, fmin=fmin, fmax=fmax, sr=PITCH_SR, frame_length=FRAME_LENGTH,
+                                   hop_length=HOP, center=True, beta_parameters=REGION_BETA)
+    f = np.where(voiced, f, np.nan)
+    ratio = odd_even_ratio(seg, f)
+    from scipy.ndimage import generic_filter
+
+    smooth = generic_filter(ratio, lambda v: np.nanmedian(v) if np.isfinite(v).any() else np.nan, size=11,
+                            mode="nearest")
+    sub = np.isfinite(f) & np.isfinite(smooth) & (smooth < SUBHARMONIC_MIN)
+    j0 = g0 - a // HOP
+    take = slice(j0, j0 + (g1 - g0))
+    if stats is not None:
+        stats["subharmonic_frames"] = int(sub[take].sum())
+    f0 = np.where(sub, np.nan, f)[take].astype(np.float32)
+    return f0, prob[take].astype(np.float32), g0
+
+
 def onset_envelope(y16: np.ndarray) -> np.ndarray:
     """16kHz 신호의 온셋 강도. 프레임 i의 값은 i/100초 전후 스펙트럼 변화다."""
     import librosa
