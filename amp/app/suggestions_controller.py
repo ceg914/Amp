@@ -79,7 +79,7 @@ class SuggestionsPanel(QWidget):
         lay.addWidget(self.evidence)
         g = QGridLayout()
         for i, (k, t, tip) in enumerate((
-                ("prev", "◀ 이전", "앞 제안으로 (Alt+[)"), ("next", "다음 ▶", "다음 제안으로 (Alt+])"),
+                ("prev", "◀ 이전", "앞 제안으로 (Ctrl+Alt+[)"), ("next", "다음 ▶", "다음 제안으로 (Ctrl+Alt+])"),
                 ("apply", "적용", "고른 제안을 적용합니다. Ctrl+Z 한 번으로 모두 되돌립니다"),
                 ("reject", "무시", "이 제안을 무시합니다 (다시 찾아도 나오지 않음)"),
                 ("dismiss", "숨김", "목록에서만 숨깁니다"), ("restore", "대기로 되돌리기", "무시·숨김을 취소합니다"))):

@@ -269,3 +269,24 @@ stems/
   않으므로 위치·반복·속도가 그대로고, `PcmMixer`의 음량 램프가 12ms 크로스페이드를 만든다. 장치 버퍼(200ms) 때문에 들리는 시점은 그만큼 늦다.
 - 분석 소스 선택: `ModelStore.activate`(위쪽 stems.json만 바꿈) → 재생 트랙 다시 읽기 → `apply_analysis(keep_edits)`. 바뀔 항목은
   `source_switch.preview`가 같은 함수로 미리 계산해 보여 준다. A/B로 고른 키만 `analysis/model_compare.json`에 적는다.
+
+## v0.6 보컬 다듬기
+
+| 모듈 | 책임 |
+|---|---|
+| `engine/hybrid.py` | Hybrid 구간 계획(샘플 번호 경계, 빈틈·겹침 불가), 편집 연산(나누기·합치기·경계 이동·모델 지정·새 구간·지우기), 소스 상태 검사(결과 없음·다시 만들어짐·체크포인트 변경 → 검증 필요), 결합(직선 교차, 구간 이득, 음량 맞춤 선택, 잘림 방지) → 보관소 항목 `hybrid-<해시>`, 오래된 Hybrid 결과 정리(지금 쓰는 것 + 최근 2개 유지) |
+| `engine/dsp/pitch.py` | `track_pitch(reuse=…)`: 30초 청크의 16kHz 입력이 이전 결과와 비트 단위로 같으면 그 청크의 f0·확률을 옮김. 온셋·RMS는 늘 새로 계산 |
+| `engine/transcription.py` | 분리 소스가 Hybrid면 그 소스·이전 Hybrid의 피치 캐시를 재사용 후보로 작업 프로세스에 넘김. 활성 Hybrid는 설정의 분리 모델로 덮어쓰지 않음. 음표 검출 v4 |
+| `engine/pitch_post.py` | 재발음 지표 v4: 음량 하락 또는 (앞뒤가 유성·같은 높이인 곳의) 유성 확률 하락 |
+| `engine/boundaries.py` | 음 끝 잔향 자르기 (실험, 기본 꺼짐) |
+| `engine/merge.py` | `carry_note_ids`: 재분석에서 그대로인 자동 음표는 이전 id를 이어받음 (가사 연결·검토 상태 유지) |
+| `compare/suggestions.py` | 교정 제안 6종, 근거 문장, 규칙 점수(확률 아님), 지난 제안 판정, 적용 계획(음표만 계산) |
+| `compare/quality.py` | 정답 없는 지표, 검토 현황 숫자, 참조 악보 비교(단서), 모델별 지표 |
+| `compare/review.py` | 음절 정렬 규칙 추가: 음표 하나에 음절 몰림, 이웃 음절 겹침, 정렬 확신 낮음, 연결 음표가 음절 밖 |
+| `app/hybrid_controller.py`, `app/widgets/hybrid_lane.py` | Hybrid 편집 모드(모델 비교 모드의 왼쪽 탭), 레인(끌기 중에는 기록하지 않고 놓을 때 한 번), 만들기·전후 비교·분석 소스 전환 |
+| `app/suggestions_controller.py` | 교정 제안 탭, 피아노 롤 미리보기(`scene.set_preview`), 여러 제안 적용을 실행 취소 한 단계로 |
+| `app/quality_controller.py` | 품질 탭, 숫자 → 검토 탭 종류 필터 |
+
+저장: `analysis/hybrid.json`(sonatlas.hybrid v1), `analysis/suggestions.json`(sonatlas.suggestions v1). 둘 다 원자적 쓰기 +
+`.bak`. 깨진 파일은 프로젝트를 열고 경고만 남기며 지우지 않는다. 더 새로운 버전 파일은 읽지 않는다. 계획을 지우면 파일은
+`.removed.bak`으로 돌린다. 문서 필드 `hybrid`·`suggestions`는 `SetFieldCommand`로 바뀌어 실행 취소된다.

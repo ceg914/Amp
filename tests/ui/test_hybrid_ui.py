@@ -114,8 +114,9 @@ def test_render_compare_and_use_as_source_keeps_user_edits(hybrid, qtbot, monkey
     assert hc.lane.changed and hc.panel.changed.text().startswith("지금 분석 소스와 달라지는 범위")
     hc.on_action("compare")  # 만들고 A = 지금 소스, B = 새 Hybrid
     qtbot.waitUntil(lambda: hc.last_render is not None and not w.session.busy, timeout=60_000)
-    qtbot.waitUntil(lambda: mc.tracks_loaded, timeout=30_000)
     hkey = hc.last_render.entry.key
+    # 전후 비교는 만들기가 끝난 다음 이벤트 차례에 A/B를 바꾼다: 바뀐 뒤 트랙이 올라올 때까지 기다린다
+    qtbot.waitUntil(lambda: mc.keys.get("b") == hkey and mc.tracks_loaded, timeout=30_000)
     assert mc.keys == {"a": keys["_identity"], "b": hkey}
     assert {MC.CMP_A, MC.CMP_B} <= set(w.player.tracks)
     after = _hashes(folder)

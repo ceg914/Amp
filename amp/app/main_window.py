@@ -196,8 +196,8 @@ class MainWindow(QMainWindow):
         self.right_tabs.addTab(self.suggest.panel, "교정 제안")
         self.quality = QualityController(self)
         self.right_tabs.addTab(self.quality.panel, "품질")
-        for seq, step in (("Alt+[", -1), ("Alt+]", 1)):
-            act = QAction(self)
+        for seq, step, text in (("Ctrl+Alt+[", -1, "이전 교정 제안"), ("Ctrl+Alt+]", 1, "다음 교정 제안")):
+            act = QAction(text, self)
             act.setShortcut(QKeySequence(seq))
             act.triggered.connect(lambda _c=False, s=step: self.suggest.go(s))
             self.addAction(act)
