@@ -180,6 +180,12 @@ python -m amp
 데비안·우분투 x86_64도 같은 방법입니다. ARM 칩은 glibc 2.39 이상이어야 PySide6가 pip로 설치됩니다.
 
 1. Linux 터미널에서 저장소를 받고 설치합니다 (처음 한 번, 시스템 패키지 설치에 sudo 사용).
+   크롬북 Linux에는 git이 없으니 먼저 설치합니다. git 없이 하려면 릴리스의 `SONATLAS-…-chromebook-linux.tar.gz`를
+   파일 앱에서 'Linux 파일'로 옮긴 뒤 `tar xzf`로 풀고 그 폴더에서 `./install_chromebook.sh`를 실행합니다.
+
+```bash
+sudo apt-get update && sudo apt-get install -y git
+```
 
 ```bash
 git clone -b claude/dazzling-mendel-mw3z4s https://github.com/ceg914/Amp.git && cd Amp
