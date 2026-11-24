@@ -113,7 +113,8 @@ def _fix_octaves(midi: np.ndarray, frame_rate: float) -> np.ndarray:
     return out
 
 
-def clean_midi(midi: np.ndarray, frame_rate: float, gate: np.ndarray | None = None) -> np.ndarray:
+def clean_midi(midi: np.ndarray, frame_rate: float, gate: np.ndarray | None = None,
+               fix_octaves: bool = True) -> np.ndarray:
     midi = np.asarray(midi, dtype=np.float64).copy()
     if gate is not None:
         midi[~gate] = np.nan
@@ -121,7 +122,8 @@ def clean_midi(midi: np.ndarray, frame_rate: float, gate: np.ndarray | None = No
     for a, b in voiced_runs(np.isfinite(midi)):
         if b - a < min_island:
             midi[a:b] = np.nan
-    midi = _fix_octaves(midi, frame_rate)
+    if fix_octaves:
+        midi = _fix_octaves(midi, frame_rate)
     for a, b in voiced_runs(np.isfinite(midi)):
         seg = midi[a:b]
         if seg.size >= 5:
@@ -135,14 +137,17 @@ def clean_midi(midi: np.ndarray, frame_rate: float, gate: np.ndarray | None = No
 
 
 def build_curve(f0_hz: np.ndarray, voiced_prob: np.ndarray, rms: np.ndarray | None,
-                frame_rate: float, start_time: float = 0.0, rms_fine: np.ndarray | None = None) -> PitchCurve:
-    """작업 프로세스가 낸 원시 결과를 정리해 PitchCurve로 만든다."""
+                frame_rate: float, start_time: float = 0.0, rms_fine: np.ndarray | None = None,
+                fix_octaves: bool = True) -> PitchCurve:
+    """작업 프로세스가 낸 원시 결과를 정리해 PitchCurve로 만든다.
+
+    fix_octaves=False: 주변 높이와 한 옥타브 어긋난 구간을 옮기지 않는다 (베이스는 옥타브 도약이 흔하다, v0.6.3)."""
     midi = hz_to_midi(np.asarray(f0_hz, dtype=np.float64))
     gate = energy_gate(rms) if rms is not None and len(rms) == len(midi) else None
     if rms_fine is not None and len(rms_fine) == len(midi):
         gap = gap_gate(rms_fine, frame_rate)
         gate = gap if gate is None else gate & gap
-    clean = clean_midi(midi, frame_rate, gate)
+    clean = clean_midi(midi, frame_rate, gate, fix_octaves)
     conf = np.where(np.isfinite(clean), np.asarray(voiced_prob, dtype=np.float32), 0.0).astype(np.float32)
     f0 = np.where(np.isfinite(clean), midi_to_hz(np.nan_to_num(clean)), np.nan).astype(np.float32)
     return PitchCurve(start_time, frame_rate, f0, conf)

@@ -118,3 +118,28 @@ def clicks(duration: float, bpm: float, sr: int = SR, offset: float = 0.25) -> n
         n = min(600, len(x) - i)
         x[i:i + n] = np.hanning(1200)[600:600 + n] * 0.8
     return x
+
+
+def plucked(melody, duration: float, sr: int = SR, decay_s: float = 0.5, release: float = 0.02,
+            harmonics: int = 8, seed: int = 0) -> np.ndarray:
+    """뜯은 줄 소리 (베이스 TAB 시험용). [(시작초, 끝초, MIDI), ...]. 음마다 새로 뜯어 소리가 커졌다가 줄어든다.
+
+    배음은 1/k 크기에 높을수록 빨리 줄고, 음 끝에서 손으로 막듯 release 동안 줄인다. 같은 음을 붙여 반복해도
+    뜯을 때마다 음량이 다시 오른다(실제 베이스처럼). 실제 베이스 녹음의 채보 정확도를 보장하는 시험이 아니다."""
+    rng = np.random.default_rng(seed)
+    n_all = int(duration * sr)
+    out = np.zeros(n_all, dtype=np.float64)
+    for a, b, m in melody:
+        i0, i1 = int(a * sr), min(n_all, int(b * sr))
+        if i1 <= i0:
+            continue
+        tt = np.arange(i1 - i0) / sr
+        f = 440.0 * 2 ** ((m - 69) / 12)
+        x = np.zeros_like(tt)
+        for k in range(1, harmonics + 1):
+            if f * k > sr / 2 - 1000:
+                break
+            x += np.sin(2 * np.pi * f * k * tt + rng.uniform(0, 2 * np.pi)) / k * np.exp(-tt * k / decay_s)
+        env = np.clip(tt / 0.003, 0, 1) * np.clip((tt[-1] - tt) / release, 0, 1)
+        out[i0:i1] += x * env
+    return (0.5 * out / (np.abs(out).max() + 1e-12)).astype(np.float32)

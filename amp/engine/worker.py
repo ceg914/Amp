@@ -77,12 +77,15 @@ def cmd_separate(args: dict) -> dict:
 
     audio = _load(args["input"])
     _progress(0.02, "오디오 디코딩 완료")
+    extras: dict = {}
     vocals, instrumental, info = separate(audio.samples, audio.sample_rate, args.get("model", "htdemucs"),
                                           args.get("device", "auto"), _progress, args.get("model_files"),
-                                          bool(args.get("cpu_fallback", True)))
+                                          bool(args.get("cpu_fallback", True)), extras=extras)
     out = args["out_dir"]
     _write_wav(os.path.join(out, "vocals.wav"), vocals, audio.sample_rate)
     _write_wav(os.path.join(out, "instrumental.wav"), instrumental, audio.sample_rate)
+    for name, x in extras.items():  # htdemucs 베이스 (v0.6.3)
+        _write_wav(os.path.join(out, f"{name}.wav"), x, audio.sample_rate)
     info.update(frames=audio.frames, sample_rate=audio.sample_rate, output_channels=int(vocals.shape[1]),
                 versions=_versions())
     with open(os.path.join(out, "info.json"), "w", encoding="utf-8") as f:
@@ -91,7 +94,7 @@ def cmd_separate(args: dict) -> dict:
 
 
 def cmd_pitch(args: dict) -> dict:
-    from amp.engine.dsp.pitch import FMAX_HZ, FMIN_HZ, PitchFrames, ReuseSource, to_pitch_sr, track_pitch
+    from amp.engine.dsp.pitch import FMAX_HZ, FMIN_HZ, FRAME_LENGTH, PitchFrames, ReuseSource, to_pitch_sr, track_pitch
 
     audio = _load(args["input"])
     reuse = []
@@ -109,10 +112,11 @@ def cmd_pitch(args: dict) -> dict:
     stats: dict = {}
     frames = track_pitch(audio.mono(), audio.sample_rate, _progress,
                          fmin=float(args.get("fmin", FMIN_HZ)), fmax=float(args.get("fmax", FMAX_HZ)),
-                         reuse=reuse, stats=stats)
+                         reuse=reuse, stats=stats, frame_length=int(args.get("frame_length", FRAME_LENGTH)))
     frames.save(os.path.join(args["out_dir"], "pitch.npz"))
     meta = {"tracker": "pyin", "frames": int(frames.f0_hz.shape[0]), "frame_rate": frames.frame_rate,
-            "fmin": float(args.get("fmin", FMIN_HZ)), "fmax": float(args.get("fmax", FMAX_HZ)), "versions": _versions(),
+            "fmin": float(args.get("fmin", FMIN_HZ)), "fmax": float(args.get("fmax", FMAX_HZ)),
+            "frame_length": int(args.get("frame_length", FRAME_LENGTH)), "versions": _versions(),
             "chunks": {"computed": int(stats.get("computed", 0)), "reused": int(stats.get("reused", 0))}}
     with open(os.path.join(args["out_dir"], "meta.json"), "w", encoding="utf-8") as f:
         json.dump(meta, f)

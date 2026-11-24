@@ -20,7 +20,7 @@ import numpy as np
 
 DEMUCS_MODELS = ("htdemucs",)
 ROFORMER_MODELS = ("mel_roformer",)  # 사용자가 고른 체크포인트 파일로 실행 (amp/engine/dsp/roformer.py)
-TEST_MODELS = ("_identity", "_sleep", "_crash", "_half", "_oom")
+TEST_MODELS = ("_identity", "_sleep", "_crash", "_half", "_oom", "_withbass")
 OOM_GPU_MESSAGE = "GPU 메모리가 부족해 보컬 분리를 마치지 못했습니다. CPU로 다시 실행할 수 있지만 훨씬 오래 걸립니다."
 MODEL_RATE = 44100
 # demucs는 shifts마다 0~0.5초 임의 이동을 쓴다. 같은 곡을 다시 분리해도 같은 결과가 나오도록 시드를 고정한다.
@@ -146,6 +146,7 @@ def separate(
     progress: Callable[[float, str], None] | None = None,
     model_files: dict | None = None,
     cpu_fallback: bool = True,
+    extras: dict | None = None,
 ) -> tuple[np.ndarray, np.ndarray, dict]:
     """(frames, channels) → (vocals, accompaniment, info). 출력은 입력과 같은 sr·프레임 수다.
 
@@ -186,18 +187,23 @@ def separate(
             sources, dev_info = _run_demucs(model_name, norm, device, report, cpu_fallback)
             info.update(dev_info)
         vocals = sources["vocals"] * std + mean
+        if extras is not None and "bass" in sources:  # v0.6.3: 베이스 TAB용. 반주에는 그대로 포함된다
+            extras["bass"] = sources["bass"] * std + mean
         others = [v for k, v in sources.items() if k != "vocals"]
         accompaniment = (np.sum(others, axis=0) * std + mean) if others else wav - vocals
         accompaniment = accompaniment.astype(np.float32)
     if std < 1e-8:
         accompaniment = wav.copy()
 
-    out = []
-    for x in (vocals, accompaniment):
+    def back(x):
         x = _fit_length(_resample(x.astype(np.float32), MODEL_RATE, sr), frames)
         x = x.mean(axis=0, keepdims=True) if in_ch == 1 else x
-        out.append(np.ascontiguousarray(x.T, dtype=np.float32))
-    return out[0], out[1], info
+        return np.ascontiguousarray(x.T, dtype=np.float32)
+
+    if extras:
+        for name in list(extras):
+            extras[name] = back(extras[name])
+    return back(vocals), back(accompaniment), info
 
 
 def _run_test_model(name: str, norm: np.ndarray, report, cpu_fallback: bool = True, device: str = "cpu") -> dict:
@@ -220,6 +226,8 @@ def _run_test_model(name: str, norm: np.ndarray, report, cpu_fallback: bool = Tr
     report(1.0, "시험용 모델 완료")
     if name == "_half":  # 비교 시험용: 보컬 = 입력 절반, 반주 = 나머지 절반
         return {"vocals": norm * 0.5, "other": norm * 0.5}
+    if name == "_withbass":  # 베이스 TAB 시험용: 입력 전체를 베이스로 (보컬 없음)
+        return {"vocals": np.zeros_like(norm), "bass": norm.copy(), "other": np.zeros_like(norm)}
     return {"vocals": norm.copy(), "other": np.zeros_like(norm)}  # 반주는 0, 보컬은 입력 그대로
 
 

@@ -14,7 +14,8 @@ import os
 import sys
 
 MIN_PYTHON = (3, 10)
-REQUIRED_MODULES = ("PySide6", "numpy", "soundfile", "scipy", "librosa", "mido", "yaml")  # yaml = PyYAML
+REQUIRED_MODULES = ("PySide6", "numpy", "soundfile", "scipy", "librosa", "mido", "yaml", "guitarpro")
+# yaml = PyYAML, guitarpro = PyGuitarPro (베이스 TAB GP5 내보내기, v0.6.3)
 REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 

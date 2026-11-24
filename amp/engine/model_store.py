@@ -189,6 +189,30 @@ class ModelStore:
         stem_store.commit(tmp, dest, self.source_sha256, settings)  # 목록을 먼저 지우고 파일을 옮긴 뒤 새 목록
         return self.entry(key)
 
+    def add_stem(self, key: str, name: str, src: Path) -> StoreEntry:
+        """보관한 결과에 선택 stem(베이스)만 더한다 (v0.6.3). 보컬·반주 파일과 stems_id는 그대로라 보컬 피치 캐시도 유효하다.
+
+        파일을 옮긴 뒤 목록을 쓴다. 그 사이에 멈추면 목록에 없는 파일이 남을 뿐이고, 다음에 다시 만든다."""
+        import soundfile as sf
+        from datetime import datetime, timezone
+
+        if name not in stem_store.OPTIONAL_STEMS:
+            raise ValueError(f"더할 수 없는 stem입니다: {name}")
+        e = self.entry(key)
+        if e is None:
+            raise FileNotFoundError(f"분리 결과 {key}가 없습니다.")
+        info = sf.info(str(src))
+        if info.frames != e.manifest.frames or info.samplerate != e.manifest.sample_rate:
+            raise ValueError(f"{name}의 길이·샘플레이트가 보관한 분리 결과와 다릅니다.")
+        dst = e.path / f"{name}.wav"
+        os.replace(src, dst)
+        files = {**e.manifest.files, name: {"path": dst.name, "size": dst.stat().st_size, "frames": int(info.frames),
+                                            "added": datetime.now(timezone.utc).isoformat(timespec="seconds")}}
+        atomic_write_json(e.path / stem_store.MANIFEST, replace(e.manifest, files=files).to_dict())
+        if self.active_key() == key:
+            self.activate(key)  # 위쪽 목록에도 베이스 경로를 넣는다 (보컬·반주 항목은 같음)
+        return self.entry(key)
+
     def view(self, key: str) -> stem_store.StemManifest | None:
         """stems/ 기준 경로로 바꾼 이 결과의 목록 (파일에 쓰지 않음). 비교 분석이 지금 쓰는 결과를 바꾸지 않고 읽을 때."""
         e = self.entry(key)

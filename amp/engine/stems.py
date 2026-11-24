@@ -27,6 +27,7 @@ from amp.core.errors import ProjectFormatError
 from amp.core.fileio import atomic_write_json, read_json
 
 STEM_NAMES = ("vocals", "instrumental")
+OPTIONAL_STEMS = ("bass",)  # v0.6.3: htdemucs 베이스 (베이스 TAB용). 없어도 분리 결과는 유효하다
 MANIFEST = "stems.json"
 SCHEMA = "sonatlas.stems"
 SCHEMA_VERSION = 1
@@ -123,6 +124,15 @@ def commit(tmp_dir: str | os.PathLike, stems_dir: str | os.PathLike, source_sha2
         sfi = sf.info(str(dst))
         channels = sfi.channels
         files[name] = {"path": dst.name, "size": dst.stat().st_size, "frames": sfi.frames}
+    for name in OPTIONAL_STEMS:
+        src = tmp_dir / f"{name}.wav"
+        dst = stems_dir / f"{name}.wav"
+        if src.exists():
+            os.replace(src, dst)
+            sfi = sf.info(str(dst))
+            files[name] = {"path": dst.name, "size": dst.stat().st_size, "frames": sfi.frames}
+        elif dst.exists():  # 다시 분리했는데 이번에는 없음: 이전 파일을 남기지 않는다
+            dst.unlink()
     manifest = StemManifest(
         model=str(info.get("model", "")), source_sha256=source_sha256, sample_rate=int(info["sample_rate"]),
         frames=int(info["frames"]), channels=channels,
@@ -131,6 +141,19 @@ def commit(tmp_dir: str | os.PathLike, stems_dir: str | os.PathLike, source_sha2
     )
     atomic_write_json(stems_dir / MANIFEST, manifest.to_dict())
     return manifest
+
+
+def optional_path(stems_dir: str | os.PathLike, manifest: StemManifest | None, name: str) -> Path | None:
+    """선택 stem(베이스 등)의 파일 경로. 목록에 없거나 파일이 없거나 크기·길이가 맞지 않으면 None."""
+    if manifest is None or name not in manifest.files:
+        return None
+    entry = manifest.files[name]
+    path = Path(stems_dir) / entry["path"]
+    if not path.is_file() or path.stat().st_size != int(entry.get("size", -1)):
+        return None
+    if int(entry.get("frames", manifest.frames)) != manifest.frames:
+        return None
+    return path
 
 
 def load(stems_dir: str | os.PathLike, manifest: StemManifest) -> dict[str, AudioData]:
@@ -146,7 +169,7 @@ def load(stems_dir: str | os.PathLike, manifest: StemManifest) -> dict[str, Audi
 def remove(stems_dir: str | os.PathLike) -> None:
     """분리 결과를 지운다 (사용자가 요청했을 때만 호출)."""
     d = Path(stems_dir)
-    for name in (MANIFEST, *(f"{n}.wav" for n in STEM_NAMES)):
+    for name in (MANIFEST, *(f"{n}.wav" for n in STEM_NAMES + OPTIONAL_STEMS)):
         p = d / name
         if p.exists():
             p.unlink()

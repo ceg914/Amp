@@ -87,6 +87,15 @@ class ReuseSource:
     label: str = ""
 
 
+def frame_length_for(fmin: float) -> int:
+    """fmin의 두 주기가 들어가는 pYIN 창 (기본 1024, 모자라면 2의 거듭제곱으로 늘림)."""
+    need = 2.0 * PITCH_SR / max(float(fmin), 1.0)
+    n = FRAME_LENGTH
+    while n < need:
+        n *= 2
+    return n
+
+
 def track_pitch(
     mono: np.ndarray,
     sr: int,
@@ -96,7 +105,10 @@ def track_pitch(
     fmax: float = FMAX_HZ,
     reuse: list[ReuseSource] | None = None,
     stats: dict | None = None,
+    frame_length: int = FRAME_LENGTH,
 ) -> PitchFrames:
+    """frame_length: pYIN 창 (16kHz 기준). 가장 낮은 음의 두 주기가 들어가야 한다 (5현 베이스 B0는 2048, v0.6.3).
+    프레임 격자(HOP)·음량 창은 바뀌지 않는다."""
     import librosa
 
     y = to_pitch_sr(mono, sr)
@@ -132,7 +144,7 @@ def track_pitch(
         if stats is not None:
             stats["computed"] = stats.get("computed", 0) + 1
         f, voiced, vprob = librosa.pyin(
-            seg, fmin=fmin, fmax=fmax, sr=PITCH_SR, frame_length=FRAME_LENGTH, hop_length=HOP, center=True
+            seg, fmin=fmin, fmax=fmax, sr=PITCH_SR, frame_length=int(frame_length), hop_length=HOP, center=True
         )
         j0 = g0 - a // HOP
         take = slice(j0, j0 + (g1 - g0))

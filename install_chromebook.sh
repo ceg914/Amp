@@ -64,7 +64,7 @@ if [ "$WITH_LYR" = 1 ]; then
 fi
 
 # 4) 시작 확인 (화면 없이 패키지만)
-.venv/bin/python -c "import PySide6, numpy, scipy, librosa, soundfile, mido, yaml; print('[SONATLAS] 패키지 확인 완료')"
+.venv/bin/python -c "import PySide6, numpy, scipy, librosa, soundfile, mido, yaml, guitarpro; print('[SONATLAS] 패키지 확인 완료')"
 
 # 5) 크롬북 앱 목록(런처)에 바로가기
 APPS="$HOME/.local/share/applications"

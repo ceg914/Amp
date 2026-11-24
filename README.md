@@ -446,6 +446,7 @@ install_separation.bat --build cu126
 | librosa | ISC | pip 패키지 |
 | mido (MIDI 읽기·쓰기) | MIT | pip 패키지 |
 | PyYAML (USTX·RoFormer 설정) | MIT | pip 패키지 |
+| PyGuitarPro (베이스 TAB GP5 쓰기) | LGPL-3.0 | pip 패키지. 이 저장소에 코드를 넣거나 고치지 않고 그대로 불러 쓴다 |
 | OpenAI Whisper 코드·가중치 (설치 시 사용) | MIT | pip 패키지, 가중치는 처음 인식할 때 내려받음 |
 | MMS_FA 정렬 모델 가중치 (처음 정렬할 때 내려받음) | **CC-BY-NC 4.0 (비상업적 이용만)** | 모델 코드는 이 저장소에서 직접 작성 (`amp/lyrics/mms.py`) |
 | 한글 로마자 자모 표 | — | MMS 학습에 쓰인 uroman과 같은 결과가 나오도록 만든 표 (`amp/lyrics/text.py`) |
