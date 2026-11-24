@@ -14,6 +14,7 @@ from typing import Any, Callable
 
 from PySide6.QtCore import QObject, QRunnable, Qt, QThreadPool, Signal, Slot
 
+from amp.core.install_hints import script as install_script
 from amp.core.errors import AmpError, AnalysisCancelled
 from amp.engine.context import CancelToken, ProgressFn
 
@@ -67,7 +68,7 @@ class _Runnable(QRunnable):
             h.failed.emit("메모리가 부족해 작업을 마치지 못했습니다.", traceback.format_exc())
         except ModuleNotFoundError as e:  # 설치 목록에서 빠진 패키지: '예상하지 못한 오류' 대신 설치 방법을 알린다
             log.exception("작업 실패 (패키지 없음): %s", h.name)
-            h.failed.emit(f"필요한 패키지 '{e.name}'가 설치되어 있지 않습니다. 저장소 폴더의 run.bat을 다시 실행하면 "
+            h.failed.emit(f"필요한 패키지 '{e.name}'가 설치되어 있지 않습니다. 저장소 폴더의 {install_script('run')}을 다시 실행하면 "
                           "설치합니다(또는 pip install -r requirements.txt).", traceback.format_exc())
         except Exception as e:  # noqa: BLE001 - 어떤 오류든 UI에 알려야 한다
             log.exception("작업 실패: %s", h.name)

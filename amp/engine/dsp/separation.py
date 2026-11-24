@@ -11,6 +11,7 @@
 
 from __future__ import annotations
 
+from amp.core.install_hints import script as install_script
 import math
 import random
 from typing import Callable
@@ -226,7 +227,7 @@ def _run_roformer(wav: np.ndarray, files: dict, device: str, report, cpu_fallbac
     import importlib.util
 
     if importlib.util.find_spec("torch") is None:
-        raise SeparationError("missing_dependency", "PyTorch가 설치되어 있지 않습니다. install_separation.bat을 실행하세요.")
+        raise SeparationError("missing_dependency", f"PyTorch가 설치되어 있지 않습니다. {install_script('separation')}을 실행하세요.")
     from amp.engine.dsp import roformer
 
     try:

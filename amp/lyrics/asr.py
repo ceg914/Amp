@@ -14,6 +14,7 @@ Whisper 코드·가중치 라이선스: MIT.
 
 from __future__ import annotations
 
+from amp.core.install_hints import script as install_script
 import logging
 import os
 from typing import Callable
@@ -360,7 +361,7 @@ def transcribe(y16: np.ndarray, *, model_name: str, language: str, device: str, 
         import whisper
     except ImportError as e:
         raise AsrError("missing_dependency",
-                       f"가사 인식 라이브러리가 설치되어 있지 않습니다 ({e.name}). install_lyrics.bat을 실행하세요.") from e
+                       f"가사 인식 라이브러리가 설치되어 있지 않습니다 ({e.name}). {install_script('lyrics')}을 실행하세요.") from e
     from amp.engine.dsp.separation import choose_device
 
     prog = _Progress(report)

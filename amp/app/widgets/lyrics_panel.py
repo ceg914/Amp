@@ -90,6 +90,7 @@ class LyricsPanel(QScrollArea):
 
         # --- 자동 인식 ---
         g = QGroupBox("자동 가사 인식 (Whisper)")
+        self.recognition_group = g
         f = QFormLayout(g)
         self.language = QComboBox()
         for k, v in LANG_ITEMS:
@@ -164,8 +165,17 @@ class LyricsPanel(QScrollArea):
         v.addWidget(self.text_status)
         lay.addWidget(g)
 
+        # 가벼운 모드 안내 (자동 인식·정렬 대신 직접 연결)
+        self.lite_hint = QLabel("가벼운 모드: 자동 인식·정렬은 쓰지 않습니다. 가사를 입력해 적용한 뒤, 가사 레인에서 음절을 고르고 "
+                                "피아노 롤에서 음표를 고른 다음 오른쪽 클릭 [음표와 순서대로 연결]을 누르면 음절 시간이 음표에 맞춰집니다.")
+        self.lite_hint.setWordWrap(True)
+        self.lite_hint.setProperty("role", "secondary")
+        self.lite_hint.hide()
+        lay.addWidget(self.lite_hint)
+
         # --- 정렬 ---
         g = QGroupBox("시간 정렬 (MMS 강제 정렬)")
+        self.alignment_group = g
         v = QVBoxLayout(g)
         row = QHBoxLayout()
         self.align_all = QPushButton("전체 정렬")
@@ -345,6 +355,12 @@ class LyricsPanel(QScrollArea):
                 combo.setCurrentIndex(i)
         self.link_after.setChecked(bool(d.get("link_after", True)))
         self.align_after.setChecked(bool(d.get("align_after", True)))
+
+    def set_lite(self, on: bool) -> None:
+        """가벼운 모드: 자동 인식(Whisper)·자동 정렬(MMS) 상자를 숨기고 직접 연결 방법을 안내한다."""
+        self.recognition_group.setVisible(not on)
+        self.alignment_group.setVisible(not on)
+        self.lite_hint.setVisible(on)
 
     def set_install_status(self, text: str) -> None:
         self.install_label.setText(text)

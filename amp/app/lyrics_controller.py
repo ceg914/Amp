@@ -16,6 +16,7 @@ from PySide6.QtCore import QObject, QSettings, QUrl
 from PySide6.QtGui import QDesktopServices
 from PySide6.QtWidgets import QFileDialog, QInputDialog, QMessageBox
 
+from amp.core.install_hints import script as install_script
 from amp.app.document import ProjectDocument
 from amp.app.player import PlaybackState
 from amp.core.errors import EditError
@@ -161,13 +162,13 @@ class LyricsController(QObject):
         st = self.session.lyrics_install_status()
         parts = []
         if not st["whisper"]:
-            parts.append("가사 인식 라이브러리(openai-whisper)가 설치되어 있지 않습니다. install_lyrics.bat을 한 번 실행하세요.")
+            parts.append(f"가사 인식 라이브러리(openai-whisper)가 설치되어 있지 않습니다. {install_script('lyrics')}을 한 번 실행하세요.")
         elif st["whisper_models"]:
             parts.append("내려받은 인식 모델: " + ", ".join(st["whisper_models"]))
         else:
             parts.append("처음 인식할 때 모델을 내려받습니다 (turbo 약 1.5GB, GPU에서 자동으로 고르는 large-v3 약 2.9GB).")
         if not st["torch"]:
-            parts.append("PyTorch가 없어 인식·정렬을 쓸 수 없습니다 (install_separation.bat).")
+            parts.append(f"PyTorch가 없어 인식·정렬을 쓸 수 없습니다 ({install_script('separation')}).")
         parts.append("정렬 모델: " + ("내려받음" if st["mms"] else "처음 정렬할 때 약 1.2GB를 내려받습니다")
                      + " · MMS_FA 가중치는 CC-BY-NC 4.0(비상업적 이용) 라이선스입니다.")
         self.panel.set_install_status("\n".join(parts))

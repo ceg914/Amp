@@ -18,6 +18,7 @@ import threading
 from collections import deque
 from pathlib import Path
 
+from amp.core.install_hints import script as install_script
 from amp.core.errors import AnalysisCancelled, AnalysisError
 from amp.engine.context import CancelToken, ProgressFn
 
@@ -26,7 +27,7 @@ log = logging.getLogger(__name__)
 PROJECT_ROOT = str(Path(__file__).resolve().parents[2])
 
 ERROR_HINTS = {
-    "missing_dependency": "보컬 분리에는 PyTorch와 Demucs가 필요합니다. 저장소 폴더의 install_separation.bat 을 실행하세요. "
+    "missing_dependency": f"보컬 분리에는 PyTorch와 Demucs가 필요합니다. 저장소 폴더의 {install_script('separation')} 을 실행하세요. "
                           "반주가 없는 음원이라면 분석 설정에서 보컬 분리를 '분리 안 함'으로 바꿔도 됩니다.",
     "model_download": "처음 분석할 때 Demucs 모델(약 80MB)을 인터넷에서 내려받습니다. 인터넷 연결과 디스크 여유 공간을 확인하세요.",
     "oom": "메모리가 부족합니다. 다른 프로그램을 닫거나, 분석 설정에서 처리 장치를 CPU로 바꿔 보세요.",

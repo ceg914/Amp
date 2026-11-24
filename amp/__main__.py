@@ -109,6 +109,11 @@ def run(argv: list[str] | None = None) -> int:
     if sys.version_info < MIN_PYTHON:
         print(f"[SONATLAS] {problem}", file=sys.stderr)
         return 1
+    for flag, value in (("--lite", "1"), ("--full", "0")):  # 가벼운 모드 (amp/app/lite.py)
+        if flag in argv:
+            os.environ["SONATLAS_LITE"] = value
+            argv = [a for a in argv if a != flag]
+            sys.argv = [sys.argv[0], *argv]
     missing = missing_modules()
     if missing:
         # 패키지가 없을 때만 빌드 종류를 따진다 (다른 경로로 이미 설치했다면 막지 않는다)

@@ -365,6 +365,22 @@ class AnalysisPanel(QGroupBox):
         self._set_pitch_regions(regions)
         self._emit()
 
+    def set_lite(self, on: bool, separation_installed: bool = True) -> None:
+        """가벼운 모드: RoFormer·GPU 확인을 숨기고 처리 장치는 CPU로. 분리가 설치되지 않았으면 그렇게 표시한다."""
+        i = self.separation.findData("mel_roformer")
+        if on and i >= 0:
+            self.separation.removeItem(i)
+        j = self.separation.findData("htdemucs")
+        if on and j >= 0 and not separation_installed:
+            self.separation.setItemText(j, "Demucs htdemucs (설치 안 됨: 이미 분리한 결과만 사용)")
+        self.probe.setVisible(not on)
+        self.reseparate.setVisible(not on or separation_installed)
+        if on:
+            k = self.device.findData("cpu")
+            if k >= 0:
+                self.device.setCurrentIndex(k)
+        self._update_model_row()
+
     def set_no_vocal_ranges(self, ranges) -> None:
         """구간을 바꾸고 settingsChanged를 보낸다."""
         self._set_no_vocal(ranges)

@@ -3,7 +3,7 @@
 MP3·WAV에서 보컬을 분리하고, 음높이·음 길이·BPM을 분석해 통합형 피아노 롤에서 자동 채보 결과를 검토·편집하는
 Windows용 데스크톱 프로그램입니다. Python과 PySide6로 만들고 있습니다. 저장소 이름은 `Amp`, 파이썬 패키지 이름은 `amp`입니다.
 
-**현재 버전: 0.6.1** (0.6.0 + 겹친 목소리 구간 피치 다시 찾기) — STEP 1~5(편집기, 보컬 분리·자동 채보, 가사·음절 정렬, 발음·멜리스마, 청취·검토·내보내기·모델 비교)에
+**현재 버전: 0.6.2** (0.6.0 + 겹친 목소리 구간 피치 다시 찾기, 크롬북·가벼운 모드) — STEP 1~5(편집기, 보컬 분리·자동 채보, 가사·음절 정렬, 발음·멜리스마, 청취·검토·내보내기·모델 비교)에
 v0.6 보컬 다듬기(Hybrid 보컬, 음표 검출 v4, 교정 제안, 음절 정렬 다듬기, 품질 탭)를 더한 상태입니다.
 v0.6 결과는 [SONATLAS_V0_6_0_IMPLEMENTATION_REPORT.md](SONATLAS_V0_6_0_IMPLEMENTATION_REPORT.md), STEP 3.5 결과는 [STEP_3_5_VALIDATION_REPORT.md](STEP_3_5_VALIDATION_REPORT.md),
 STEP 3 구현·검증 결과는 [STEP_3_IMPLEMENTATION_REPORT.md](STEP_3_IMPLEMENTATION_REPORT.md), 그 뒤 사용자 보고 4건의 수정은 [STEP_3_FOLLOWUP_REPORT.md](STEP_3_FOLLOWUP_REPORT.md),
@@ -173,6 +173,33 @@ python scripts\install_lyrics.py
 ```bash
 python -m amp
 ```
+
+## 설치 (크롬북·리눅스)
+
+크롬북의 Linux 개발 환경(설정 > 고급 > 개발자 > Linux 개발 환경)에서 확인한 환경: x86_64, Debian 13(glibc 2.41).
+데비안·우분투 x86_64도 같은 방법입니다. ARM 칩은 glibc 2.39 이상이어야 PySide6가 pip로 설치됩니다.
+
+1. Linux 터미널에서 저장소를 받고 설치합니다 (처음 한 번, 시스템 패키지 설치에 sudo 사용).
+
+```bash
+git clone -b claude/dazzling-mendel-mw3z4s https://github.com/ceg914/Amp.git && cd Amp
+```
+
+```bash
+./install_chromebook.sh
+```
+
+2. 런처의 'Linux 앱'에서 **SONATLAS**를 누르거나 `./run.sh`로 실행합니다.
+
+**가벼운 모드:** 기본 설치에는 PyTorch를 넣지 않고(가상 환경 약 1.2GB), 실행하면 가벼운 모드로 켜집니다.
+피치·음표 검출, 편집, 가사 직접 입력과 음표 순서 연결, 재생·반복·느린 재생, 검토·교정 제안·품질, 내보내기,
+피치 다시 찾기 구간은 그대로 씁니다. 모델 비교·Hybrid·RoFormer·GPU 확인·가사 자동 인식·자동 정렬은 숨깁니다.
+보컬 분리는 다른 PC에서 분리한 파일을 **분석 > 외부 분리 결과 가져오기**로 넣거나, Windows에서 만든 프로젝트 폴더를 그대로 엽니다
+(이미 분리한 결과가 있으면 다시 분리하지 않습니다). 반주 없는 보컬 파일은 분석 설정의 보컬 분리를 '분리 안 함'으로 둡니다.
+
+크롬북에서 직접 분리하려면 `./install_chromebook.sh --separation` (CPU용 PyTorch + Demucs, 약 1.2GB 추가).
+5분 곡 분리에 메모리를 2.0~2.3GB 쓰고, 4코어 Xeon에서 110~170초 걸렸습니다(크롬북에서는 재지 않았습니다).
+설치해도 가벼운 모드를 끄려면 `./run.sh --full`.
 
 ## 사용법
 

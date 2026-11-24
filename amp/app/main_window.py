@@ -34,6 +34,7 @@ from PySide6.QtWidgets import (
 )
 
 from amp import APP_DISPLAY_NAME, __version__
+from amp.core.install_hints import script as install_script
 from amp.app import theme
 from amp.app.autosave import AutosaveManager, RecoveryEntry
 from amp.app.dialogs import (
@@ -49,6 +50,7 @@ from amp.app.document import ProjectDocument
 from amp.app.compare_controller import CompareController
 from amp.app.export_controller import ExportController
 from amp.app.hybrid_controller import HybridController
+from amp.app.lite import lite_mode, separation_installed
 from amp.app.model_compare_controller import ModelCompareController
 from amp.app.quality_controller import QualityController
 from amp.app.suggestions_controller import SuggestionsController
@@ -211,6 +213,9 @@ class MainWindow(QMainWindow):
         self._connect()
         self.inspector.analysis.set_settings(AnalysisSettings.from_dict(self._stored_settings()))
         self._set_model_files(self._stored_model_files())
+        self.lite = lite_mode()
+        if self.lite:
+            self._apply_lite()
         self._update_title()
         self._update_actions()
         self._sync_tempo_widgets()
@@ -470,11 +475,11 @@ class MainWindow(QMainWindow):
         self.compare_button = QToolButton()
         self.compare_button.setDefaultAction(self.model_compare.act_mode)
         self.compare_button.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextOnly)
-        tb.addWidget(self.compare_button)
+        self._compare_tb = tb.addWidget(self.compare_button)
         self.hybrid_button = QToolButton()
         self.hybrid_button.setDefaultAction(self.hybrid.act_mode)
         self.hybrid_button.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextOnly)
-        tb.addWidget(self.hybrid_button)
+        self._hybrid_tb = tb.addWidget(self.hybrid_button)
         self._update_time_label(0.0)
 
     def _build_statusbar(self) -> None:
@@ -592,7 +597,7 @@ class MainWindow(QMainWindow):
     def _update_title(self, *_args) -> None:
         folder = self.session.folder
         name = folder.name if folder else "프로젝트 없음"
-        self.setWindowTitle(f"{name}[*] - {APP_DISPLAY_NAME}")
+        self.setWindowTitle(f"{name}[*] - {APP_DISPLAY_NAME}" + (" (가벼운 모드)" if getattr(self, "lite", False) else ""))
         self.setWindowModified(self.doc.is_dirty)
         self.project_label.setText(f"{name}{' •' if self.doc.is_dirty else ''}")
         self.project_label.setToolTip("저장하지 않은 변경이 있습니다" if self.doc.is_dirty else "저장됨")
@@ -1284,6 +1289,18 @@ class MainWindow(QMainWindow):
         if dlg.exec() == NoVocalRangesDialog.DialogCode.Accepted:
             self._apply_no_vocal(dlg.ranges())
 
+    def _apply_lite(self) -> None:
+        """가벼운 모드 (크롬북 등): 메모리·디스크를 많이 쓰는 기능의 메뉴·단추를 숨긴다. 프로젝트 형식은 같다."""
+        for a in (self.model_compare.act_mode, self.model_compare.act_run, self.model_compare.act_ab,
+                  self.hybrid.act_mode, self.act_probe, self._compare_tb, self._hybrid_tb):
+            a.setVisible(False)
+        installed = separation_installed()
+        if not installed:
+            self.act_reseparate.setVisible(False)
+        self.inspector.analysis.set_lite(True, installed)
+        self.lyrics_panel.set_lite(True)
+        log.info("가벼운 모드로 실행 (보컬 분리 설치: %s)", "예" if installed else "아니오")
+
     def edit_pitch_regions(self) -> None:
         """v0.6.1: 여러 소리가 겹쳐 음표가 빠진 구간을 목소리 음역을 정해 다시 찾는다. 바꾸면 분석을 다시 돌린다
         (분리·곡 전체 피치는 캐시를 쓰고 지정 구간만 새로 계산). 직접 고친 음표는 '수정 유지'로 남는다."""
@@ -1350,7 +1367,7 @@ class MainWindow(QMainWindow):
 
         def done(info: dict) -> None:
             if info.get("error"):
-                label.setText(f"⚠ {info['error']}  install_separation.bat 으로 설치할 수 있습니다.")
+                label.setText(f"⚠ {info['error']}  {install_script('separation')} 으로 설치할 수 있습니다.")
             elif info.get("cuda"):
                 label.setText(f"✓ GPU 사용 가능: {info.get('gpu')} (CUDA {info.get('cuda_version')}, PyTorch {info.get('torch')})")
             elif info.get("hint"):
