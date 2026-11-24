@@ -494,6 +494,31 @@ class ProjectSession(QObject):
             syllable_starts=self.syllable_starts(), model_files=dict(self.model_files),
         )
 
+    # --- 베이스 TAB (v0.6.3) -----------------------------------------------------
+
+    def run_bass(self, options, device: str = "auto", use_original: bool = False,
+                 allow_separation: bool = True) -> TaskHandle | None:
+        """베이스 stem을 찾거나(없으면 htdemucs로 분리해 보관 결과에 더함) 베이스 피치·음표를 구한다 (작업 스레드).
+        결과(BassOutput)는 메인 창이 받아 베이스 작업본에 반영한다. 보컬 분석 결과·분리 결과 파일은 바꾸지 않는다."""
+        if self.busy:
+            return None
+        if self.folder is None or self.audio is None or self.original is None or self.original.path is None:
+            self.error.emit("베이스를 분석할 수 없습니다", "분석할 오디오가 없습니다. 원본 파일을 확인하세요.", "")
+            return None
+        from amp.engine.bass_pipeline import BassPipeline, BassRequest
+
+        req = BassRequest(str(self.original.path), self.folder.meta.original.sha256, self.audio.duration, options,
+                          stems_dir=str(self.folder.paths.stems), cache_root=str(self.folder.paths.cache),
+                          device=device, use_original=use_original, allow_separation=allow_separation,
+                          numba_cache_dir=app_data_dir("numba"))
+
+        def job(progress, token):
+            return BassPipeline().run(req, progress, token)
+
+        handle = self._submit("베이스 분석", job)
+        self._track_analysis(handle)
+        return handle
+
     # --- 모델 비교 (STEP 5) -----------------------------------------------------
 
     def model_store(self):

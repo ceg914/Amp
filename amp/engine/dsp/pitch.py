@@ -87,15 +87,6 @@ class ReuseSource:
     label: str = ""
 
 
-def frame_length_for(fmin: float) -> int:
-    """fmin의 두 주기가 들어가는 pYIN 창 (기본 1024, 모자라면 2의 거듭제곱으로 늘림)."""
-    need = 2.0 * PITCH_SR / max(float(fmin), 1.0)
-    n = FRAME_LENGTH
-    while n < need:
-        n *= 2
-    return n
-
-
 def track_pitch(
     mono: np.ndarray,
     sr: int,
@@ -105,10 +96,9 @@ def track_pitch(
     fmax: float = FMAX_HZ,
     reuse: list[ReuseSource] | None = None,
     stats: dict | None = None,
-    frame_length: int = FRAME_LENGTH,
 ) -> PitchFrames:
-    """frame_length: pYIN 창 (16kHz 기준). 가장 낮은 음의 두 주기가 들어가야 한다 (5현 베이스 B0는 2048, v0.6.3).
-    프레임 격자(HOP)·음량 창은 바뀌지 않는다."""
+    import warnings
+
     import librosa
 
     y = to_pitch_sr(mono, sr)
@@ -143,9 +133,13 @@ def track_pitch(
             continue
         if stats is not None:
             stats["computed"] = stats.get("computed", 0) + 1
-        f, voiced, vprob = librosa.pyin(
-            seg, fmin=fmin, fmax=fmax, sr=PITCH_SR, frame_length=int(frame_length), hop_length=HOP, center=True
-        )
+        with warnings.catch_warnings():
+            # 5현 베이스 B0(30.9Hz, fmin 29.1Hz)는 64ms 창에 두 주기가 조금 모자라 librosa가 경고한다. 합성 시험에서 B0를
+            # 맞게 잡았고, 창을 2048로 늘리면 125ms짜리 16분음표를 놓쳐서 창은 그대로 둔다 (v0.6.3)
+            warnings.filterwarnings("ignore", message=".*less than two periods.*")
+            f, voiced, vprob = librosa.pyin(
+                seg, fmin=fmin, fmax=fmax, sr=PITCH_SR, frame_length=FRAME_LENGTH, hop_length=HOP, center=True
+            )
         j0 = g0 - a // HOP
         take = slice(j0, j0 + (g1 - g0))
         fs = np.where(voiced[take], f[take], np.nan)

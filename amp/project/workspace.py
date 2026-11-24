@@ -259,7 +259,7 @@ class ProjectFolder:
         out = {}
         for p in (self.paths.project_json, self.paths.notes_json, self.paths.tempo_json, self.paths.pitch_json,
                   self.paths.lyrics_json, self.paths.alignment_json, self.paths.review_json, self.paths.reference_json,
-                  self.paths.hybrid_json, self.paths.suggestions_json):
+                  self.paths.hybrid_json, self.paths.suggestions_json, self.paths.bass_json):
             try:
                 st = p.stat()
                 out[p.name] = (st.st_size, st.st_mtime_ns)
@@ -352,12 +352,13 @@ class ProjectFolder:
                     report.warnings.append(f"마이그레이션 전 {name} 백업을 만들지 못했습니다: {e}")
         self._analysis_written = analysis
         self._known_state = self._disk_state()
-        from amp.project.analysis_io import load_step5_files, load_v06_files
+        from amp.project.analysis_io import load_bass_file, load_step5_files, load_v06_files
 
         review, reference = load_step5_files(self.paths, report)
         hybrid_plan, suggestion_state = load_v06_files(self.paths, report)
+        bass = load_bass_file(self.paths, report)
         return Project(audio=self.audio_ref(), analysis=analysis, score=score, lyrics=lyrics, review=review,
-                       reference=reference, hybrid=hybrid_plan, suggestions=suggestion_state), report
+                       reference=reference, hybrid=hybrid_plan, suggestions=suggestion_state, bass=bass), report
 
 
 def _relpath(target: Path, start: Path) -> str | None:

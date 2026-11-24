@@ -188,6 +188,24 @@ def save_v06_files(paths: ProjectPaths, project: Project) -> None:
     elif paths.hybrid_json.exists():
         paths.hybrid_json.replace(paths.hybrid_json.with_name(paths.hybrid_json.name + ".removed.bak"))
 
+    if project.bass is not None:  # v0.6.3. 베이스를 분석하지 않았으면 파일을 만들지 않는다 (지우지도 않는다)
+        from amp.project import bass_io
+
+        atomic_write_json(paths.bass_json, bass_io.to_dict(project.bass), backup=True, indent=None)
+
+
+def load_bass_file(paths: ProjectPaths, report: "LoadReport"):
+    """v0.6.3 베이스 TAB 상태 또는 None. 파일이 깨지면 .bak을 시도하고, 그래도 안 되면 경고만 남긴다(파일은 그대로 둔다)."""
+    from amp.project import bass_io
+
+    if not paths.bass_json.exists():
+        return None
+    try:
+        return bass_io.from_dict(_load(paths.bass_json, schema.BASS, report))
+    except Exception as e:  # noqa: BLE001
+        report.warnings.append(f"베이스 TAB 파일을 읽지 못해 베이스 없이 엽니다 (파일은 그대로 둡니다): {e}")
+        return None
+
 
 def load_v06_files(paths: ProjectPaths, report: "LoadReport"):
     """(Hybrid 계획 또는 None, 교정 제안 또는 None). 파일이 깨져도 프로젝트는 열고 경고만 남긴다(파일은 그대로 둔다)."""

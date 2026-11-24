@@ -27,6 +27,7 @@ from amp.lyrics.model import LyricsState
 
 if TYPE_CHECKING:  # STEP 5 (Qt 비의존 모듈, 순환 import를 피해 실행 때는 늦게 불러온다)
     from amp.compare.reference import ReferenceScore
+    from amp.engine.bass import BassState
     from amp.compare.review import ReviewState
 
 DEFAULT_BPM = 120.0
@@ -284,6 +285,8 @@ class Project:
     hybrid: "HybridPlan | None" = None
     # v0.6: 교정 제안과 처리 상태 (amp.compare.suggestions.SuggestionState). None이면 아직 찾지 않음
     suggestions: "SuggestionState | None" = None
+    # v0.6.3: 베이스 TAB (amp.engine.bass.BassState). None이면 베이스를 분석하지 않음
+    bass: "BassState | None" = None
 
     def note_status(self, note: Note) -> str:
         """'original'(원본 그대로), 'modified'(수정됨), 'user'(사용자 추가) 중 하나."""

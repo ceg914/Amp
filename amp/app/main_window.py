@@ -15,7 +15,7 @@ import os
 from pathlib import Path
 
 from PySide6.QtCore import QElapsedTimer, QSettings, Qt, QTimer, QUrl
-from PySide6.QtGui import QAction, QCloseEvent, QDesktopServices, QKeySequence
+from PySide6.QtGui import QAction, QCloseEvent, QDesktopServices, QKeySequence, QUndoGroup
 from PySide6.QtWidgets import (
     QComboBox,
     QDialog,
@@ -146,6 +146,14 @@ HELP_TEXT = """<h3>조작 방법</h3>
 <li>[전후 비교 듣기]: A = 지금 분석 소스, B = 새 Hybrid (Ctrl+B 전환). [분석 소스로 사용]: 바뀐 범위 근처의 피치만 다시
 계산하고, 바뀔 항목을 보여 준 뒤 사용자 편집을 지키며 반영합니다.</li>
 </ul>
+<h3>베이스 TAB (v0.6.3, 오른쪽 '베이스 TAB' 탭)</h3>
+<ul>
+<li>조율·최대 프렛·개방현·박자 격자를 고르고 <b>베이스 분석</b>(<b>F8</b>). 박 위치는 보컬 분석의 BPM·첫 박을 씁니다.
+Demucs htdemucs의 베이스 소리를 쓰며, 없으면 한 번 다시 분리해 베이스만 더합니다(보컬·반주 파일은 그대로).</li>
+<li><b>베이스 편집 모드</b>(<b>Ctrl+Shift+B</b>): 가운데 피아노 롤이 베이스로 바뀝니다. 편집·단축키는 보컬과 같고, 실행 취소는 보이는 쪽 기록만 되돌립니다.
+다시 분석해도 고친 음표는 남습니다.</li>
+<li>미리보기 TAB은 지금 음표로 만듭니다. 내보내기 &gt; 베이스 TAB 내보내기(GP5·텍스트). GP5에는 처음 BPM 하나만 들어갑니다.</li>
+</ul>
 <h3>아직 없는 기능</h3>
 <p>자음·모음 단위 시간은 아직 구현하지 않았습니다. 내보내기 &gt; 채보·가사 내보내기에서 USTX·UFData·MIDI·MusicXML·JSON·CSV·LRC로 저장합니다(조옮김·곡 음역 표시).
 '샘플 데이터 생성'은 오디오 길이만 보고 고정 패턴을 만드는 시험용 기능입니다.</p>"""
@@ -210,6 +218,9 @@ class MainWindow(QMainWindow):
         self.listening.build_toolbar()
         self._build_statusbar()
         self._build_log_dock()
+        from amp.app.bass_controller import BassController
+
+        self.bass = BassController(self)  # v0.6.3 베이스 TAB (오른쪽 탭·베이스 편집 모드)
         self._connect()
         self.inspector.analysis.set_settings(AnalysisSettings.from_dict(self._stored_settings()))
         self._set_model_files(self._stored_model_files())
@@ -323,10 +334,14 @@ class MainWindow(QMainWindow):
         self.act_change_root = A("기본 프로젝트 위치 변경…", self.change_projects_root)
         self.act_quit = A("종료", self.close, "Ctrl+Q")
 
-        self.act_undo = self.doc.undo_stack.createUndoAction(self, "실행 취소")
+        # v0.6.3: 보컬 문서와 베이스 문서의 실행 취소 기록을 묶고, 보이는 피아노 롤 쪽 기록을 쓴다
+        self.undo_group = QUndoGroup(self)
+        self.undo_group.addStack(self.doc.undo_stack)
+        self.undo_group.setActiveStack(self.doc.undo_stack)
+        self.act_undo = self.undo_group.createUndoAction(self, "실행 취소")
         self.act_undo.setShortcut(QKeySequence.StandardKey.Undo)
         self.act_undo.setIcon(icon("undo-2"))
-        self.act_redo = self.doc.undo_stack.createRedoAction(self, "다시 실행")
+        self.act_redo = self.undo_group.createRedoAction(self, "다시 실행")
         self.act_redo.setShortcuts([QKeySequence("Ctrl+Y"), QKeySequence("Ctrl+Shift+Z")])
         self.act_redo.setIcon(icon("redo-2"))
         self.act_delete = A("삭제", self.delete_selected, [QKeySequence.StandardKey.Delete, "Backspace"], icon_name="trash-2")
@@ -353,9 +368,13 @@ class MainWindow(QMainWindow):
         self.act_stop = A("정지", self.stop, "Esc", icon_name="square")
         self.act_home = A("처음으로", lambda: self.seek(0.0), "Home", icon_name="skip-back")
 
-        self.act_zoom_in = A("가로 확대", lambda: self.view.zoom_time(1.25), ["Ctrl+=", "Ctrl++"], icon_name="zoom-in")
-        self.act_zoom_out = A("가로 축소", lambda: self.view.zoom_time(0.8), "Ctrl+-", icon_name="zoom-out")
-        self.act_zoom_fit = A("전체 보기", self.view.zoom_to_fit, "Ctrl+0", icon_name="maximize-2")
+        self.act_zoom_in = A("가로 확대", lambda: self.roll_view().zoom_time(1.25), ["Ctrl+=", "Ctrl++"], icon_name="zoom-in")
+        self.act_zoom_out = A("가로 축소", lambda: self.roll_view().zoom_time(0.8), "Ctrl+-", icon_name="zoom-out")
+        self.act_zoom_fit = A("전체 보기", lambda: self.roll_view().zoom_to_fit(), "Ctrl+0", icon_name="maximize-2")
+        self.act_bass_analyze = A("베이스 분석 (TAB)", lambda: self.bass.analyze(), "F8", icon_name="wand-sparkles")
+        self.act_bass_edit = A("베이스 편집 모드", lambda on: self.bass.set_active(on), "Ctrl+Shift+B", checkable=True)
+        self.act_bass_gp5 = A("베이스 TAB 내보내기 (GP5)…", lambda: self.bass.export_gp5())
+        self.act_bass_text = A("베이스 TAB 내보내기 (텍스트)…", lambda: self.bass.export_text())
         self.act_show_notes = A("음표 표시", self.view.roll.set_notes_visible, checkable=True, checked=True)
         self.act_show_curve = A("피치 곡선 표시", self.view.roll.curve_item.setVisible, checkable=True, checked=True)
         self.act_follow = A("재생 위치 따라가기", self._set_follow, checkable=True, checked=True)
@@ -385,7 +404,7 @@ class MainWindow(QMainWindow):
         m = mb.addMenu("분석(&A)")
         for a in (self.act_analyze, self.act_redetect, self.act_reseparate, self.act_import_stems, self.act_cancel_analysis, None,
                   self.act_no_vocal, self.act_pitch_regions, self.act_compare_runs, self.act_probe, self.act_clear_cache,
-                  None, self.act_sample):
+                  None, self.act_sample, None, self.act_bass_analyze, self.act_bass_edit):
             m.addSeparator() if a is None else m.addAction(a)
         self.model_compare.build_menu(m)
         self.hybrid.build_menu(m)
@@ -393,6 +412,9 @@ class MainWindow(QMainWindow):
         m = mb.addMenu("내보내기(&X)")
         m.addAction(self.act_export)
         m.addAction(self.exporter.act)
+        m.addSeparator()
+        m.addAction(self.act_bass_gp5)
+        m.addAction(self.act_bass_text)
         m = mb.addMenu("보기(&V)")
         for a in (self.act_zoom_in, self.act_zoom_out, self.act_zoom_fit, None, self.act_show_notes,
                   self.act_show_curve, self.act_follow):
@@ -602,8 +624,17 @@ class MainWindow(QMainWindow):
         self.project_label.setText(f"{name}{' •' if self.doc.is_dirty else ''}")
         self.project_label.setToolTip("저장하지 않은 변경이 있습니다" if self.doc.is_dirty else "저장됨")
 
+    def roll_view(self):
+        """지금 보이는 피아노 롤 (보컬 또는 v0.6.3 베이스 편집 모드의 베이스)."""
+        bass = getattr(self, "bass", None)
+        return bass.view if bass is not None and bass.active else self.view
+
+    def roll_doc(self):
+        bass = getattr(self, "bass", None)
+        return bass.doc if bass is not None and bass.active else self.doc
+
     def _update_actions(self) -> None:
-        n_sel = len(self.view.selected_ids())
+        n_sel = len(self.roll_view().selected_ids())
         has_audio = self.session.audio is not None
         is_open = self.session.is_open
         busy = self.session.busy
@@ -634,6 +665,12 @@ class MainWindow(QMainWindow):
         panel.set_cache_size(self.session.cache_size())
         if hasattr(self, "lyrics"):
             self.lyrics.update_actions()
+        if hasattr(self, "bass"):
+            self.act_bass_analyze.setEnabled(has_audio and is_open and not busy)
+            self.bass.panel.analyze.setEnabled(self.act_bass_analyze.isEnabled())
+            has_bass = bool(self.bass.doc.score.notes())
+            self.act_bass_gp5.setEnabled(has_bass)
+            self.act_bass_text.setEnabled(has_bass)
 
     def _update_analysis_label(self) -> None:
         a = self.doc.project.analysis
@@ -809,7 +846,7 @@ class MainWindow(QMainWindow):
 
     def _on_position(self, t: float) -> None:
         self._time = t
-        self.view.set_playhead(t)
+        self.roll_view().set_playhead(t)
         self.waveform.set_playhead(t)
         if self.spectrogram.isVisible():
             self.spectrogram.set_playhead(t)
@@ -967,6 +1004,7 @@ class MainWindow(QMainWindow):
     def _on_audio_ready(self) -> None:
         audio = self.session.audio
         self.view.roll.set_audio_duration(audio.duration)
+        self.bass.set_audio_duration(audio.duration)
         self.lyric_lane.duration = audio.duration
         for name, st in (self._pending_playback.get("tracks") or {}).items():
             self.player.set_track_state(name, gain=float(st.get("gain", 1.0)), mute=bool(st.get("mute", False)),
@@ -1123,16 +1161,17 @@ class MainWindow(QMainWindow):
             self.statusBar().showMessage(str(e), 5000)
 
     def delete_selected(self) -> None:
-        self._guard(lambda: self.doc.delete_notes(self.view.selected_ids()))
+        self._guard(lambda: self.roll_doc().delete_notes(self.roll_view().selected_ids()))
 
     def split_selected_at_playhead(self) -> None:
-        self._guard(lambda: self.doc.split_notes_at(self.view.selected_ids(), self.current_time()))
+        self._guard(lambda: self.roll_doc().split_notes_at(self.roll_view().selected_ids(), self.current_time()))
 
     def merge_selected(self) -> None:
-        self._guard(lambda: self.doc.merge_notes(self.view.selected_ids()))
+        self._guard(lambda: self.roll_doc().merge_notes(self.roll_view().selected_ids()))
 
     def select_all(self) -> None:
-        self.view.roll.select_ids(list(self.view.roll.items_by_id))
+        v = self.roll_view()
+        v.roll.select_ids(list(v.roll.items_by_id))
 
     def revert_to_analysis(self) -> None:
         self._guard(self.doc.revert_to_analysis)

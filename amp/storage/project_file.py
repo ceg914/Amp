@@ -89,6 +89,10 @@ def project_to_members(project: Project, project_path: str | None = None) -> dic
         members["analysis/result.json"] = _dump(ser.analysis_to_dict(project.analysis))
         if project.analysis.pitch_curve is not None:
             members["analysis/pitch.npz"] = _pitch_to_bytes(project.analysis.pitch_curve, project.analysis.onset_envelope)
+    if project.bass is not None:  # v0.6.3: 자동 저장·복구에도 베이스 편집을 담는다
+        from amp.project import bass_io
+
+        members["analysis/bass.json"] = _dump(bass_io.to_dict(project.bass))
     return members
 
 
@@ -147,6 +151,14 @@ def load_project(path: str) -> Project:
             if "analysis/result.json" in names:
                 curve, onset = _pitch_from_bytes(z.read("analysis/pitch.npz")) if "analysis/pitch.npz" in names else (None, None)
                 analysis = ser.analysis_from_dict(read_json("analysis/result.json"), curve, onset)
+            bass = None
+            if "analysis/bass.json" in names:
+                from amp.project import bass_io, schema
+
+                try:  # 베이스가 깨져도 보컬 음표·가사는 복구한다
+                    bass = bass_io.from_dict(schema.migrate(schema.BASS, read_json("analysis/bass.json"))[0])
+                except Exception:  # noqa: BLE001
+                    bass = None
     except FileNotFoundError:
         raise ProjectFormatError(f"파일을 찾을 수 없습니다: {path}") from None
     except zipfile.BadZipFile:
@@ -165,4 +177,4 @@ def load_project(path: str) -> Project:
             candidate = os.path.normpath(os.path.join(os.path.dirname(os.path.abspath(path)), rel))
             if os.path.exists(candidate):
                 audio = dataclasses.replace(audio, path=candidate)
-    return Project(audio=audio, analysis=analysis, score=score, lyrics=lyrics)
+    return Project(audio=audio, analysis=analysis, score=score, lyrics=lyrics, bass=bass)

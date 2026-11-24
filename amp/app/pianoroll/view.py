@@ -63,6 +63,8 @@ class PianoRollView(QGraphicsView):
         self.setMouseTracking(True)
         self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
         self.follow_playhead = True
+        # v0.6.3: 피아노 롤이 둘(보컬·베이스)이라 보이는 쪽만 눈금자·파형과 시간축을 주고받는다
+        self.timeline_owner = True
 
         self._drag = _Drag.NONE
         self._press_scene = QPointF()
@@ -148,13 +150,26 @@ class PianoRollView(QGraphicsView):
     # --- 내부: 타임라인 동기화 ------------------------------------------------------
 
     def _sync_timeline(self, *_args) -> None:
+        if not self.timeline_owner:
+            return
         self.timeline.update_view(self.mapper.px_per_sec, float(self.horizontalScrollBar().value()))
 
+    def match_timeline(self) -> None:
+        """공유 시간축(배율·가로 위치)에 맞춘다. 숨어 있던 피아노 롤을 다시 보일 때 쓴다."""
+        if not math.isclose(self.mapper.px_per_sec, self.timeline.px_per_sec):
+            self.mapper.px_per_sec = self.timeline.px_per_sec
+            self.roll.relayout()
+        self.horizontalScrollBar().setValue(int(round(self.timeline.scroll_x)))
+
     def _on_scroll_requested(self, dx: float) -> None:
+        if not self.timeline_owner:
+            return
         bar = self.horizontalScrollBar()
         bar.setValue(int(bar.value() + dx))
 
     def _on_zoom_requested(self, factor: float, anchor_time: float) -> None:
+        if not self.timeline_owner:
+            return
         self.zoom_time(factor, anchor_time)
 
     def resizeEvent(self, event) -> None:  # noqa: N802

@@ -94,7 +94,7 @@ def cmd_separate(args: dict) -> dict:
 
 
 def cmd_pitch(args: dict) -> dict:
-    from amp.engine.dsp.pitch import FMAX_HZ, FMIN_HZ, FRAME_LENGTH, PitchFrames, ReuseSource, to_pitch_sr, track_pitch
+    from amp.engine.dsp.pitch import FMAX_HZ, FMIN_HZ, PitchFrames, ReuseSource, to_pitch_sr, track_pitch
 
     audio = _load(args["input"])
     reuse = []
@@ -112,11 +112,10 @@ def cmd_pitch(args: dict) -> dict:
     stats: dict = {}
     frames = track_pitch(audio.mono(), audio.sample_rate, _progress,
                          fmin=float(args.get("fmin", FMIN_HZ)), fmax=float(args.get("fmax", FMAX_HZ)),
-                         reuse=reuse, stats=stats, frame_length=int(args.get("frame_length", FRAME_LENGTH)))
+                         reuse=reuse, stats=stats)
     frames.save(os.path.join(args["out_dir"], "pitch.npz"))
     meta = {"tracker": "pyin", "frames": int(frames.f0_hz.shape[0]), "frame_rate": frames.frame_rate,
-            "fmin": float(args.get("fmin", FMIN_HZ)), "fmax": float(args.get("fmax", FMAX_HZ)),
-            "frame_length": int(args.get("frame_length", FRAME_LENGTH)), "versions": _versions(),
+            "fmin": float(args.get("fmin", FMIN_HZ)), "fmax": float(args.get("fmax", FMAX_HZ)), "versions": _versions(),
             "chunks": {"computed": int(stats.get("computed", 0)), "reused": int(stats.get("reused", 0))}}
     with open(os.path.join(args["out_dir"], "meta.json"), "w", encoding="utf-8") as f:
         json.dump(meta, f)

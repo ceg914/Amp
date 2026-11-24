@@ -219,6 +219,13 @@ class ProjectDocument(QObject):
         self.projectReset.emit()
         self._emit_dirty()
 
+    def mark_modified(self) -> None:
+        """실행 취소 기록 밖에서 프로젝트 내용이 바뀜 (v0.6.3 베이스 작업본은 베이스 문서가 따로 기록한다).
+        저장·자동 저장 대상이 된다."""
+        self._extra_dirty = True
+        self._touch()
+        self._emit_dirty()
+
     def relink_audio(self, audio: AudioRef) -> None:
         """프로젝트의 오디오 참조만 바꾼다 (파일을 옮겼거나 다시 연결할 때)."""
         self.project.audio = audio

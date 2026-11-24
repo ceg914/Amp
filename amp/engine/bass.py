@@ -91,6 +91,19 @@ class BassOptions:
             return cls()
 
 
+@dataclass(frozen=True)
+class BassState:
+    """프로젝트의 베이스 TAB 상태 (analysis/bass.json). 자동 분석 원본과 사용자 작업본을 나눠 둔다.
+
+    analysis: 베이스 자동 분석 결과 (AnalysisResult: 음표·피치 곡선·모델 정보). 분석할 때만 바뀐다.
+    notes: 사용자 작업본 음표. 다시 분석해도 고친 음표·추가한 음표는 지킨다 ('수정 유지').
+    박 위치·템포는 보컬 프로젝트의 템포를 함께 쓴다."""
+    options: BassOptions = field(default_factory=BassOptions)
+    analysis: object = None  # AnalysisResult | None
+    notes: tuple = ()
+    source: dict = field(default_factory=dict)  # 베이스를 어디서 읽었는지 ({"kind", "store_key", "path"} 등)
+
+
 # --- 음표 ------------------------------------------------------------------------
 
 def pluck_onsets(rms_fine: np.ndarray, frame_rate: float, rise_db: float = SPLIT_RISE_DB) -> list[float]:

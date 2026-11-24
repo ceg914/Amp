@@ -309,20 +309,22 @@ def test_pipeline_original_and_no_separation(song, tmp_path):
     assert [n.pitch for n in out.notes] == [p for p, _d in LINE]
 
 
-def test_five_string_low_b_uses_longer_frame(recwarn):
-    """5현 B0(30.9Hz)는 1024 창(64ms)에 두 주기가 들어가지 않는다 → 2048 창. 4현은 기존 창 그대로."""
+def test_five_string_low_b_and_fast_notes(recwarn):
+    """5현 B0(30.9Hz)는 64ms 창에 두 주기가 조금 모자란다. 그래도 B0를 잡고, 125ms 16분음표도 놓치지 않는다
+    (창을 2048로 늘리면 16분음표를 놓쳤다). librosa의 '두 주기 미만' 경고는 감춘다."""
     pytest.importorskip("librosa")
     from amp.devtools.synth import SR, plucked
     from amp.engine.bass import detect_bass_notes
-    from amp.engine.dsp.pitch import FRAME_LENGTH, frame_length_for, track_pitch
+    from amp.engine.dsp.pitch import track_pitch
 
-    assert frame_length_for(BassOptions().hz_range()[0]) == FRAME_LENGTH
     o = BassOptions(tuning="5_standard")
     lo, hi = o.hz_range()
-    assert frame_length_for(lo) == 2048
-    mel = [(0.5, 0.99, 23), (1.0, 1.49, 23), (1.5, 1.99, 28), (2.0, 2.49, 35), (2.5, 3.0, 23)]
-    f = track_pitch(plucked(mel, 3.5), SR, fmin=lo, fmax=hi, frame_length=frame_length_for(lo))
+    mel = [(0.5, 0.99, 23), (1.0, 1.49, 23), (1.5, 1.99, 28), (2.0, 2.49, 35), (2.5, 3.0, 23), (3.0, 3.12, 24),
+           (3.125, 3.25, 23), (3.25, 3.5, 26)]
+    f = track_pitch(plucked(mel, 4.0), SR, fmin=lo, fmax=hi)
     notes, _c, _a = detect_bass_notes(f, o)
-    assert [n.pitch for n in notes] == [23, 23, 28, 35, 23]
+    assert [n.pitch for n in notes] == [m[2] for m in mel]
     assert max(abs(n.start - m[0]) for n, m in zip(notes, mel)) < 0.03
     assert not [w for w in recwarn if "two periods" in str(w.message)]
+    g = track_pitch(_bass_audio(), SR, fmin=lo, fmax=hi)  # 4현용 시험 곡도 5현 음역으로 그대로
+    assert [n.pitch for n in detect_bass_notes(g, o)[0]] == [p for p, _d in LINE]

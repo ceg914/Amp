@@ -23,7 +23,6 @@ from amp.engine import stems as stem_store
 from amp.engine.bass import BASS_NOTES_VERSION, BassOptions, detect_bass_notes
 from amp.engine.cache import AnalysisCache
 from amp.engine.context import CancelToken, ProgressFn
-from amp.engine.dsp.pitch import frame_length_for
 from amp.engine.model_store import ModelStore, identity_for
 from amp.engine.transcription import PITCH_VERSION, Runner, TranscriptionPipeline, _load_pitch
 from amp.engine.worker_client import run_worker
@@ -114,9 +113,8 @@ class BassPipeline:
                           "separated": not reused["separation"]}
             token.raise_if_cancelled()
             fmin, fmax = req.options.hz_range()
-            frame_length = frame_length_for(fmin)
             params = {"tracker": "pyin", "v": PITCH_VERSION, "fmin": round(fmin, 3), "fmax": round(fmax, 3),
-                      "frame_length": frame_length, "input": input_id}
+                      "input": input_id}
             expected = int(req.duration * 100) + 1
             span = 1.0 - sep_share - 0.05
 
@@ -125,15 +123,14 @@ class BassPipeline:
 
             (frames, meta), reused["pitch"] = TranscriptionPipeline._cached(
                 cache, key, "bass_pitch", params, req.use_cache, scratch,
-                lambda out, p: self.runner("pitch", {"input": str(path), "fmin": fmin, "fmax": fmax,
-                                                     "frame_length": frame_length, "out_dir": str(out)},
+                lambda out, p: self.runner("pitch", {"input": str(path), "fmin": fmin, "fmax": fmax, "out_dir": str(out)},
                                            p, token, req.numba_cache_dir),
                 lambda d: _load_pitch(d, expected), pitch_report, warnings)
         token.raise_if_cancelled()
         report(0.96, "베이스 음표 검출 중")
         notes, curve, _art = detect_bass_notes(frames, req.options)
         report(1.0, f"베이스 음표 {len(notes)}개")
-        pmeta = {**{k: meta.get(k) for k in ("fmin", "fmax", "frame_rate", "frame_length")}, "notes_version": BASS_NOTES_VERSION,
+        pmeta = {**{k: meta.get(k) for k in ("fmin", "fmax", "frame_rate")}, "notes_version": BASS_NOTES_VERSION,
                  "warnings": warnings}
         return BassOutput(notes, curve, source, reused, pmeta)
 

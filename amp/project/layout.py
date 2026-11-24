@@ -95,6 +95,11 @@ class ProjectPaths:
         return self.analysis / "suggestions.json"
 
     @property
+    def bass_json(self) -> Path:
+        """v0.6.3: 베이스 TAB (옵션, 베이스 자동 분석·피치, 사용자 작업본)."""
+        return self.analysis / "bass.json"
+
+    @property
     def scores(self) -> Path:
         """가져온 악보 파일 사본 (프로젝트를 옮겨도 다시 읽을 수 있게 복사해 둔다)."""
         return self.root / "scores"
