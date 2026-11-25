@@ -101,6 +101,20 @@ def test_bass_analysis_edit_mode_undo_and_save(qtbot, make_window, bass_song, pa
     heads = [g for g in read_gp5(out["gp5"]) if not g["tie"]]
     assert [g["midi"] for g in heads] == [p for p, _s in sorted(saved, key=lambda x: x[1])]
     assert "현" in open(out["txt"], encoding="utf-8-sig").read()
+
+    # 베이스 소리 내보내기: WAV는 분리해 둔 베이스와 같은 소리, MP3도 쓴다. 분리 파일은 그대로
+    stem = w.bass.stem_path()
+    stem_bytes = open(stem, "rb").read()
+    ref, sr = sf.read(stem, dtype="float32", always_2d=True)
+    for name in ("베이스.wav", "베이스.mp3"):
+        dst = str(tmp_path / "out" / name)
+        monkeypatch.setattr(QFileDialog, "getSaveFileName", lambda *a, d=dst, **kw: (d, ""))
+        w.act_bass_audio.trigger()
+        qtbot.waitUntil(lambda d=dst: (tmp_path / "out" / name).exists() and not w.runner.active_count, timeout=60_000)
+    got, gsr = sf.read(str(tmp_path / "out" / "베이스.wav"), dtype="float32", always_2d=True)
+    assert gsr == sr and got.shape == ref.shape and np.max(np.abs(got - ref)) < 1e-6
+    assert sf.info(str(tmp_path / "out" / "베이스.mp3")).format == "MP3"
+    assert open(stem, "rb").read() == stem_bytes
     w.close()
 
     w2 = make_window("w2")
@@ -126,3 +140,8 @@ def test_bass_without_separation_reports_and_keeps_vocals(qtbot, window, song, m
     assert "베이스 분리 결과가 없습니다" in w.errors[-1]
     assert w.doc.project.bass is None and [(n.id, n.pitch) for n in w.doc.score.notes()] == vocal
     assert not w.act_bass_gp5.isEnabled()
+    shown = []
+    monkeypatch.setattr("amp.app.bass_controller.QMessageBox.information", lambda *a, **k: shown.append(a[2]))
+    monkeypatch.setattr(QFileDialog, "getSaveFileName", lambda *a, **k: pytest.fail("파일을 묻지 않아야 함"))
+    w.act_bass_audio.trigger()
+    assert shown and "베이스 분석(F8)" in shown[0]

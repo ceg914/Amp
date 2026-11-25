@@ -311,6 +311,8 @@ git clone -b claude/dazzling-mendel-mw3z4s https://github.com/ceg914/Amp.git && 
    - 탭 아래 미리보기는 지금 음표로 만든 TAB입니다. 줄·프렛은 손 위치 이동이 적은 경로로 고르고, 조율·최대 프렛 밖 음은 빼고 개수를 알려 줍니다.
    - **GP5 내보내기**(Guitar Pro·TuxGuitar·MuseScore), **텍스트 TAB 내보내기**(메모장용 UTF-8). GP5에는 처음 BPM 하나만 들어가고,
      마디를 넘는 음은 붙임줄로 잇습니다. 셋잇단·슬라이드·해머링·뮤트 음은 아직 만들지 않습니다.
+   - **베이스 소리 내보내기 (WAV·MP3)**: 분리해 둔 베이스를 파일로 저장합니다(WAV 24bit는 분리 결과 그대로, MP3 320kbps).
+     베이스 분석을 한 번 하면 생기고, 분리를 새로 하지는 않습니다. 파일은 `stems/models/htdemucs-…/bass.wav`에도 있습니다.
    - 베이스 소리만 따로 재생하는 기능은 아직 없습니다. 반주(Instrumental) 트랙에 베이스가 들어 있고, 음표를 누르면 그 음높이를 들려줍니다.
 11. **프로젝트 저장** (Ctrl+S), **내보내기 > 오디오 내보내기** (Ctrl+Shift+E).
 

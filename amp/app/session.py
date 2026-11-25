@@ -883,3 +883,16 @@ class ProjectSession(QObject):
         handle.finished.connect(lambda paths: self.message.emit(f"{len(paths)}개 파일을 내보냈습니다: "
                                                                 + ", ".join(Path(p).name for p in paths), 10000))
         return handle
+
+    def export_file(self, src: str, dst: str, options: ExportOptions, label: str = "내보내기") -> TaskHandle:
+        """v0.6.3: 트랙에 올리지 않은 분리 파일(베이스 stem)을 WAV·MP3로 내보낸다. 원래 파일은 읽기만 한다."""
+        import soundfile as sf
+
+        def job(progress, token):
+            data, sr = sf.read(src, dtype="float32", always_2d=True)
+            export_audio(AudioData(data, sr), dst, options, progress, lambda: token.cancelled)
+            return dst
+
+        handle = self._submit(label, job)
+        handle.finished.connect(lambda p: self.message.emit(f"내보냈습니다: {Path(p).name}", 10000))
+        return handle

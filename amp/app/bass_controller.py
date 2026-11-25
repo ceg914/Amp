@@ -45,6 +45,7 @@ class BassPanel(QWidget):
     editModeToggled = Signal(bool)
     exportGp5Requested = Signal()
     exportTextRequested = Signal()
+    exportAudioRequested = Signal()
 
     def __init__(self, parent=None) -> None:
         super().__init__(parent)
@@ -102,6 +103,9 @@ class BassPanel(QWidget):
         row.addWidget(self.export_gp5)
         row.addWidget(self.export_text)
         lay.addLayout(row)
+        self.export_audio = QPushButton("베이스 소리 내보내기 (WAV·MP3)…")
+        self.export_audio.setToolTip("분리해 둔 베이스(Demucs htdemucs)를 파일로 저장합니다. 베이스 분석을 한 번 하면 생깁니다.")
+        lay.addWidget(self.export_audio)
         note = QLabel("GP5는 Guitar Pro·TuxGuitar·MuseScore에서 열립니다. 템포는 처음 BPM 하나만 씁니다. 자동 채보라 "
                       "줄·프렛 배치와 박 위치는 직접 확인하세요.")
         note.setWordWrap(True)
@@ -115,6 +119,7 @@ class BassPanel(QWidget):
         self.edit.toggled.connect(self.editModeToggled.emit)
         self.export_gp5.clicked.connect(self.exportGp5Requested.emit)
         self.export_text.clicked.connect(self.exportTextRequested.emit)
+        self.export_audio.clicked.connect(self.exportAudioRequested.emit)
         self.set_has_notes(False)
 
     def options(self) -> BassOptions:
@@ -177,6 +182,7 @@ class BassController(QObject):
         self.panel.editModeToggled.connect(self.set_active)
         self.panel.exportGp5Requested.connect(self.export_gp5)
         self.panel.exportTextRequested.connect(self.export_text)
+        self.panel.exportAudioRequested.connect(self.export_audio)
         self.view.editFailed.connect(w._show_status_error)
         self.view.notePreviewRequested.connect(w.listening.preview_pitch)
         self.view.selectionInfoChanged.connect(lambda s: self.active and w.selection_label.setText(s))
@@ -403,6 +409,47 @@ class BassController(QObject):
             return
         extra = f" 칠 수 없는 음 {tab.unplayable}개는 쉼표로 넣었습니다." if tab.unplayable else ""
         self.w.statusBar().showMessage(f"GP5로 내보냈습니다: {path}.{extra}", 8000)
+
+    def stem_path(self) -> str | None:
+        """분리해 둔 베이스 파일 (지금 쓰는 분리 결과 먼저). 없으면 None."""
+        folder = self.w.session.folder
+        if folder is None:
+            return None
+        from amp.engine.bass_pipeline import find_bass_stem
+
+        found = find_bass_stem(folder.paths.stems, folder.meta.original.sha256)
+        return str(found[1]) if found else None
+
+    def export_audio(self) -> None:
+        """베이스 stem을 WAV(24bit, 분리 결과 그대로)나 MP3(320kbps)로 내보낸다. 분리를 새로 하지는 않는다."""
+        w = self.w
+        folder = w.session.folder
+        if folder is None:
+            return
+        src = self.stem_path()
+        if src is None:
+            original = self._source.get("kind") == "original"
+            QMessageBox.information(
+                w, "베이스 소리가 없습니다",
+                ("원본을 그대로 분석해서 따로 뽑은 베이스가 없습니다. '분리하지 않고 원본 그대로 분석'을 끄고 " if original
+                 else "아직 베이스를 분리하지 않았습니다. ")
+                + "베이스 분석(F8)을 실행하면 베이스를 분리해 두고, 그 뒤에 내보낼 수 있습니다.")
+            return
+        if w.session.busy:
+            w.statusBar().showMessage("분석이 끝난 뒤에 내보내세요.", 5000)
+            return
+        from amp.project.export import ExportOptions
+
+        folder.paths.exports.mkdir(parents=True, exist_ok=True)
+        path, chosen = QFileDialog.getSaveFileName(
+            w, "베이스 소리 내보내기", os.path.join(str(folder.paths.exports), f"{folder.name}_bass.wav"),
+            "WAV 24-bit (*.wav);;MP3 320kbps (*.mp3)")
+        if not path:
+            return
+        fmt = "mp3" if path.lower().endswith(".mp3") or (not path.lower().endswith(".wav") and "MP3" in chosen) else "wav"
+        if not path.lower().endswith("." + fmt):
+            path += "." + fmt
+        w.session.export_file(src, path, ExportOptions(fmt=fmt, wav_subtype="PCM_24", mp3_bitrate=320), "베이스 내보내기")
 
     def export_text(self) -> None:
         if not self.doc.score.notes():
