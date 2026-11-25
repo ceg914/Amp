@@ -16,7 +16,9 @@ import numpy as np
 from PySide6.QtCore import QObject, Qt, QTimer, QUrl, Signal
 from PySide6.QtGui import QDesktopServices
 from PySide6.QtWidgets import (
+    QComboBox,
     QFileDialog,
+    QFormLayout,
     QGridLayout,
     QLabel,
     QPushButton,
@@ -80,6 +82,12 @@ class InstrumentPanel(QWidget):
         hint.setWordWrap(True)
         hint.setProperty("role", "secondary")
         lay.addWidget(hint)
+        form = QFormLayout()
+        self.source = QComboBox()
+        self.source.setToolTip("반주: 보컬 분석에서 이미 보컬을 뺀 소리를 분리해 악기 파일에 보컬이 덜 섞입니다. "
+                               "원본: 보컬이 든 원곡을 그대로 분리합니다.")
+        form.addRow("분리할 소리", self.source)
+        lay.addLayout(form)
         self.basic = QPushButton("드럼·베이스·나머지 분리 (Demucs htdemucs)")
         self.six = QPushButton("기타·피아노까지 분리 (Demucs htdemucs_6s)")
         self.basic.clicked.connect(lambda: self.extractRequested.emit("basic"))
@@ -94,6 +102,7 @@ class InstrumentPanel(QWidget):
         note = QLabel(f"분리는 곡 전체를 한 번 더 처리합니다. 이미 있는 악기 파일은 다시 만들지 않습니다. "
                       f"악기 하나는 1분에 약 {I.MB_PER_MIN:.0f}MB(WAV 24bit)를 씁니다. "
                       "'나머지'는 보컬과 위 악기들을 뺀 소리라 분리 모델에 따라 내용이 다릅니다. "
+                      "반주에서 분리하면 결과는 보컬 분석에 쓰는 분리 결과 폴더에 더하고, 그 폴더에 이미 있는 악기는 다시 만들지 않습니다. "
                       "htdemucs_6s의 피아노 분리는 Demucs 설명서에도 아직 잘 되지 않는다고 적혀 있습니다.")
         note.setWordWrap(True)
         note.setProperty("role", "secondary")
@@ -118,8 +127,11 @@ class InstrumentController(QObject):
         self._peaks: dict = {}  # 악기 → WaveformPeaks
         self._durations: dict[str, str] = {}
         self._gen = 0  # 프로젝트가 바뀌면 늘린다 (그 전에 시작한 불러오기 결과는 버림)
+        self._source_chosen = False  # 사용자가 분리할 소리를 직접 골랐으면 그대로 둔다
+        self.panel.source.activated.connect(lambda _i: setattr(self, "_source_chosen", True))
         self._wire_rows()
         w.doc.projectReset.connect(self._on_project_reset)
+        w.session.tracksChanged.connect(self.refresh)  # 보컬 분석·분리 결과 가져오기 뒤 반주 선택지를 맞춘다
         w.right_tabs.currentChanged.connect(lambda _i: self._refresh_if_shown())
         w.instrument_tabs.currentChanged.connect(lambda _i: self._refresh_if_shown())
         self.refresh()
@@ -133,6 +145,7 @@ class InstrumentController(QObject):
 
     def _on_project_reset(self) -> None:
         self._gen += 1
+        self._source_chosen = False
         self.reset_tracks()
         self.refresh()
 
@@ -148,6 +161,7 @@ class InstrumentController(QObject):
                 self.found = I.find_stems(folder.paths.stems, folder.meta.original.sha256)
             except OSError:
                 self.found = {}
+        self._fill_sources()
         self._durations = {}
         for name in I.INSTRUMENTS:
             f = self.found.get(name)
@@ -167,6 +181,26 @@ class InstrumentController(QObject):
             self.panel.reveal[name].setEnabled(f is not None)
         self._refresh_rows()
         self.update_actions()
+
+    def _fill_sources(self) -> None:
+        """분리할 소리 목록: 지금 보컬 분석에 쓰는 분리 결과의 반주(있으면 기본) / 원본."""
+        combo = self.panel.source
+        prev = combo.currentData()
+        folder = self.w.session.folder
+        entry = I.instrumental_source(folder.paths.stems, folder.meta.original.sha256) if folder is not None else None
+        combo.blockSignals(True)
+        combo.clear()
+        if entry is not None:
+            combo.addItem(f"보컬 분석의 반주 ({entry.label})", "instrumental")
+        else:
+            combo.addItem("보컬 분석의 반주 (보컬 분석을 먼저 하세요)", "instrumental")
+            combo.model().item(0).setEnabled(False)
+        combo.addItem("원본 (보컬이 더 섞일 수 있음)", "original")
+        want = prev if prev in ("instrumental", "original") and self._source_chosen else "instrumental"
+        if entry is None:
+            want = "original"
+        combo.setCurrentIndex(max(0, combo.findData(want)))
+        combo.blockSignals(False)
 
     def update_actions(self) -> None:
         s = self.w.session
@@ -190,7 +224,9 @@ class InstrumentController(QObject):
             w.statusBar().showMessage("다른 분석이 끝난 뒤에 분리하세요.", 5000)
             return
         model, names = KINDS[kind]
-        handle = w.session.extract_instruments(model, device=w.inspector.analysis.settings().device, names=names)
+        source = self.panel.source.currentData() or "original"
+        handle = w.session.extract_instruments(model, device=w.inspector.analysis.settings().device, names=names,
+                                               source=source)
         if handle is None:
             return
         self.panel.message.setText(f"분리 중… ({', '.join(I.INSTRUMENTS[n] for n in names)})")
@@ -205,6 +241,8 @@ class InstrumentController(QObject):
         from amp.engine.model_store import MODEL_LABELS
 
         model = MODEL_LABELS.get(result.model, result.model)
+        if getattr(result, "source_model", ""):
+            model += f", {MODEL_LABELS.get(result.source_model, result.source_model)} 반주에서"
         if result.separated:
             text = f"저장했습니다: {names(result.added)} ({model})."
             if result.kept:
@@ -304,6 +342,8 @@ class InstrumentController(QObject):
         if not want and not selected:
             self._cache.pop(name, None)  # 메모리를 돌려준다 (파형 요약은 작아서 둔다)
         self._sync_bass_button()
+        if hasattr(self.w, "_sync_group_mutes"):
+            self.w._sync_group_mutes()
 
     def _unload_if_quiet(self, track: str) -> None:
         if not self.audible(track) and track in self.w.player.tracks:

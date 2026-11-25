@@ -107,3 +107,35 @@ def test_six_source_identity_matches_htdemucs_options():
     assert {k: v for k, v in six.items() if k != "model"} == {k: v for k, v in four.items() if k != "model"}
     assert set(four) == {"model", "source", "demucs", "shifts", "overlap", "split", "shift_seed", "normalize"}
     assert store_key(six) != store_key(four)
+
+
+def test_extract_from_instrumental_adds_to_active_result(song, tmp_path):
+    """v0.6.7: 보컬 분석에 쓰는 분리 결과의 반주를 분리해 그 결과 폴더에 악기를 더한다. 새 '보컬' 결과는 만들지 않는다."""
+    path, x = song
+    sha = "d" * 64
+    stems = tmp_path / "stems"
+    calls: Counter = Counter()
+    run = _runner(calls)
+    with pytest.raises(Exception, match="보컬 분석"):
+        I.extract(stems, sha, path, "_six", run, names=("drums",), source="instrumental")  # 분리 결과가 없음
+    store = ModelStore(stems, sha)
+    tmp = store.new_tmp()
+    run("separate", {"input": path, "out_dir": str(tmp), "model": "_half"})  # 보컬 = 입력의 절반, 반주 = 나머지 절반
+    entry = store.commit(tmp, identity_for("_half", sha), {"device": "cpu"})
+    store.activate(entry.key)
+    before = {n: (entry.path / f"{n}.wav").read_bytes() for n in ("vocals", "instrumental")}
+
+    r = I.extract(stems, sha, path, "_six", run, names=("drums", "guitar"), source="instrumental")
+    assert r.key == entry.key and r.added == ["drums", "guitar"] and r.source_model == "_half"
+    assert len(store.entries()) == 1  # 반주를 분리하며 나온 보컬(남은 소리)로 새 결과를 만들지 않는다
+    after = store.entry(entry.key)
+    assert {n: (after.path / f"{n}.wav").read_bytes() for n in before} == before
+    d, _ = sf.read(after.path / "drums.wav", dtype="float32", always_2d=True)
+    assert np.max(np.abs(d[:, 0] - 0.15 * x)) < 3e-3  # 반주(0.5)의 드럼 몫(0.3) = 입력의 0.15: 원본이 아니라 반주에서 뽑았다
+    meta = after.manifest.files["drums"]
+    assert meta["made_by"] == "_six" and meta["input"] == "instrumental"
+    assert "drums" in store.pointer().files  # 지금 쓰는 결과라 위쪽 목록에도 들어간다
+    found = I.find_stems(stems, sha)
+    assert found["drums"].from_instrumental and found["drums"].model == "_six" and "반주에서" in found["drums"].model_label
+    r2 = I.extract(stems, sha, path, "_six", run, names=("drums", "guitar"), source="instrumental")
+    assert not r2.separated and calls["separate"] == 2

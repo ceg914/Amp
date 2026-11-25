@@ -161,7 +161,20 @@ class TrackRow(QFrame):
         super().mousePressEvent(event)
 
 
+def _group_mute(tip: str) -> QToolButton:
+    b = QToolButton()
+    b.setText(" 음소거")
+    b.setIcon(icon("volume-x", size=14))
+    b.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextBesideIcon)
+    b.setCheckable(True)
+    b.setToolTip(tip)
+    return b
+
+
 class TrackPanel(QWidget):
+    # v0.6.7 묶음 음소거: "all"(전부) / "main"(원본·보컬·반주) / "inst"(악기). 켜면 그 묶음이 들리지 않고, 끄면 전 상태로
+    groupMuteToggled = Signal(str, bool)
+
     def __init__(self, parent=None) -> None:
         super().__init__(parent)
         self.setObjectName("panel")
@@ -200,26 +213,48 @@ class TrackPanel(QWidget):
         lay.addLayout(btns)
         tracks_title = QLabel("트랙")
         tracks_title.setProperty("role", "secondary")
+        self.mute_all = _group_mute("모든 트랙 음소거 (솔로도 끔). 다시 누르면 전 상태로 돌아갑니다")
+        self.mute_all.setText(" 전부 음소거")
+        head = QHBoxLayout()
+        head.addWidget(tracks_title)
+        head.addStretch(1)
+        head.addWidget(self.mute_all)
         lay.addSpacing(6)
-        lay.addWidget(tracks_title)
+        lay.addLayout(head)
         # 트랙 줄은 스크롤 영역에 둔다 (악기 트랙까지 여덟 줄이면 창 높이를 넘을 수 있다)
         holder = QWidget()
         rows_lay = QVBoxLayout(holder)
         rows_lay.setContentsMargins(0, 0, 0, 0)
         rows_lay.setSpacing(8)
+        main_title = QLabel("원본·분리 트랙")
+        main_title.setProperty("role", "secondary")
+        self.mute_main = _group_mute("Original·Vocals·Instrumental 음소거 (솔로도 끔). 다시 누르면 전 상태로")
+        main_head = QHBoxLayout()
+        main_head.addWidget(main_title)
+        main_head.addStretch(1)
+        main_head.addWidget(self.mute_main)
+        rows_lay.addLayout(main_head)
         self.rows = {name: TrackRow(name) for name in TRACK_LABELS}
         for row in self.rows.values():
             rows_lay.addWidget(row)
             row.selected.connect(self.select)
-        self.inst_title = QLabel("악기 (분리한 소리 · 반주에 이미 들어 있어 처음에는 음소거)")
-        self.inst_title.setProperty("role", "secondary")
-        self.inst_title.setWordWrap(True)
+        self.inst_title = QWidget()
+        inst_head = QHBoxLayout(self.inst_title)
+        inst_head.setContentsMargins(0, 4, 0, 0)
+        inst_label = QLabel("악기 (반주에 이미 들어 있어 처음에는 음소거)")
+        inst_label.setProperty("role", "secondary")
+        inst_label.setWordWrap(True)
+        self.mute_inst = _group_mute("악기 트랙 음소거 (솔로도 끔). 다시 누르면 전 상태로")
+        inst_head.addWidget(inst_label, 1)
+        inst_head.addWidget(self.mute_inst)
         rows_lay.addWidget(self.inst_title)
         self.inst_rows = {name: TrackRow(name) for name in INSTRUMENT_LABELS}
         for row in self.inst_rows.values():
             rows_lay.addWidget(row)
             row.selected.connect(self.select)
         rows_lay.addStretch(1)
+        for group, b in (("all", self.mute_all), ("main", self.mute_main), ("inst", self.mute_inst)):
+            b.toggled.connect(lambda on, g=group: self.groupMuteToggled.emit(g, on))
         self.set_instruments(())
         scroll = QScrollArea()
         scroll.setWidget(holder)
@@ -234,6 +269,18 @@ class TrackPanel(QWidget):
         self.selected_track = name
         for n, row in {**self.rows, **self.inst_rows}.items():
             row.set_selected(n == name)
+
+    def group_rows(self, group: str) -> dict:
+        """묶음에 든 줄 중 지금 쓸 수 있는 것 (보이고 오디오가 있는 줄)."""
+        rows = {"main": self.rows, "inst": self.inst_rows, "all": {**self.rows, **self.inst_rows}}[group]
+        return {n: r for n, r in rows.items() if not r.isHidden() and r.property("available")}
+
+    def set_group_checked(self, group: str, on: bool) -> None:
+        b = {"all": self.mute_all, "main": self.mute_main, "inst": self.mute_inst}[group]
+        if b.isChecked() != on:
+            b.blockSignals(True)
+            b.setChecked(on)
+            b.blockSignals(False)
 
     def set_instruments(self, names) -> None:
         """보일 악기 트랙 (재생기 트랙 이름). 분리한 악기만 보인다."""

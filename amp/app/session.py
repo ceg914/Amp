@@ -519,7 +519,8 @@ class ProjectSession(QObject):
         self._track_analysis(handle)
         return handle
 
-    def extract_instruments(self, model: str, device: str = "auto", names: tuple | None = None) -> TaskHandle | None:
+    def extract_instruments(self, model: str, device: str = "auto", names: tuple | None = None,
+                            source: str = "original") -> TaskHandle | None:
         """v0.6.4: 악기 소리(드럼·베이스·기타·피아노·나머지)를 분리 보관소에 넣는다 (작업 스레드).
         보컬·반주·이미 있는 악기 파일과 지금 쓰는 분리 결과는 바꾸지 않는다."""
         if self.busy:
@@ -533,7 +534,7 @@ class ProjectSession(QObject):
 
         def job(progress, token):
             return instruments.extract(folder.paths.stems, folder.meta.original.sha256, src, model, run_worker,
-                                       progress, token, device, names, app_data_dir("numba"))
+                                       progress, token, device, names, app_data_dir("numba"), source)
 
         handle = self._submit("악기 소리 분리", job)
         self._track_analysis(handle)

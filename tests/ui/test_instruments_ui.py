@@ -134,3 +134,81 @@ def test_extract_disabled_without_separation(qtbot, window, song, monkeypatch):
     p = w.instruments.panel
     assert not p.basic.isEnabled() and not p.six.isEnabled()
     assert "설치" in p.basic.toolTip()
+
+
+def test_extract_from_vocal_analysis_instrumental(qtbot, window, song, six, monkeypatch):
+    """v0.6.7: 보컬 분석을 했으면 기본은 그 반주에서 분리하고, 결과는 그 분리 결과에 더한다 (새 결과를 만들지 않음)."""
+    from amp.engine.model_store import ModelStore
+    from amp.engine.transcription import TranscriptionPipeline
+
+    class HalfPipeline(TranscriptionPipeline):
+        def __init__(self, *a, **k):
+            super().__init__(*a, separation_model="_half", **k)
+
+    monkeypatch.setattr("amp.app.session.TranscriptionPipeline", HalfPipeline)
+    w = window
+    p = w.instruments.panel
+    create(qtbot, w, song)
+    qtbot.waitUntil(lambda: not w.session.busy, timeout=20_000)
+    assert p.source.currentData() == "original"  # 보컬 분석 전: 반주가 없다
+    w.run_analysis()
+    qtbot.waitUntil(lambda: w.doc.project.analysis is not None and not w.session.busy, timeout=120_000)
+    qtbot.waitUntil(lambda: p.source.currentData() == "instrumental", timeout=10_000)
+    store = w.session.model_store()
+    active = store.active_key()
+    p.basic.click()
+    qtbot.waitUntil(lambda: "drums" in w.instruments.found and not w.session.busy, timeout=60_000)
+    assert w.instruments.found["drums"].key == active and len(store.entries()) == 1
+    assert "반주에서" in w.tracks.inst_rows["inst_drums"].info.text()
+    assert "반주에서" in p.message.text()
+    p.source.setCurrentIndex(p.source.findData("original"))  # 원본에서도 고를 수 있다 (새 보관 결과)
+    p.six.click()
+    qtbot.waitUntil(lambda: "piano" in w.instruments.found and not w.session.busy, timeout=60_000)
+    assert len(ModelStore(w.session.folder.paths.stems, w.session.folder.meta.original.sha256).entries()) == 2
+    assert w.instruments.found["drums"].key == active  # 같은 악기는 지금 쓰는 결과(반주에서 뽑은 것)를 먼저
+
+
+def test_group_mute_buttons(qtbot, window, song, six):
+    """v0.6.7 트랙 창의 전부 음소거·묶음 음소거: 켜면 그 묶음이 들리지 않고(솔로도 끔), 다시 누르면 전 상태로."""
+    from amp.audio.pcm import PcmMixer
+
+    w = window
+    create(qtbot, w, song)
+    qtbot.waitUntil(lambda: not w.session.busy, timeout=20_000)
+    w.instruments.panel.basic.click()
+    qtbot.waitUntil(lambda: "drums" in w.instruments.found and not w.session.busy, timeout=60_000)
+    tp, rows = w.tracks, w.tracks.inst_rows
+
+    def heard():
+        tracks = {n: a.samples for n, a in w.player.tracks.items()}
+        m = PcmMixer(tracks, 44100, 44100, 2)
+        for n in tracks:
+            m.set_state(n, **w.player.track_state(n))
+        return sorted(n for n, _g in m.audible())
+
+    assert tp.mute_inst.isChecked() and not tp.mute_main.isChecked() and not tp.mute_all.isChecked()  # 악기는 처음에 음소거
+    rows["inst_bass"].solo.click()
+    qtbot.waitUntil(lambda: "inst_bass" in w.player.tracks, timeout=20_000)
+    assert not tp.mute_inst.isChecked() and heard() == ["inst_bass"]
+
+    tp.mute_all.click()  # 전부 음소거: 솔로도 꺼서 아무것도 들리지 않는다
+    assert heard() == [] and tp.mute_main.isChecked() and tp.mute_inst.isChecked()
+    assert rows["inst_bass"].mute.isChecked() and not rows["inst_bass"].solo.isChecked()
+    tp.mute_all.click()  # 다시 누르면 전 상태 (원본 켜짐, 베이스 솔로)
+    qtbot.waitUntil(lambda: "inst_bass" in w.player.tracks, timeout=20_000)
+    assert heard() == ["inst_bass"] and rows["inst_bass"].solo.isChecked() and not tp.mute_all.isChecked()
+
+    tp.mute_inst.click()  # 악기 묶음만 음소거 → 원본만
+    assert heard() == ["original"] and tp.mute_inst.isChecked()
+    tp.mute_inst.click()
+    qtbot.waitUntil(lambda: "inst_bass" in w.player.tracks, timeout=20_000)
+    assert heard() == ["inst_bass"]
+
+    rows["inst_bass"].solo.click()  # 솔로 해제 → 원본
+    tp.mute_main.click()  # 원본·분리 트랙 묶음 음소거
+    assert tp.rows["original"].mute.isChecked() and heard() == []
+    tp.rows["original"].mute.click()  # 줄 하나를 직접 켜면 묶음 단추가 풀린다
+    assert not tp.mute_main.isChecked() and heard() == ["original"]
+    tp.mute_all.click()
+    tp.mute_all.click()  # 되돌릴 상태가 있으면 그 상태로: 원본만 (악기는 원래대로 음소거)
+    assert heard() == ["original"] and rows["inst_drums"].mute.isChecked()

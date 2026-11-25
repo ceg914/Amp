@@ -153,6 +153,8 @@ HELP_TEXT = """<h3>조작 방법</h3>
 <li>드럼·베이스·나머지(Demucs htdemucs), 기타·피아노까지(htdemucs_6s)를 분리해 악기마다 WAV·MP3로 내보냅니다. 악보는 만들지 않습니다.</li>
 <li>뽑은 악기는 왼쪽 트랙 패널에 줄(Drums·Bass·Guitar·Piano·Other)로 나옵니다. 반주에 이미 들어 있어 처음에는 음소거이고,
 헤드폰 = 그 악기만, 음소거 풀기 = 지금 소리에 더하기. 재생 중에 바꿔도 끊기지 않습니다.</li>
+<li>분리할 소리 (v0.6.7): 기본은 보컬 분석의 반주(보컬을 뺀 소리)라 악기 파일에 보컬이 덜 섞입니다. 원본을 고를 수도 있습니다.</li>
+<li>트랙 창의 <b>전부 음소거</b>·묶음 <b>음소거</b>: 켜면 그 묶음이 들리지 않고(솔로도 끔), 다시 누르면 전 상태로 돌아갑니다.</li>
 <li>이미 있는 악기 파일은 다시 만들지 않고, 보컬 분석에 쓰는 분리 결과와 보컬·반주 파일은 바꾸지 않습니다.</li>
 </ul>
 <h3>베이스 TAB (v0.6.3, 오른쪽 '악기 &gt; 베이스 TAB' 탭)</h3>
@@ -194,6 +196,7 @@ class MainWindow(QMainWindow):
         self._player_error_shown = False
         self._pending_ui: dict = {}
         self._pending_playback: dict = {}
+        self._mute_snapshots: dict[str, dict] = {}  # v0.6.7 묶음 음소거 전 트랙 상태 (다시 누르면 되돌림)
 
         self._build_central()
         self._build_actions()
@@ -611,12 +614,14 @@ class MainWindow(QMainWindow):
         s.taskStarted.connect(self._track)
 
         for row in self.tracks.rows.values():
-            row.soloToggled.connect(lambda name, on: self.player.set_track_state(name, solo=on))
-            row.muteToggled.connect(lambda name, on: self.player.set_track_state(name, mute=on))
+            row.soloToggled.connect(lambda name, on: (self.player.set_track_state(name, solo=on), self._sync_group_mutes()))
+            row.muteToggled.connect(lambda name, on: (self.player.set_track_state(name, mute=on), self._sync_group_mutes()))
             row.volumeChanged.connect(lambda name, g: self.player.set_track_state(name, gain=g))
             row.exportRequested.connect(lambda name: self.export_dialog([name]))
             row.revealRequested.connect(self.reveal_track)
             row.selected.connect(self._show_track_waveform)
+        self.tracks.groupMuteToggled.connect(self._on_group_mute)
+        self.doc.projectReset.connect(self._mute_snapshots.clear)
         self.tracks.open_folder.clicked.connect(self.open_project_folder)
         self.tracks.relink.clicked.connect(self.relink_audio_dialog)
 
@@ -884,8 +889,43 @@ class MainWindow(QMainWindow):
         inst_shown = sel in self.tracks.inst_rows and not self.tracks.inst_rows[sel].isHidden()
         if sel not in self.player.tracks and not inst_shown:
             self.tracks.select("original")
+        self._sync_group_mutes()
         self._show_track_waveform(self.tracks.selected_track)
         self._update_actions()
+
+    # --- 묶음 음소거 (v0.6.7) ----------------------------------------------------------
+
+    def _on_group_mute(self, group: str, on: bool) -> None:
+        """전부·원본/분리 트랙·악기 묶음을 음소거한다(솔로도 끔). 끄면 누르기 전 상태로, 그 상태가 없으면 소리를 켠다.
+        '전부'를 그냥 풀 때는 원본·분리 트랙만 켠다 (악기는 반주에 이미 들어 있어 함께 켜면 같은 소리가 겹친다)."""
+        rows = self.tracks.group_rows(group)
+        if on:
+            self._mute_snapshots[group] = {n: self.player.track_state(n) for n in rows}
+            changes = {n: {"mute": True, "solo": False} for n in rows}
+        else:
+            snap = self._mute_snapshots.pop(group, None)
+            if snap:
+                changes = {n: {"mute": snap[n]["mute"], "solo": snap[n]["solo"]} for n in rows if n in snap}
+            else:
+                changes = {n: {"mute": False} for n in rows if group != "all" or n not in INSTRUMENT_LABELS}
+        self.player.set_track_states(changes)
+        for n in changes:
+            if n in INSTRUMENT_LABELS:
+                self.instruments.sync(n)  # 들려야 하면 불러 올리고, 아니면 내린다
+            else:
+                st = self.player.track_state(n)
+                self.tracks.rows[n].set_controls(st["solo"], st["mute"], st["gain"])
+        self._sync_group_mutes()
+
+    def _sync_group_mutes(self) -> None:
+        """묶음 단추 표시 = 그 묶음이 모두 들리지 않는가. 사용자가 줄 하나를 다시 켜면 단추가 풀리고 되돌릴 상태도 버린다."""
+        for group in ("all", "main", "inst"):
+            rows = self.tracks.group_rows(group)
+            silent = bool(rows) and all(self.player.track_state(n)["mute"] and not self.player.track_state(n)["solo"]
+                                        for n in rows)
+            self.tracks.set_group_checked(group, silent)
+            if not silent:
+                self._mute_snapshots.pop(group, None)
 
     def _show_track_waveform(self, name: str) -> None:
         self.tracks.select(name)
