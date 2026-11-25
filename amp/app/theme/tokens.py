@@ -35,7 +35,10 @@ PLAYHEAD = TEXT
 WAVE_BG = "#18161E"
 
 # 트랙 표시 색 (명세 6.2: 트랙마다 표시 색상)
-TRACK_COLORS = {"original": TEXT_2, "vocals": ACCENT_2, "instrumental": ACCENT}
+TRACK_COLORS = {"original": TEXT_2, "vocals": ACCENT_2, "instrumental": ACCENT,
+                # v0.6.6 악기 트랙 (분리한 악기 소리). 상태색과 겹치지 않게 채도를 낮춘 색
+                "inst_drums": "#D2A066", "inst_bass": "#7FA6E0", "inst_guitar": "#DC8FA6", "inst_piano": "#B5CB7E",
+                "inst_other": "#8F879B"}
 
 # --- 글꼴 (명세 4장) ---
 FONT_UI = "Pretendard"

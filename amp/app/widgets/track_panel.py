@@ -2,6 +2,7 @@
 
 프로젝트 정보(이름·원본 저장 방식·원본 상태)와 Original / Vocals / Instrumental 트랙 세 줄을 보여 준다.
 트랙마다 솔로(개별 재생)·음소거·음량·내보내기·파일 위치 열기·분리 상태가 있다.
+v0.6.6: 분리한 악기 소리(드럼·베이스·기타·피아노·나머지)가 있으면 그 아래에 악기 트랙 줄을 보인다(악기 소리 컨트롤러가 관리).
 """
 
 from __future__ import annotations
@@ -12,6 +13,7 @@ from PySide6.QtWidgets import (
     QFrame,
     QHBoxLayout,
     QLabel,
+    QScrollArea,
     QSizePolicy,
     QSlider,
     QToolButton,
@@ -24,6 +26,13 @@ from amp.app.theme.icons import icon
 
 TRACK_LABELS = {"original": "Original", "vocals": "Vocals", "instrumental": "Instrumental"}
 TRACK_HINTS = {"original": "원본", "vocals": "보컬", "instrumental": "반주"}
+# v0.6.6 악기 트랙 (재생기 트랙 이름 = inst_<악기>). 반주에 이미 들어 있는 소리라 기본은 음소거
+INSTRUMENT_LABELS = {"inst_drums": "Drums", "inst_bass": "Bass", "inst_guitar": "Guitar", "inst_piano": "Piano",
+                     "inst_other": "Other"}
+INSTRUMENT_HINTS = {"inst_drums": "드럼", "inst_bass": "베이스", "inst_guitar": "기타", "inst_piano": "피아노",
+                    "inst_other": "나머지"}
+ROW_LABELS = {**TRACK_LABELS, **INSTRUMENT_LABELS}
+ROW_HINTS = {**TRACK_HINTS, **INSTRUMENT_HINTS}
 
 
 class _Swatch(QWidget):
@@ -64,7 +73,7 @@ class TrackRow(QFrame):
         self.setProperty("available", True)
         self.setCursor(Qt.CursorShape.PointingHandCursor)
 
-        title = QLabel(TRACK_LABELS[name])
+        title = QLabel(ROW_LABELS[name])
         title.setObjectName("panelTitle")
         self.info = QLabel()
         self.info.setProperty("role", "secondary")
@@ -72,9 +81,10 @@ class TrackRow(QFrame):
         self.status = QLabel()
         self.status.setProperty("role", "secondary")
 
-        self.solo = _tool("headphones", f"{TRACK_HINTS[name]}만 듣기 (솔로)", checkable=True)
-        self.mute = _tool("volume-x", "음소거", checkable=True)
-        self.export = _tool("download", f"{TRACK_HINTS[name]} 내보내기 (WAV/MP3)")
+        self.solo = _tool("headphones", f"{ROW_HINTS[name]}만 듣기 (솔로)", checkable=True)
+        self.mute = _tool("volume-x", "음소거" + (" (악기 트랙은 반주에 이미 들어 있어 처음에는 음소거)"
+                                                  if name in INSTRUMENT_LABELS else ""), checkable=True)
+        self.export = _tool("download", f"{ROW_HINTS[name]} 내보내기 (WAV/MP3)")
         self.reveal = _tool("folder-open", "파일 위치 열기")
         self.volume = QSlider(Qt.Orientation.Horizontal)
         self.volume.setRange(0, 150)
@@ -109,7 +119,7 @@ class TrackRow(QFrame):
         outer = QHBoxLayout(self)
         outer.setContentsMargins(8, 8, 8, 8)
         outer.setSpacing(8)
-        outer.addWidget(_Swatch(T.TRACK_COLORS[name]))
+        outer.addWidget(_Swatch(T.TRACK_COLORS.get(name, T.TEXT_2)))
         outer.addLayout(body, 1)
 
     def _on_volume(self, v: int) -> None:
@@ -192,15 +202,42 @@ class TrackPanel(QWidget):
         tracks_title.setProperty("role", "secondary")
         lay.addSpacing(6)
         lay.addWidget(tracks_title)
+        # 트랙 줄은 스크롤 영역에 둔다 (악기 트랙까지 여덟 줄이면 창 높이를 넘을 수 있다)
+        holder = QWidget()
+        rows_lay = QVBoxLayout(holder)
+        rows_lay.setContentsMargins(0, 0, 0, 0)
+        rows_lay.setSpacing(8)
         self.rows = {name: TrackRow(name) for name in TRACK_LABELS}
         for row in self.rows.values():
-            lay.addWidget(row)
+            rows_lay.addWidget(row)
             row.selected.connect(self.select)
-        lay.addStretch(1)
+        self.inst_title = QLabel("악기 (분리한 소리 · 반주에 이미 들어 있어 처음에는 음소거)")
+        self.inst_title.setProperty("role", "secondary")
+        self.inst_title.setWordWrap(True)
+        rows_lay.addWidget(self.inst_title)
+        self.inst_rows = {name: TrackRow(name) for name in INSTRUMENT_LABELS}
+        for row in self.inst_rows.values():
+            rows_lay.addWidget(row)
+            row.selected.connect(self.select)
+        rows_lay.addStretch(1)
+        self.set_instruments(())
+        scroll = QScrollArea()
+        scroll.setWidget(holder)
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QFrame.Shape.NoFrame)
+        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        lay.addWidget(scroll, 1)
         self.selected_track = "original"
         self.select("original")
 
     def select(self, name: str) -> None:
         self.selected_track = name
-        for n, row in self.rows.items():
+        for n, row in {**self.rows, **self.inst_rows}.items():
             row.set_selected(n == name)
+
+    def set_instruments(self, names) -> None:
+        """보일 악기 트랙 (재생기 트랙 이름). 분리한 악기만 보인다."""
+        names = set(names)
+        for n, row in self.inst_rows.items():
+            row.setVisible(n in names)
+        self.inst_title.setVisible(bool(names))

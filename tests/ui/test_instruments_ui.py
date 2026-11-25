@@ -36,8 +36,8 @@ def test_tabs_are_grouped(window):
     assert w.side_panel() is w.instruments.panel
 
 
-def test_extract_and_export_instruments(qtbot, window, song, six, tmp_path, monkeypatch):
-    w = window
+def test_extract_and_export_instruments(qtbot, make_window, song, six, tmp_path, monkeypatch):
+    w = make_window()
     folder = create(qtbot, w, song)
     qtbot.waitUntil(lambda: not w.session.busy, timeout=20_000)
     w.run_sample_analysis()
@@ -74,16 +74,16 @@ def test_extract_and_export_instruments(qtbot, window, song, six, tmp_path, monk
     meta = json.loads(folder.paths.project_json.read_text(encoding="utf-8"))
     assert meta["ui"]["right_panel"] == ["악기", "악기 소리"]
 
-    # 듣기: 켠 악기만 재생기 트랙(음소거 + 솔로)으로 올라가고, 끄면 내린다. 원본·보컬·반주 상태는 그대로
+    # 왼쪽 트랙 패널의 악기 줄 (v0.6.6): 뽑은 악기만 보이고, 처음에는 음소거라 재생기에 올리지 않는다
     from amp.audio.pcm import PcmMixer
+    from PySide6.QtCore import Qt
 
+    rows = w.tracks.inst_rows
+    assert all(not rows[f"inst_{n}"].isHidden() for n in ("drums", "bass", "guitar", "piano", "other"))
+    assert not w.tracks.inst_title.isHidden()
+    assert w.player.track_state("inst_drums")["mute"] and rows["inst_drums"].mute.isChecked()
+    assert not any(n.startswith("inst_") for n in w.player.tracks)
     before = {n: w.player.track_state(n) for n in ("original", "vocals", "instrumental")}
-    p.listen["drums"].click()
-    qtbot.waitUntil(lambda: "inst_drums" in w.player.tracks, timeout=20_000)
-    p.listen["bass"].click()
-    qtbot.waitUntil(lambda: "inst_bass" in w.player.tracks, timeout=20_000)
-    assert w.player.track_state("inst_drums") == {"gain": 1.0, "mute": True, "solo": True}
-    assert "드럼·베이스" in p.listen_info.text()
 
     def heard():
         tracks = {n: a.samples for n, a in w.player.tracks.items()}
@@ -92,22 +92,37 @@ def test_extract_and_export_instruments(qtbot, window, song, six, tmp_path, monk
             m.set_state(n, **w.player.track_state(n))
         return sorted(n for n, _g in m.audible())
 
-    assert heard() == ["inst_bass", "inst_drums"]  # 켠 악기만 들린다
-    w.player.set_track_states({n: {"solo": False} for n in w.player.tracks})  # 다른 쪽이 솔로를 모두 끈 경우 (A/B 비교 등)
-    assert heard() == ["original"]  # 악기 트랙은 음소거라 기존 재생과 같다
-    w.player.set_track_states({n: {"solo": True} for n in ("inst_drums", "inst_bass")})
-    p.listen["drums"].click()
-    assert "inst_drums" not in w.player.tracks and heard() == ["inst_bass"]
-    assert w.bass.panel.listen.isChecked()  # 베이스 TAB 탭의 [베이스만 듣기]도 같은 상태
-    w.bass.panel.listen.click()
-    assert "inst_bass" not in w.player.tracks and not p.listen["bass"].isChecked()
-    w.bass.panel.listen.click()
+    rows["inst_drums"].solo.click()  # 헤드폰 = 드럼만
+    qtbot.waitUntil(lambda: "inst_drums" in w.player.tracks, timeout=20_000)
+    assert heard() == ["inst_drums"]
+    rows["inst_bass"].mute.click()  # 음소거 풀기 = 지금 소리에 더하기 (드럼이 솔로라 아직은 드럼만)
     qtbot.waitUntil(lambda: "inst_bass" in w.player.tracks, timeout=20_000)
-    assert p.listen["bass"].isChecked()
-    p.stop_listen.click()
-    assert not any(n.startswith("inst_") for n in w.player.tracks) and not p.listen["bass"].isChecked()
-    assert heard() == ["original"]
+    assert heard() == ["inst_drums"]
+    rows["inst_drums"].solo.click()  # 솔로 해제: 드럼은 음소거라 내리고, 원본 + 베이스
+    assert "inst_drums" not in w.player.tracks and heard() == ["inst_bass", "original"]
     assert {n: w.player.track_state(n) for n in before} == before
+
+    rows["inst_bass"].solo.click()
+    assert w.bass.panel.listen.isChecked()  # 베이스 TAB 탭의 [베이스만 듣기]는 Bass 줄 헤드폰과 같은 상태
+    w.bass.panel.listen.click()
+    assert not rows["inst_bass"].solo.isChecked() and not w.player.track_state("inst_bass")["solo"]
+
+    qtbot.mouseClick(rows["inst_piano"], Qt.MouseButton.LeftButton)  # 줄을 누르면 그 악기 파형
+    qtbot.waitUntil(lambda: w.instruments.peaks("inst_piano") is not None, timeout=20_000)
+    assert w.tracks.selected_track == "inst_piano" and w.wave_label.text() == "피아노"
+    assert "inst_piano" not in w.player.tracks  # 파형만 보고 소리는 음소거 그대로
+    qtbot.mouseClick(w.tracks.rows["original"], Qt.MouseButton.LeftButton)
+    assert w.instruments.audio("inst_piano") is None  # 다른 줄을 고르면 메모리에서 내린다
+
+    assert w.save()  # 악기 트랙 상태도 저장: 다시 열면 음소거를 푼 베이스를 불러 둔다
+    meta = json.loads(folder.paths.project_json.read_text(encoding="utf-8"))
+    assert meta["playback"]["tracks"]["inst_bass"]["mute"] is False
+    assert meta["playback"]["tracks"]["inst_drums"]["mute"] is True
+    w.close()
+    w2 = make_window("w2")
+    assert w2.open_project(str(folder.root))
+    qtbot.waitUntil(lambda: "inst_bass" in w2.player.tracks, timeout=20_000)
+    assert w2.tracks.inst_rows["inst_bass"].mute.isChecked() is False and "inst_drums" not in w2.player.tracks
 
 
 def test_extract_disabled_without_separation(qtbot, window, song, monkeypatch):

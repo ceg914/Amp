@@ -70,7 +70,7 @@ from amp.app.widgets.log_panel import LogPanel
 from amp.app.widgets.lyric_lane import LyricLane
 from amp.app.widgets.lyrics_panel import LyricsPanel
 from amp.app.widgets.ruler import TimeRuler
-from amp.app.widgets.track_panel import TRACK_HINTS, TRACK_LABELS, TrackPanel
+from amp.app.widgets.track_panel import INSTRUMENT_LABELS, ROW_HINTS, ROW_LABELS, TRACK_LABELS, TrackPanel
 from amp.app.widgets.spectrogram import SpectrogramView
 from amp.app.widgets.waveform import WaveformView
 from amp.app.workers import TaskHandle, TaskRunner
@@ -151,7 +151,8 @@ HELP_TEXT = """<h3>조작 방법</h3>
 <h3>악기 소리 (v0.6.4, 오른쪽 '악기 &gt; 악기 소리' 탭)</h3>
 <ul>
 <li>드럼·베이스·나머지(Demucs htdemucs), 기타·피아노까지(htdemucs_6s)를 분리해 악기마다 WAV·MP3로 내보냅니다. 악보는 만들지 않습니다.</li>
-<li><b>듣기</b>: 켠 악기만 들립니다(여러 개 켜면 함께). 재생 중에 켜고 꺼도 끊기지 않습니다. 모두 끄면 원래대로 들립니다.</li>
+<li>뽑은 악기는 왼쪽 트랙 패널에 줄(Drums·Bass·Guitar·Piano·Other)로 나옵니다. 반주에 이미 들어 있어 처음에는 음소거이고,
+헤드폰 = 그 악기만, 음소거 풀기 = 지금 소리에 더하기. 재생 중에 바꿔도 끊기지 않습니다.</li>
 <li>이미 있는 악기 파일은 다시 만들지 않고, 보컬 분석에 쓰는 분리 결과와 보컬·반주 파일은 바꾸지 않습니다.</li>
 </ul>
 <h3>베이스 TAB (v0.6.3, 오른쪽 '악기 &gt; 베이스 TAB' 탭)</h3>
@@ -879,19 +880,23 @@ class MainWindow(QMainWindow):
                                   "muted" if reason == "분리 전" else "warn")
             st = self.player.track_state(name)
             row.set_controls(st["solo"], st["mute"], st["gain"])
-        if self.tracks.selected_track not in self.player.tracks:
+        sel = self.tracks.selected_track
+        inst_shown = sel in self.tracks.inst_rows and not self.tracks.inst_rows[sel].isHidden()
+        if sel not in self.player.tracks and not inst_shown:
             self.tracks.select("original")
         self._show_track_waveform(self.tracks.selected_track)
         self._update_actions()
 
     def _show_track_waveform(self, name: str) -> None:
         self.tracks.select(name)
-        peaks = self.session.peaks.get(name)
+        inst = name in INSTRUMENT_LABELS  # v0.6.6 악기 트랙: 파형·소리는 악기 소리 컨트롤러가 불러 둔다
+        peaks = self.instruments.peaks(name) if inst else self.session.peaks.get(name)
+        audio = self.instruments.audio(name) if inst else self.session.track_audio(name)
         from PySide6.QtGui import QColor
 
-        self.waveform.set_peaks(peaks, QColor(T.TRACK_COLORS[name]), f"{TRACK_LABELS[name]}" if peaks else "")
-        self.wave_label.setText(TRACK_HINTS[name])
-        self.spectrogram.set_source(TRACK_LABELS[name], self.session.track_audio(name))  # 파형과 같은 트랙
+        self.waveform.set_peaks(peaks, QColor(T.TRACK_COLORS[name]), f"{ROW_LABELS[name]}" if peaks else "")
+        self.wave_label.setText(ROW_HINTS[name])
+        self.spectrogram.set_source(ROW_LABELS[name], audio)  # 파형과 같은 트랙
 
     def reveal_track(self, name: str) -> None:
         path = self.session.track_path(name)
@@ -1081,6 +1086,7 @@ class MainWindow(QMainWindow):
         for name, st in (self._pending_playback.get("tracks") or {}).items():
             self.player.set_track_state(name, gain=float(st.get("gain", 1.0)), mute=bool(st.get("mute", False)),
                                         solo=bool(st.get("solo", False)))
+        self.instruments.sync_all()  # 저장해 둔 악기 트랙 상태(음소거 해제·솔로)면 그 악기를 불러 둔다
         if not self._pending_ui:
             self.view.zoom_to_fit()
         else:
@@ -1107,7 +1113,7 @@ class MainWindow(QMainWindow):
 
     def _playback_state(self) -> dict:
         return {"position": self.current_time(),
-                "tracks": {n: self.player.track_state(n) for n in TRACK_LABELS}}
+                "tracks": {n: self.player.track_state(n) for n in (*TRACK_LABELS, *INSTRUMENT_LABELS)}}
 
     def _apply_ui_state(self, ui: dict) -> None:
         if not ui:

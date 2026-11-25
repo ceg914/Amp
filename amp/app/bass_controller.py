@@ -108,7 +108,7 @@ class BassPanel(QWidget):
         lay.addWidget(self.export_audio)
         self.listen = QPushButton("베이스만 듣기")
         self.listen.setCheckable(True)
-        self.listen.setToolTip("분리해 둔 베이스만 들립니다 (악기 > 악기 소리의 베이스 [듣기]와 같음)")
+        self.listen.setToolTip("분리해 둔 베이스만 들립니다 (왼쪽 트랙 패널 Bass 줄의 헤드폰과 같음)")
         lay.addWidget(self.listen)
         note = QLabel("GP5는 Guitar Pro·TuxGuitar·MuseScore에서 열립니다. 템포는 처음 BPM 하나만 씁니다. 자동 채보라 "
                       "줄·프렛 배치와 박 위치는 직접 확인하세요.")
@@ -187,7 +187,7 @@ class BassController(QObject):
         self.panel.exportGp5Requested.connect(self.export_gp5)
         self.panel.exportTextRequested.connect(self.export_text)
         self.panel.exportAudioRequested.connect(self.export_audio)
-        self.panel.listen.toggled.connect(lambda on: w.instruments.listen("bass", on))
+        self.panel.listen.toggled.connect(lambda on: w.instruments.set_solo("bass", on))
         self.view.editFailed.connect(w._show_status_error)
         self.view.notePreviewRequested.connect(w.listening.preview_pitch)
         self.view.selectionInfoChanged.connect(lambda s: self.active and w.selection_label.setText(s))
