@@ -157,12 +157,6 @@ HELP_TEXT = """<h3>조작 방법</h3>
 <li>트랙 창의 <b>전부 음소거</b>·묶음 <b>음소거</b>: 켜면 그 묶음이 들리지 않고(솔로도 끔), 다시 누르면 전 상태로 돌아갑니다.</li>
 <li>이미 있는 악기 파일은 다시 만들지 않고, 보컬 분석에 쓰는 분리 결과와 보컬·반주 파일은 바꾸지 않습니다.</li>
 </ul>
-<h3>osu!mania 비트맵 (v0.6.8, 내보내기 메뉴)</h3>
-<ul>
-<li>보컬 멜로디와 프로젝트 BPM·첫 박으로 4키 채보를 만들고 원곡을 OGG로 넣어 .osz로 저장합니다. Normal부터 드럼(없으면 반주)
-타격으로 채우기·동시치기를 넣습니다(Easy·Normal·Hard·Insane·Expert).
-osu!에서 노트가 어긋나면 오프셋 보정(ms)을 넣어 다시 내보내세요.</li>
-</ul>
 <h3>베이스 TAB (v0.6.3, 오른쪽 '악기 &gt; 베이스 TAB' 탭)</h3>
 <ul>
 <li>조율·최대 프렛·개방현·박자 격자를 고르고 <b>베이스 분석</b>(<b>F8</b>). 박 위치는 보컬 분석의 BPM·첫 박을 씁니다.
@@ -405,7 +399,6 @@ class MainWindow(QMainWindow):
         self.act_bass_gp5 = A("베이스 TAB 내보내기 (GP5)…", lambda: self.bass.export_gp5())
         self.act_bass_text = A("베이스 TAB 내보내기 (텍스트)…", lambda: self.bass.export_text())
         self.act_bass_audio = A("베이스 소리 내보내기 (WAV·MP3)…", lambda: self.bass.export_audio())
-        self.act_osu = A("osu!mania 비트맵 내보내기 (4K, 멜로디)…", self.export_osu)
         self.act_show_notes = A("음표 표시", self.view.roll.set_notes_visible, checkable=True, checked=True)
         self.act_show_curve = A("피치 곡선 표시", self.view.roll.curve_item.setVisible, checkable=True, checked=True)
         self.act_follow = A("재생 위치 따라가기", self._set_follow, checkable=True, checked=True)
@@ -447,8 +440,6 @@ class MainWindow(QMainWindow):
         m.addAction(self.act_bass_gp5)
         m.addAction(self.act_bass_text)
         m.addAction(self.act_bass_audio)
-        m.addSeparator()
-        m.addAction(self.act_osu)
         m = mb.addMenu("보기(&V)")
         for a in (self.act_zoom_in, self.act_zoom_out, self.act_zoom_fit, None, self.act_show_notes,
                   self.act_show_curve, self.act_follow):
@@ -757,7 +748,6 @@ class MainWindow(QMainWindow):
             self.act_bass_gp5.setEnabled(has_bass)
             self.act_bass_text.setEnabled(has_bass)
             self.act_bass_audio.setEnabled(is_open and not busy)
-            self.act_osu.setEnabled(has_audio and is_open and not busy and len(self.doc.score) > 0)
             self.bass.panel.export_audio.setEnabled(is_open and not busy)
 
     def _update_analysis_label(self) -> None:
@@ -1550,12 +1540,6 @@ class MainWindow(QMainWindow):
         handle.finished.connect(done)
 
     # --- 내보내기 -----------------------------------------------------------------
-
-    def export_osu(self) -> None:
-        """v0.6.8 osu!mania 4K 비트맵 (.osz): 보컬 멜로디 + 프로젝트 템포 + 원곡(OGG)."""
-        from amp.app.osu_controller import export_osz
-
-        export_osz(self)
 
     def export_dialog(self, preselect: list[str]) -> None:
         f = self.session.folder
