@@ -186,3 +186,27 @@ def test_no_vocal_mask_moves_vocals_into_instrumental_inside_ranges_only():
     assert apply_no_vocal(same, []) is same and apply_no_vocal(same, [(9.0, 10.0)]) is same
     only_v = apply_no_vocal({"vocals": voc}, [(1.0, 2.0)])  # 반주가 없으면 보컬만 비운다
     assert set(only_v) == {"vocals"} and np.all(only_v["vocals"].samples[1000 + f:2000 - f] == 0)
+
+
+def test_pcm_mixer_add_and_remove_track_while_playing():
+    from amp.audio.pcm import PcmMixer
+
+    """v0.6.5 악기 듣기: 재생 중 트랙을 더하고 빼도 출력 장치를 다시 열지 않는다. 새 트랙은 0에서 올라와 딸깍 소리가 없다."""
+    n = 4800
+    orig = np.full((n, 2), 0.5, dtype=np.float32)
+    inst = np.full((n, 2), -0.25, dtype=np.float32)
+    m = PcmMixer({"original": orig}, 48000, 48000, 2, SampleFormat.FLOAT32)
+    first = m.read_float(0, 1000)
+    assert np.allclose(first, 0.5)
+    assert m.add_track("inst_drums", inst, {"mute": True, "solo": True})
+    assert not m.add_track("short", inst[:100])  # 길이가 다르면 넣지 않는다
+    ramp = int(PcmMixer.RAMP_S * 48000)
+    block = m.read_float(1000, 2000)
+    assert np.all(np.abs(np.diff(block[:, 0])) < 0.75 / ramp + 1e-6)  # 원본은 내려가고 악기는 올라온다 (급격한 변화 없음)
+    assert np.allclose(block[ramp + 5:, 0], -0.25)  # 솔로인 악기만
+    m.set_state("inst_drums", solo=False)  # 솔로가 풀리면 음소거라 들리지 않고 원본이 돌아온다
+    assert np.allclose(m.read_float(3000, 1000)[ramp + 5:, 0], 0.5)
+    m.remove_track("inst_drums")
+    assert "inst_drums" not in m.state and np.allclose(m.read_float(4000, 500), 0.5)
+    m.remove_track("original")  # 마지막 트랙은 빼지 않는다
+    assert "original" in m.state

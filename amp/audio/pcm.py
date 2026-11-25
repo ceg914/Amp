@@ -125,6 +125,7 @@ class PcmMixer:
         lengths = {t.shape[0] for t in tracks.values()}
         if len(lengths) != 1:
             raise ValueError("모든 트랙의 길이가 같아야 합니다.")
+        self.in_rate = int(in_rate)
         self._converters = {
             name: PcmConverter(samples, in_rate, out_rate, out_channels, sample_format)
             for name, samples in tracks.items()
@@ -174,16 +175,35 @@ class PcmMixer:
             new[name] = s
         self.state = new
 
+    def add_track(self, name: str, samples: np.ndarray, state: dict | None = None) -> bool:
+        """재생 중에 트랙을 더한다 (v0.6.5 악기 듣기). 길이가 다르면 더하지 않고 False.
+
+        목록을 통째로 바꿔 오디오 스레드가 반쯤 바뀐 상태를 보지 않게 한다. 새 트랙은 음량 0에서 RAMP_S 동안 올라온다."""
+        first = next(iter(self._converters.values()))
+        if samples.shape[0] != first.samples.shape[0]:
+            return False
+        conv = PcmConverter(samples, self.in_rate, first.out_rate, first.out_channels, self.sample_format)
+        st = {"gain": 1.0, "mute": False, "solo": False, **(state or {})}
+        self.state = {**self.state, name: {"gain": float(st["gain"]), "mute": bool(st["mute"]), "solo": bool(st["solo"])}}
+        self._converters = {**self._converters, name: conv}
+        return True
+
+    def remove_track(self, name: str) -> None:
+        """재생 중에 트랙을 뺀다. 마지막 트랙은 빼지 않는다 (호출한 쪽이 먼저 음량을 0으로 내려 두면 딸깍 소리가 없다)."""
+        if name in self._converters and len(self._converters) > 1:
+            self._converters = {k: v for k, v in self._converters.items() if k != name}
+            self.state = {k: v for k, v in self.state.items() if k != name}
+
     def audible(self) -> list[tuple[str, float]]:
         state = self.state
         solo = [n for n, s in state.items() if s["solo"]]
         names = solo if solo else [n for n, s in state.items() if not s["mute"]]
         return [(n, state[n]["gain"]) for n in names if state[n]["gain"] > 0]
 
-    def targets(self) -> dict[str, float]:
+    def targets(self, converters: dict | None = None) -> dict[str, float]:
         """트랙별 목표 음량 (들리지 않으면 0)."""
-        out = dict.fromkeys(self._converters, 0.0)
-        out.update(self.audible())
+        out = dict.fromkeys(self._converters if converters is None else converters, 0.0)
+        out.update((n, g) for n, g in self.audible() if n in out)
         return out
 
     def read_float(self, start: int, count: int) -> np.ndarray:
@@ -193,13 +213,15 @@ class PcmMixer:
         mix = np.zeros((count, self.out_channels), dtype=np.float32)
         if count == 0:
             return mix
-        targets = self.targets()
-        applied = dict(targets) if self._applied is None else self._applied
+        converters = self._converters  # 이 블록 동안 쓸 목록 (재생 중 트랙을 더하거나 빼도 안전)
+        targets = self.targets(converters)
+        first_block = self._applied is None
+        applied = dict(targets) if first_block else self._applied
         ramp = max(1, int(self.RAMP_S * self.out_rate))
         done: dict[str, float] = {}
-        for name, conv in self._converters.items():
+        for name, conv in converters.items():
             g1 = targets[name]
-            g0 = applied.get(name, g1)
+            g0 = applied.get(name, g1 if first_block else 0.0)  # 재생 중에 더한 트랙은 0에서 올라온다
             if abs(g1 - g0) < 1e-6:
                 done[name] = g1
                 if g1 > 0:

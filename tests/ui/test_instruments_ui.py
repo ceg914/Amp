@@ -74,6 +74,41 @@ def test_extract_and_export_instruments(qtbot, window, song, six, tmp_path, monk
     meta = json.loads(folder.paths.project_json.read_text(encoding="utf-8"))
     assert meta["ui"]["right_panel"] == ["악기", "악기 소리"]
 
+    # 듣기: 켠 악기만 재생기 트랙(음소거 + 솔로)으로 올라가고, 끄면 내린다. 원본·보컬·반주 상태는 그대로
+    from amp.audio.pcm import PcmMixer
+
+    before = {n: w.player.track_state(n) for n in ("original", "vocals", "instrumental")}
+    p.listen["drums"].click()
+    qtbot.waitUntil(lambda: "inst_drums" in w.player.tracks, timeout=20_000)
+    p.listen["bass"].click()
+    qtbot.waitUntil(lambda: "inst_bass" in w.player.tracks, timeout=20_000)
+    assert w.player.track_state("inst_drums") == {"gain": 1.0, "mute": True, "solo": True}
+    assert "드럼·베이스" in p.listen_info.text()
+
+    def heard():
+        tracks = {n: a.samples for n, a in w.player.tracks.items()}
+        m = PcmMixer(tracks, 44100, 44100, 2)
+        for n in tracks:
+            m.set_state(n, **w.player.track_state(n))
+        return sorted(n for n, _g in m.audible())
+
+    assert heard() == ["inst_bass", "inst_drums"]  # 켠 악기만 들린다
+    w.player.set_track_states({n: {"solo": False} for n in w.player.tracks})  # 다른 쪽이 솔로를 모두 끈 경우 (A/B 비교 등)
+    assert heard() == ["original"]  # 악기 트랙은 음소거라 기존 재생과 같다
+    w.player.set_track_states({n: {"solo": True} for n in ("inst_drums", "inst_bass")})
+    p.listen["drums"].click()
+    assert "inst_drums" not in w.player.tracks and heard() == ["inst_bass"]
+    assert w.bass.panel.listen.isChecked()  # 베이스 TAB 탭의 [베이스만 듣기]도 같은 상태
+    w.bass.panel.listen.click()
+    assert "inst_bass" not in w.player.tracks and not p.listen["bass"].isChecked()
+    w.bass.panel.listen.click()
+    qtbot.waitUntil(lambda: "inst_bass" in w.player.tracks, timeout=20_000)
+    assert p.listen["bass"].isChecked()
+    p.stop_listen.click()
+    assert not any(n.startswith("inst_") for n in w.player.tracks) and not p.listen["bass"].isChecked()
+    assert heard() == ["original"]
+    assert {n: w.player.track_state(n) for n in before} == before
+
 
 def test_extract_disabled_without_separation(qtbot, window, song, monkeypatch):
     monkeypatch.setattr("amp.app.lite.separation_installed", lambda: False)

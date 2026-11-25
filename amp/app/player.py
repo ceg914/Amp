@@ -312,6 +312,8 @@ class AudioPlayer(QObject):
                 self.errorOccurred.emit(f"{name} 트랙의 길이·샘플레이트가 원본과 달라 재생 목록에 넣지 않았습니다.")
                 return
         playing = self._state is PlaybackState.PLAYING
+        if playing and self._live_swap(name, audio):
+            return
         pos = self.position()
         if playing:
             self._teardown()
@@ -327,6 +329,29 @@ class AudioPlayer(QObject):
                 self._timer.start()
             else:
                 self._set_state(PlaybackState.STOPPED)
+
+    def _live_swap(self, name: str, audio: AudioData | None) -> bool:
+        """보통 속도로 재생 중이면 출력 장치를 다시 열지 않고 믹서에서 트랙을 더하거나 뺀다 (v0.6.5).
+
+        장치를 다시 열면 환경에 따라 1초 넘게 소리가 끊긴다(리눅스 가상 장치에서 약 1.5초 측정). 느린 재생은 늘린 오디오를
+        다시 만들어야 하므로 예전처럼 다시 연다. 처리하지 못하면 False."""
+        mixer = self._mixer
+        if mixer is None or self._speed < 1.0 or not hasattr(mixer, "add_track"):
+            return False
+        if audio is None:
+            if name not in self._tracks or len(self._tracks) <= 1:
+                return False
+            mixer.remove_track(name)
+            self._tracks.pop(name, None)
+        else:
+            if name in self._tracks:  # 같은 이름을 다른 소리로 바꾸는 경우는 예전처럼 다시 연다
+                return False
+            if not mixer.add_track(name, audio.samples, self.track_state(name)):
+                return False
+            self._tracks[name] = audio
+        self._tracks_version += 1
+        self._stretched = None
+        return True
 
     def track_state(self, name: str) -> dict:
         return dict(self._track_state.get(name, {"gain": 1.0, "mute": False, "solo": False}))
