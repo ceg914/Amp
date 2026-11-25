@@ -5,7 +5,7 @@ Windows용 데스크톱 프로그램입니다. Python과 PySide6로 만들고 �
 
 **현재 버전: 0.6.7** (0.6.0 + 겹친 목소리 구간 피치 다시 찾기, 크롬북·가벼운 모드, 베이스 TAB, 악기 소리 분리·악기 트랙) — STEP 1~5(편집기, 보컬 분리·자동 채보, 가사·음절 정렬, 발음·멜리스마, 청취·검토·내보내기·모델 비교)에
 v0.6 보컬 다듬기(Hybrid 보컬, 음표 검출 v4, 교정 제안, 음절 정렬 다듬기, 품질 탭)를 더한 상태입니다.
-v0.6.1~0.6.6(피치 다시 찾기 구간, 크롬북, 베이스 TAB, 악기 소리·악기 트랙) 결과는 [SONATLAS_V0_6_5_REPORT.md](SONATLAS_V0_6_5_REPORT.md),
+v0.6.1~0.6.7(피치 다시 찾기 구간, 크롬북, 베이스 TAB, 악기 소리·악기 트랙) 결과는 [SONATLAS_V0_6_5_REPORT.md](SONATLAS_V0_6_5_REPORT.md),
 v0.6 결과는 [SONATLAS_V0_6_0_IMPLEMENTATION_REPORT.md](SONATLAS_V0_6_0_IMPLEMENTATION_REPORT.md), STEP 3.5 결과는 [STEP_3_5_VALIDATION_REPORT.md](STEP_3_5_VALIDATION_REPORT.md),
 STEP 3 구현·검증 결과는 [STEP_3_IMPLEMENTATION_REPORT.md](STEP_3_IMPLEMENTATION_REPORT.md), 그 뒤 사용자 보고 4건의 수정은 [STEP_3_FOLLOWUP_REPORT.md](STEP_3_FOLLOWUP_REPORT.md),
 STEP 2.5 검증 결과는 [STEP_2_5_VALIDATION_REPORT.md](STEP_2_5_VALIDATION_REPORT.md)에 있습니다.
@@ -449,6 +449,8 @@ python scripts/compare_runs.py "SONATLAS Projects\노래 이름" --list
 - 악기 듣기(v0.6.5): 재생 중에 트랙을 더하거나 빼면 예전에는 출력 장치를 다시 열어, 리눅스 가상 장치에서 약 1.5초 소리가 멈췄습니다.
   이제 보통 속도에서는 장치를 그대로 두고 믹서에서 트랙을 더하고 빼며, 새 트랙은 12ms 동안 음량을 올립니다(같은 장치에서 끊김 없음 확인).
   분리 결과를 불러오거나 모델 비교 A/B 트랙을 올릴 때도 같은 방식입니다. 느린 재생 중에는 예전처럼 다시 엽니다. Windows에서는 확인하지 못했습니다.
+- 반주에서 악기 분리(v0.6.7): 조각 나비를 htdemucs로 보컬 분석한 반주에서 6s로 다시 분리하니, 악기 파일에서 보컬과 같은 모양의 성분이
+  피아노 5~6dB, 베이스·나머지 2~3dB 줄고 드럼·기타는 거의 같았습니다(근사 지표, 기준 보컬 두 가지). 사용자의 RoFormer 반주로는 재지 못했습니다.
 - 악기 소리(v0.6.4): 조각 나비(4분 36초)를 앱의 작업 프로세스로 htdemucs_6s 분리해 다섯 악기 파일이 원본과 같은 길이로 나오는 것을
   확인했습니다(CPU 4코어 111초, 최대 2.6GB). 원곡 전체 대비 음량은 드럼 −9.6dB, 기타 −10.9dB, 나머지 −19.0dB, 피아노 −23.7dB였고,
   사용자가 이 곡의 결과를 들어 보니 기타·피아노 파일에 다른 소리가 조금 섞여 있었습니다(음역이 겹치는 악기).
