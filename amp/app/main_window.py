@@ -106,7 +106,7 @@ HELP_TEXT = """<h3>조작 방법</h3>
 <li><b>Ctrl+E</b>: 재생 위치에서 선택 음표 분할, <b>Ctrl+M</b>: 선택 음표 병합</li>
 <li>Ctrl+휠: 가로 확대, Ctrl+Shift+휠: 세로 확대, Shift+휠: 가로 스크롤</li>
 </ul>
-<h3>가사 (오른쪽 '가사' 탭, 피아노 롤 아래 가사 레인)</h3>
+<h3>가사 (오른쪽 '노래 분석 &gt; 가사' 탭, 피아노 롤 아래 가사 레인)</h3>
 <ul>
 <li>가사 인식 <b>F6</b> (Whisper, 기본으로 정렬·음표 연결까지 이어서 함), 시간 정렬 <b>F7</b>, 바뀐 부분만 다시 정렬 <b>Shift+F7</b>, 가사 표시 켜기·끄기 <b>Ctrl+L</b></li>
 <li>가사 탭 편집기에서 고치고 [적용]: 바뀐 줄만 다시 나누고, 그대로인 음절의 시간·음표 연결은 남깁니다</li>
@@ -146,7 +146,14 @@ HELP_TEXT = """<h3>조작 방법</h3>
 <li>[전후 비교 듣기]: A = 지금 분석 소스, B = 새 Hybrid (Ctrl+B 전환). [분석 소스로 사용]: 바뀐 범위 근처의 피치만 다시
 계산하고, 바뀔 항목을 보여 준 뒤 사용자 편집을 지키며 반영합니다.</li>
 </ul>
-<h3>베이스 TAB (v0.6.3, 오른쪽 '베이스 TAB' 탭)</h3>
+<h3>오른쪽 탭 (v0.6.4)</h3>
+<p>속성·분석 / 노래 분석(가사·검토·교정 제안·품질·악보 비교) / 악기(악기 소리·베이스 TAB) 세 묶음입니다.</p>
+<h3>악기 소리 (v0.6.4, 오른쪽 '악기 &gt; 악기 소리' 탭)</h3>
+<ul>
+<li>드럼·베이스·나머지(Demucs htdemucs), 기타·피아노까지(htdemucs_6s)를 분리해 악기마다 WAV·MP3로 내보냅니다. 악보는 만들지 않습니다.</li>
+<li>이미 있는 악기 파일은 다시 만들지 않고, 보컬 분석에 쓰는 분리 결과와 보컬·반주 파일은 바꾸지 않습니다.</li>
+</ul>
+<h3>베이스 TAB (v0.6.3, 오른쪽 '악기 &gt; 베이스 TAB' 탭)</h3>
 <ul>
 <li>조율·최대 프렛·개방현·박자 격자를 고르고 <b>베이스 분석</b>(<b>F8</b>). 박 위치는 보컬 분석의 BPM·첫 박을 씁니다.
 Demucs htdemucs의 베이스 소리를 쓰며, 없으면 한 번 다시 분리해 베이스만 더합니다(보컬·반주 파일은 그대로).</li>
@@ -203,17 +210,17 @@ class MainWindow(QMainWindow):
         self.center_grid.addWidget(self.hybrid.lane, 1, 1)
         self.hybrid.lane.hide()
         self.hybrid.lane_label.hide()
-        self.right_tabs.addTab(self.review.panel, "검토")
+        self.song_tabs.addTab(self.review.panel, "검토")
         self.suggest = SuggestionsController(self)
-        self.right_tabs.addTab(self.suggest.panel, "교정 제안")
+        self.song_tabs.addTab(self.suggest.panel, "교정 제안")
         self.quality = QualityController(self)
-        self.right_tabs.addTab(self.quality.panel, "품질")
+        self.song_tabs.addTab(self.quality.panel, "품질")
         for seq, step, text in (("Ctrl+Alt+[", -1, "이전 교정 제안"), ("Ctrl+Alt+]", 1, "다음 교정 제안")):
             act = QAction(text, self)
             act.setShortcut(QKeySequence(seq))
             act.triggered.connect(lambda _c=False, s=step: self.suggest.go(s))
             self.addAction(act)
-        self.right_tabs.addTab(self.compare.panel, "악보 비교")
+        self.song_tabs.addTab(self.compare.panel, "악보 비교")
         self._build_menus()
         self._build_toolbar()
         self.listening.build_toolbar()
@@ -222,6 +229,9 @@ class MainWindow(QMainWindow):
         from amp.app.bass_controller import BassController
 
         self.bass = BassController(self)  # v0.6.3 베이스 TAB (오른쪽 탭·베이스 편집 모드)
+        from amp.app.instrument_controller import InstrumentController
+
+        self.instruments = InstrumentController(self)  # v0.6.4 악기 소리 (악기 탭)
         self._connect()
         self.inspector.analysis.set_settings(AnalysisSettings.from_dict(self._stored_settings()))
         self._set_model_files(self._stored_model_files())
@@ -293,10 +303,17 @@ class MainWindow(QMainWindow):
         self.tracks = TrackPanel()
         self.inspector = Inspector()
         self.lyrics_panel = LyricsPanel()
+        # v0.6.4: 오른쪽 탭을 두 단계로 묶는다. 속성·분석 / 노래 분석(가사·검토·교정 제안·품질·악보 비교) / 악기
         self.right_tabs = QTabWidget()
         self.right_tabs.setDocumentMode(True)
         self.right_tabs.addTab(self.inspector, "속성·분석")
-        self.right_tabs.addTab(self.lyrics_panel, "가사")
+        self.song_tabs = QTabWidget()
+        self.song_tabs.setDocumentMode(True)
+        self.song_tabs.addTab(self.lyrics_panel, "가사")
+        self.right_tabs.addTab(self.song_tabs, "노래 분석")
+        self.instrument_tabs = QTabWidget()
+        self.instrument_tabs.setDocumentMode(True)
+        self.right_tabs.addTab(self.instrument_tabs, "악기")
         self.splitter = QSplitter(Qt.Orientation.Horizontal)
         self.splitter.addWidget(self.tracks)
         self.splitter.addWidget(center)
@@ -627,6 +644,53 @@ class MainWindow(QMainWindow):
         self.project_label.setText(f"{name}{' •' if self.doc.is_dirty else ''}")
         self.project_label.setToolTip("저장하지 않은 변경이 있습니다" if self.doc.is_dirty else "저장됨")
 
+    # --- 오른쪽 탭 (v0.6.4 두 단계) ------------------------------------------------
+
+    def show_side_panel(self, widget) -> None:
+        """오른쪽 패널을 보이게 한다. 묶음 탭(노래 분석·악기) 안에 있으면 바깥 탭도 함께 고른다."""
+        for i in range(self.right_tabs.count()):
+            page = self.right_tabs.widget(i)
+            if page is widget:
+                self.right_tabs.setCurrentIndex(i)
+                return
+            if isinstance(page, QTabWidget) and page.indexOf(widget) >= 0:
+                page.setCurrentWidget(widget)
+                self.right_tabs.setCurrentIndex(i)
+                return
+
+    def side_panel(self):
+        """지금 보이는 오른쪽 패널 (묶음 탭이면 그 안에서 고른 패널)."""
+        page = self.right_tabs.currentWidget()
+        return page.currentWidget() if isinstance(page, QTabWidget) else page
+
+    def _side_path(self) -> list[str]:
+        i = self.right_tabs.currentIndex()
+        path = [self.right_tabs.tabText(i)]
+        page = self.right_tabs.widget(i)
+        if isinstance(page, QTabWidget):
+            path.append(page.tabText(page.currentIndex()))
+        return path
+
+    def _show_side_path(self, path) -> None:
+        outer = {self.right_tabs.tabText(i): i for i in range(self.right_tabs.count())}
+        names = [str(p) for p in path or ()]
+        if names and names[-1] not in outer:  # 안쪽 탭 이름만 있어도 찾는다 (이전 버전 저장값)
+            for i in range(self.right_tabs.count()):
+                page = self.right_tabs.widget(i)
+                if isinstance(page, QTabWidget):
+                    for j in range(page.count()):
+                        if page.tabText(j) == names[-1]:
+                            page.setCurrentIndex(j)
+                            self.right_tabs.setCurrentIndex(i)
+                            return
+        if names and names[0] in outer:
+            self.right_tabs.setCurrentIndex(outer[names[0]])
+            page = self.right_tabs.widget(outer[names[0]])
+            if isinstance(page, QTabWidget) and len(names) > 1:
+                for j in range(page.count()):
+                    if page.tabText(j) == names[1]:
+                        page.setCurrentIndex(j)
+
     def roll_view(self):
         """지금 보이는 피아노 롤 (보컬 또는 v0.6.3 베이스 편집 모드의 베이스)."""
         bass = getattr(self, "bass", None)
@@ -668,6 +732,8 @@ class MainWindow(QMainWindow):
         panel.set_cache_size(self.session.cache_size())
         if hasattr(self, "lyrics"):
             self.lyrics.update_actions()
+        if hasattr(self, "instruments"):
+            self.instruments.update_actions()
         if hasattr(self, "bass"):
             self.act_bass_analyze.setEnabled(has_audio and is_open and not busy)
             self.bass.panel.analyze.setEnabled(self.act_bass_analyze.isEnabled())
@@ -1035,7 +1101,7 @@ class MainWindow(QMainWindow):
             "waveform_track": self.tracks.selected_track,
             "splitter": self.splitter.sizes(),
             "show_lyrics": self.lyrics.act_show.isChecked(),
-            "right_tab": self.right_tabs.currentIndex(),
+            "right_panel": self._side_path(),
         }
 
     def _playback_state(self) -> dict:
@@ -1054,7 +1120,12 @@ class MainWindow(QMainWindow):
             self.act_show_curve.setChecked(bool(ui.get("show_pitch", True)))
             self.act_follow.setChecked(bool(ui.get("follow", True)))
             self.lyrics.act_show.setChecked(bool(ui.get("show_lyrics", True)))
-            self.right_tabs.setCurrentIndex(int(ui.get("right_tab", 0)))
+            if ui.get("right_panel"):
+                self._show_side_path(ui["right_panel"])
+            elif "right_tab" in ui:  # 0.6.3까지: 한 줄 탭의 번호
+                old = ("속성·분석", "가사", "검토", "교정 제안", "품질", "악보 비교", "베이스 TAB")
+                i = int(ui.get("right_tab", 0))
+                self._show_side_path([old[i]] if 0 <= i < len(old) else [])
             idx = self.snap_combo.findData(float(ui.get("snap_beats", 0.25)))
             if idx >= 0:
                 self.snap_combo.setCurrentIndex(idx)

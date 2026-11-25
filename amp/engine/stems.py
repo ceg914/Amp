@@ -27,7 +27,8 @@ from amp.core.errors import ProjectFormatError
 from amp.core.fileio import atomic_write_json, read_json
 
 STEM_NAMES = ("vocals", "instrumental")
-OPTIONAL_STEMS = ("bass",)  # v0.6.3: htdemucs 베이스 (베이스 TAB용). 없어도 분리 결과는 유효하다
+# 악기 소리 (v0.6.3 베이스, v0.6.4 드럼·기타·피아노·나머지). 없어도 분리 결과는 유효하다
+OPTIONAL_STEMS = ("bass", "drums", "guitar", "piano", "other")
 MANIFEST = "stems.json"
 SCHEMA = "sonatlas.stems"
 SCHEMA_VERSION = 1

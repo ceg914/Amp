@@ -44,7 +44,7 @@ def test_compare_mode_layout_and_exit_restores_editor(compared):
     w, folder = compared
     mc = w.model_compare
     assert mc.active and w.splitter.widget(0) is mc.left_tabs and mc.left_tabs.currentWidget() is mc.panel and not w.tracks.isVisible()
-    assert w.right_tabs.indexOf(mc.diff_panel) >= 0
+    assert w.song_tabs.indexOf(mc.diff_panel) >= 0
     assert len(mc.outputs) == 2 and mc.keys["a"] and mc.keys["b"] and mc.keys["a"] != mc.keys["b"]
     assert {MC.CMP_A, MC.CMP_B} <= set(w.player.tracks)
     # 지금 분석에 쓰는 결과는 바꾸지 않았다 (분리 전 그대로)
@@ -57,7 +57,7 @@ def test_compare_mode_layout_and_exit_restores_editor(compared):
     # 끄면 원래대로
     w.model_compare.act_mode.trigger()
     assert not mc.active and w.splitter.widget(0) is w.tracks and w.tracks.isVisible()
-    assert w.right_tabs.indexOf(mc.diff_panel) < 0
+    assert w.song_tabs.indexOf(mc.diff_panel) < 0
     assert MC.CMP_A not in w.player.tracks and MC.CMP_B not in w.player.tracks
     assert not any(w.player.track_state(n)["solo"] for n in w.player.tracks)
     assert w.view.roll.model_layers == {} and not w.spectrogram.comparing()

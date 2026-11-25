@@ -147,4 +147,4 @@ class QualityController(QObject):
         label, _n, kinds = self.report.counts.get(key, ("", 0, ()))
         w = self.w
         w.review.set_kind_filter(kinds or None, label)
-        w.right_tabs.setCurrentWidget(w.review.panel)
+        w.show_side_panel(w.review.panel)

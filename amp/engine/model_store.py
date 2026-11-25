@@ -31,8 +31,8 @@ from amp.engine import stems as stem_store
 MODELS_DIR = "models"
 POINTER = "store_key"
 ROFORMER_CODE_VERSION = "1"
-MODEL_LABELS = {"htdemucs": "Demucs htdemucs", "mel_roformer": "Mel-Band RoFormer", "external": "가져온 결과",
-                "hybrid": "Hybrid"}
+MODEL_LABELS = {"htdemucs": "Demucs htdemucs", "htdemucs_6s": "Demucs htdemucs_6s (6개 악기)",
+                "mel_roformer": "Mel-Band RoFormer", "external": "가져온 결과", "hybrid": "Hybrid"}
 _SHA_CACHE: dict[tuple, str] = {}
 
 
@@ -61,7 +61,7 @@ def package_version(name: str) -> str:
 def identity_for(model: str, source_sha256: str, model_files: dict | None = None) -> dict:
     """결과를 구분하는 값. GUI 프로세스에서도 부를 수 있다(torch를 불러오지 않음)."""
     ident = {"model": model, "source": source_sha256}
-    if model == "htdemucs":
+    if model in ("htdemucs", "htdemucs_6s"):
         from amp.engine.dsp.separation import SHIFT_SEED
 
         ident.update(demucs=package_version("demucs"), shifts=1, overlap=0.25, split=True, shift_seed=SHIFT_SEED,

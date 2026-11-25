@@ -519,6 +519,26 @@ class ProjectSession(QObject):
         self._track_analysis(handle)
         return handle
 
+    def extract_instruments(self, model: str, device: str = "auto", names: tuple | None = None) -> TaskHandle | None:
+        """v0.6.4: 악기 소리(드럼·베이스·기타·피아노·나머지)를 분리 보관소에 넣는다 (작업 스레드).
+        보컬·반주·이미 있는 악기 파일과 지금 쓰는 분리 결과는 바꾸지 않는다."""
+        if self.busy:
+            return None
+        if self.folder is None or self.original is None or self.original.path is None:
+            self.error.emit("악기 소리를 분리할 수 없습니다", "분석할 오디오가 없습니다. 원본 파일을 확인하세요.", "")
+            return None
+        from amp.engine import instruments
+
+        folder, src = self.folder, str(self.original.path)
+
+        def job(progress, token):
+            return instruments.extract(folder.paths.stems, folder.meta.original.sha256, src, model, run_worker,
+                                       progress, token, device, names, app_data_dir("numba"))
+
+        handle = self._submit("악기 소리 분리", job)
+        self._track_analysis(handle)
+        return handle
+
     # --- 모델 비교 (STEP 5) -----------------------------------------------------
 
     def model_store(self):

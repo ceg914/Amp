@@ -442,7 +442,7 @@ class ModelCompareController(QObject):
             w.splitter.replaceWidget(0, self.left_tabs)
             self.left_tabs.show()
             w.tracks.hide()
-            w.right_tabs.addTab(self.diff_panel, "모델 차이")
+            w.song_tabs.addTab(self.diff_panel, "모델 차이")
             self._saved_lane = w.listening.lane_mode
             if w.listening.lane_mode in ("hidden", "wave"):
                 w.listening.set_lane_mode("both")
@@ -458,9 +458,9 @@ class ModelCompareController(QObject):
             w.view.roll.set_model_layers(None)
             w.view.roll.set_notes_visible(w.act_show_notes.isChecked())
             w.review.set_extra_items([])
-            i = w.right_tabs.indexOf(self.diff_panel)
+            i = w.song_tabs.indexOf(self.diff_panel)
             if i >= 0:
-                w.right_tabs.removeTab(i)
+                w.song_tabs.removeTab(i)
             w.splitter.replaceWidget(0, w.tracks)
             w.tracks.show()
             self.left_tabs.hide()

@@ -329,8 +329,8 @@ class ReviewController(QObject):
             if ids:
                 w.view.roll.select_ids(ids)
             w.view.setFocus()
-            w.right_tabs.setCurrentWidget(w.inspector)
+            w.show_side_panel(w.inspector)
         elif key == "lyrics":
             if it.syllable_ids:
                 w.lyric_lane.select(list(it.syllable_ids))
-            w.right_tabs.setCurrentWidget(w.lyrics_panel)
+            w.show_side_panel(w.lyrics_panel)

@@ -24,7 +24,7 @@ def test_quality_tab_counts_filter_review_list(qtbot, window, song):
     assert "정확도" not in w.quality.panel.indicators.text()
     key = next(k for k, (_l, n, kinds) in rep.counts.items() if kinds and n > 0)
     w.quality.panel.count_buttons[key].click()
-    assert w.right_tabs.currentWidget() is w.review.panel
+    assert w.side_panel() is w.review.panel
     kinds = rep.counts[key][2]
     rows = w.review.panel._rows
     assert rows and all(it.kind in kinds for it, _s in rows)

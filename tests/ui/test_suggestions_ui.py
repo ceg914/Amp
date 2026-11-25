@@ -89,7 +89,7 @@ def test_panel_detect_preview_apply_reject_and_reopen(qtbot, window, song, monke
     folder = create(qtbot, w, song)
     w.doc.set_analysis(dataclasses.replace(_analysis(5.0), duration=5.0))
     sc = w.suggest
-    w.right_tabs.setCurrentWidget(sc.panel)
+    w.show_side_panel(sc.panel)
     n = sc.detect()
     assert n >= 2 and sc.panel.table.rowCount() == n
     assert [x.pitch for x in w.doc.score.notes()] == [64, 62]

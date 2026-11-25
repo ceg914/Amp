@@ -510,7 +510,7 @@ def test_lyrics_panel_has_no_horizontal_scroll_in_narrow_window(qtbot, window):
     from PySide6.QtWidgets import QComboBox
 
     w = window
-    w.right_tabs.setCurrentWidget(w.lyrics_panel)
+    w.show_side_panel(w.lyrics_panel)
     for width in (1440, 900, 700):
         w.resize(width, 800)
         qtbot.wait(30)

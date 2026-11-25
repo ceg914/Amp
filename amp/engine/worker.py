@@ -80,11 +80,13 @@ def cmd_separate(args: dict) -> dict:
     extras: dict = {}
     vocals, instrumental, info = separate(audio.samples, audio.sample_rate, args.get("model", "htdemucs"),
                                           args.get("device", "auto"), _progress, args.get("model_files"),
-                                          bool(args.get("cpu_fallback", True)), extras=extras)
+                                          bool(args.get("cpu_fallback", True)), extras=extras,
+                                          keep=tuple(args.get("extras") or ("bass",)),
+                                          label=str(args.get("label") or "보컬 분리"))
     out = args["out_dir"]
     _write_wav(os.path.join(out, "vocals.wav"), vocals, audio.sample_rate)
     _write_wav(os.path.join(out, "instrumental.wav"), instrumental, audio.sample_rate)
-    for name, x in extras.items():  # htdemucs 베이스 (v0.6.3)
+    for name, x in extras.items():  # 악기 소리: 기본은 베이스만 (v0.6.3), 악기 탭은 드럼·기타 등도 (v0.6.4)
         _write_wav(os.path.join(out, f"{name}.wav"), x, audio.sample_rate)
     info.update(frames=audio.frames, sample_rate=audio.sample_rate, output_channels=int(vocals.shape[1]),
                 versions=_versions())

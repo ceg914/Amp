@@ -18,9 +18,9 @@ from typing import Callable
 
 import numpy as np
 
-DEMUCS_MODELS = ("htdemucs",)
+DEMUCS_MODELS = ("htdemucs", "htdemucs_6s")  # 6s: 기타·피아노까지 나눈다 (v0.6.4 악기 소리, 보컬 분석 설정에는 없음)
 ROFORMER_MODELS = ("mel_roformer",)  # 사용자가 고른 체크포인트 파일로 실행 (amp/engine/dsp/roformer.py)
-TEST_MODELS = ("_identity", "_sleep", "_crash", "_half", "_oom", "_withbass")
+TEST_MODELS = ("_identity", "_sleep", "_crash", "_half", "_oom", "_withbass", "_six")
 OOM_GPU_MESSAGE = "GPU 메모리가 부족해 보컬 분리를 마치지 못했습니다. CPU로 다시 실행할 수 있지만 훨씬 오래 걸립니다."
 MODEL_RATE = 44100
 # demucs는 shifts마다 0~0.5초 임의 이동을 쓴다. 같은 곡을 다시 분리해도 같은 결과가 나오도록 시드를 고정한다.
@@ -147,11 +147,15 @@ def separate(
     model_files: dict | None = None,
     cpu_fallback: bool = True,
     extras: dict | None = None,
+    keep: tuple = ("bass",),
+    label: str = "보컬 분리",
 ) -> tuple[np.ndarray, np.ndarray, dict]:
     """(frames, channels) → (vocals, accompaniment, info). 출력은 입력과 같은 sr·프레임 수다.
 
     model_files: RoFormer용 {"checkpoint": 경로, "config": .yaml 경로 또는 ""}.
     cpu_fallback: False면 GPU 메모리가 부족할 때 CPU로 다시 돌리지 않고 SeparationError("oom_gpu")를 낸다.
+    extras: 주면 keep에 든 악기 소리(모델이 내는 것만: drums·bass·other, 6s는 guitar·piano도)를 넣어 준다.
+    반주에는 keep과 상관없이 보컬 밖 소리가 모두 들어간다.
     """
     report = progress or (lambda f, m: None)
     if model_name not in DEMUCS_MODELS + ROFORMER_MODELS + TEST_MODELS:
@@ -184,11 +188,13 @@ def separate(
             sources = _run_test_model(model_name, norm, report, cpu_fallback, device)
             info["device"] = "cpu"
         else:
-            sources, dev_info = _run_demucs(model_name, norm, device, report, cpu_fallback)
+            sources, dev_info = _run_demucs(model_name, norm, device, report, cpu_fallback, label)
             info.update(dev_info)
         vocals = sources["vocals"] * std + mean
-        if extras is not None and "bass" in sources:  # v0.6.3: 베이스 TAB용. 반주에는 그대로 포함된다
-            extras["bass"] = sources["bass"] * std + mean
+        if extras is not None:  # v0.6.3 베이스 TAB, v0.6.4 악기 소리. 반주에는 그대로 포함된다
+            for name in keep:
+                if name in sources and name != "vocals":
+                    extras[name] = sources[name] * std + mean
         others = [v for k, v in sources.items() if k != "vocals"]
         accompaniment = (np.sum(others, axis=0) * std + mean) if others else wav - vocals
         accompaniment = accompaniment.astype(np.float32)
@@ -228,6 +234,9 @@ def _run_test_model(name: str, norm: np.ndarray, report, cpu_fallback: bool = Tr
         return {"vocals": norm * 0.5, "other": norm * 0.5}
     if name == "_withbass":  # 베이스 TAB 시험용: 입력 전체를 베이스로 (보컬 없음)
         return {"vocals": np.zeros_like(norm), "bass": norm.copy(), "other": np.zeros_like(norm)}
+    if name == "_six":  # 악기 소리 시험용: 입력을 여섯으로 나눈 비율로 (합 = 입력)
+        parts = {"vocals": 0.1, "drums": 0.3, "bass": 0.2, "guitar": 0.15, "piano": 0.15, "other": 0.1}
+        return {k: norm * w for k, w in parts.items()}
     return {"vocals": norm.copy(), "other": np.zeros_like(norm)}  # 반주는 0, 보컬은 입력 그대로
 
 
@@ -244,7 +253,8 @@ def _run_roformer(wav: np.ndarray, files: dict, device: str, report, cpu_fallbac
         raise SeparationError(e.code, str(e)) from e
 
 
-def _run_demucs(model_name: str, norm: np.ndarray, device: str, report, cpu_fallback: bool = True) -> tuple[dict, dict]:
+def _run_demucs(model_name: str, norm: np.ndarray, device: str, report, cpu_fallback: bool = True,
+                label: str = "보컬 분리") -> tuple[dict, dict]:
     try:
         import torch
         from demucs.apply import apply_model
@@ -253,7 +263,8 @@ def _run_demucs(model_name: str, norm: np.ndarray, device: str, report, cpu_fall
         raise SeparationError("missing_dependency", f"PyTorch 또는 Demucs가 설치되어 있지 않습니다 ({e.name}).") from e
 
     actual, note = choose_device(device)
-    report(0.03, "Demucs 모델 불러오는 중 (처음에는 약 80MB를 내려받습니다)")
+    size = {"htdemucs": 84, "htdemucs_6s": 55}.get(model_name)  # 가중치 파일 크기 (MB, 내려받아 확인)
+    report(0.03, "Demucs 모델 불러오는 중" + (f" (처음에는 약 {size}MB를 내려받습니다)" if size else ""))
     try:
         model = get_model(model_name)
     except Exception as e:  # noqa: BLE001 - 네트워크·디스크·해시 오류 등 다양하다
@@ -271,7 +282,7 @@ def _run_demucs(model_name: str, norm: np.ndarray, device: str, report, cpu_fall
         seg = float(seg_s) * MODEL_RATE if seg_s else length
         within = min(1.0, (float(d.get("segment_offset", 0)) + seg) / length)
         frac = (int(d.get("model_idx_in_bag", 0)) + within) / models
-        report(0.05 + 0.95 * frac, f"보컬 분리 중 ({actual.upper()})")
+        report(0.05 + 0.95 * frac, f"{label} 중 ({actual.upper()})")
 
     x = torch.from_numpy(np.ascontiguousarray(norm))[None]
     info = {"device": actual, "torch": torch.__version__, "note": note, "shift_seed": SHIFT_SEED}

@@ -143,7 +143,8 @@ class BassPipeline:
         tmp = store.new_tmp()
         try:
             self.runner("separate", {"input": req.source_path, "out_dir": str(tmp), "model": self.separation_model,
-                                     "device": req.device, "cpu_fallback": True}, report, token, req.numba_cache_dir)
+                                     "device": req.device, "cpu_fallback": True, "label": "베이스 분리"},
+                        report, token, req.numba_cache_dir)
             if not (tmp / "bass.wav").is_file():
                 raise AnalysisError("분리 결과에 베이스가 없습니다. Demucs htdemucs로만 베이스를 따로 낼 수 있습니다.")
             if existing is not None:

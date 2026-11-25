@@ -197,7 +197,7 @@ class LyricLane(QWidget):
         if text.is_empty:
             p.setPen(theme.TEXT_DIM)
             p.drawText(self.rect(), Qt.AlignmentFlag.AlignCenter,
-                       "가사 없음 — 오른쪽 '가사' 탭에서 입력하거나 자동 인식하세요")
+                       "가사 없음 — 오른쪽 '노래 분석 > 가사' 탭에서 입력하거나 자동 인식하세요")
             return
         font = theme.ui_font(13)
         small = theme.ui_font(10)

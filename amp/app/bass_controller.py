@@ -158,7 +158,7 @@ class BassController(QObject):
         w.center_grid.addWidget(self.keyboard, 4, 0)
         w.center_grid.addWidget(self.view, 4, 1)
         self.panel = BassPanel()
-        w.right_tabs.addTab(self.panel, "베이스 TAB")
+        w.instrument_tabs.addTab(self.panel, "베이스 TAB")
         self.mode_label = QLabel("베이스 편집 중")
         self.mode_label.setProperty("role", "accent")
         self.mode_label.hide()
@@ -336,7 +336,7 @@ class BassController(QObject):
             msg += f" 고친 음표 {kept}개는 그대로 두었습니다."
         w.statusBar().showMessage(msg, 8000)
         if not self.active and out.notes:
-            w.right_tabs.setCurrentWidget(self.panel)
+            w.show_side_panel(self.panel)
 
     # --- 편집 모드 ----------------------------------------------------------------
 
