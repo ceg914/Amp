@@ -26,8 +26,11 @@ def test_export_osz_from_menu(qtbot, window, song, tmp_path, monkeypatch):
     assert w.act_osu.isEnabled()
 
     def fake_exec(dlg):
+        assert [n for n, cb in dlg.diffs.items() if cb.isChecked()] == ["Normal", "Hard", "Insane", "Expert"]  # 기본
+        assert dlg.rhythm.text().startswith("리듬: 원곡")  # 보컬 분석·드럼 분리 전
         dlg.title_unicode.setText("원본 노래")
-        dlg.diffs["Easy"].setChecked(False)
+        for name in ("Insane", "Expert"):
+            dlg.diffs[name].setChecked(False)
         dlg.offset.setValue(-12)
         return QDialog.DialogCode.Accepted
 
@@ -44,6 +47,7 @@ def test_export_osz_from_menu(qtbot, window, song, tmp_path, monkeypatch):
     assert "TitleUnicode:원본 노래" in text and "Mode: 3" in text
     objs = O.parse_hit_objects(text)
     first = min(n.start for n in w.doc.score.notes())
-    assert objs and abs(objs[0][1] - (first * 1000 - 12)) < w.doc.score.tempo.seconds_per_beat_at(first) * 500 + 1
+    half = w.doc.score.tempo.seconds_per_beat_at(first) * 500  # 반 박 (격자에 맞추며 옮겨질 수 있는 최대치)
+    assert objs and min(abs(t - (first * 1000 - 12)) for _c, t, _e in objs) <= half + 1  # 첫 멜로디 음표 (보정 -12ms)
     y, sr = sf.read(io.BytesIO(z.read("audio.ogg")), always_2d=True)
     assert y.shape[0] == w.session.audio.frames and sr == w.session.audio.sample_rate

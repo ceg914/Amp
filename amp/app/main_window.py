@@ -159,7 +159,8 @@ HELP_TEXT = """<h3>조작 방법</h3>
 </ul>
 <h3>osu!mania 비트맵 (v0.6.8, 내보내기 메뉴)</h3>
 <ul>
-<li>보컬 멜로디와 프로젝트 BPM·첫 박으로 4키 채보(Easy·Normal·Hard, 롱노트)를 만들고 원곡을 OGG로 넣어 .osz로 저장합니다.
+<li>보컬 멜로디와 프로젝트 BPM·첫 박으로 4키 채보를 만들고 원곡을 OGG로 넣어 .osz로 저장합니다. Normal부터 드럼(없으면 반주)
+타격으로 채우기·동시치기를 넣습니다(Easy·Normal·Hard·Insane·Expert).
 osu!에서 노트가 어긋나면 오프셋 보정(ms)을 넣어 다시 내보내세요.</li>
 </ul>
 <h3>베이스 TAB (v0.6.3, 오른쪽 '악기 &gt; 베이스 TAB' 탭)</h3>

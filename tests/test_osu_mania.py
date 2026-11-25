@@ -27,36 +27,77 @@ def _notes(mel=MEL):
     return [Note(f"n{i}", a, b, p) for i, (a, b, p) in enumerate(mel)]
 
 
+def _onsets(seconds: float = 8.0):
+    """120BPM·첫 박 0.5초 격자에 맞춘 합성 타격 세기 (마디 첫 박 1.0, 박 0.7, 8분 0.5, 16분 0.3, 그 밖 0.05)."""
+    t = np.arange(0, seconds, 0.01)
+    s = np.full(len(t), 0.05)
+    for k in range(int((seconds - 0.5) / 0.125) + 1):
+        tt = 0.5 + k * 0.125
+        i = int(round(tt / 0.01))
+        if i < len(s):
+            s[i] = 1.0 if k % 16 == 0 else 0.7 if k % 4 == 0 else 0.5 if k % 2 == 0 else 0.3
+    return np.stack([t, s], axis=1)
+
+
+def _check_rules(notes, d, keys=4):
+    grid = min(d.snap, d.fill_snap or d.snap)
+    assert all(abs(n.beat / grid - round(n.beat / grid)) < 1e-9 for n in notes)  # 격자 위
+    assert all(0 <= n.column < keys for n in notes)
+    rows = {}
+    for n in notes:
+        rows.setdefault(n.beat, []).append(n.column)
+    assert all(len(c) == len(set(c)) and len(c) <= 1 + d.chord_size for c in rows.values())  # 같은 줄 같은 열 없음
+    free_at = {}
+    for n in sorted(notes, key=lambda n: (n.beat, n.column)):
+        if n.column in free_at:  # 롱노트가 끝난 뒤 한 칸, 단타 뒤 jack_gap 이상 지나야 같은 열을 다시 친다
+            assert n.beat - free_at[n.column][0] >= free_at[n.column][1] - 1e-9
+        free_at[n.column] = (n.end_beat, d.snap) if n.end_beat is not None else (n.beat, d.jack_gap)
+        if n.end_beat is not None:
+            assert n.end_beat - n.beat >= d.hold_min - 1e-9
+    mel = [n.beat for n in notes if n.kind == "melody"]
+    assert all(b2 - b1 >= d.min_gap - 1e-9 for b1, b2 in zip(mel, mel[1:]))  # 멜로디 최소 간격
+
+
 def test_chart_rules_per_difficulty():
     counts = {}
     for name, d in O.DIFFICULTIES.items():
-        notes, s = O.chart(_notes(), T, d)
+        notes, s = O.chart(_notes(), T, d, onsets=_onsets())
+        _check_rules(notes, d)
         counts[name] = len(notes)
-        beats = [n.beat for n in notes]
-        assert all(abs(b / d.snap - round(b / d.snap)) < 1e-9 for b in beats)  # 격자 위
-        assert all(b2 - b1 >= d.min_gap - 1e-9 for b1, b2 in zip(beats, beats[1:]))  # 최소 간격
-        assert all(0 <= n.column < 4 for n in notes)
-        for a, b in zip(notes, notes[1:]):
-            if a.column == b.column:
-                assert b.beat - a.beat >= d.jack_gap - 1e-9  # 짧은 같은 열 연타 없음
-            if a.end_beat is not None:
-                assert a.end_beat <= b.beat - d.snap + 1e-9  # 롱노트는 다음 음 한 칸 전에 놓는다
-        for n in notes:
-            if n.end_beat is not None:
-                assert n.end_beat - n.beat >= d.hold_min - 1e-9
         assert s.notes == len(notes) and sum(s.columns) == len(notes)
-    assert counts["Easy"] < counts["Normal"] <= counts["Hard"]
-    hard, _s = O.chart(_notes(), T, O.DIFFICULTIES["Hard"])
-    by_beat = {n.beat: n for n in hard}
-    assert by_beat[0.5].column > by_beat[0.0].column  # 올라가면 오른쪽
-    assert by_beat[5.5].column < by_beat[5.0].column  # 내려가면 왼쪽
-    assert by_beat[6.0].end_beat is not None  # 2초 끄는 음 = 롱노트
-    assert by_beat[2.0].end_beat is not None
+        assert s.fills == sum(n.kind == "fill" for n in notes) and s.chords == sum(n.kind == "chord" for n in notes)
+    assert counts["Easy"] < counts["Normal"] < counts["Hard"] < counts["Insane"] <= counts["Expert"]
+    easy, s = O.chart(_notes(), T, O.DIFFICULTIES["Easy"], onsets=_onsets())
+    assert s.fills == 0 and s.chords == 0  # Easy는 멜로디만
+    expert, s = O.chart(_notes(), T, O.DIFFICULTIES["Expert"], onsets=_onsets())
+    assert s.fills > 0 and s.chords > 0 and max(map(len, _rows(expert).values())) == 3  # 마디 첫 박 세 열
+
+
+def _rows(notes):
+    rows = {}
+    for n in notes:
+        rows.setdefault(n.beat, []).append(n)
+    return rows
+
+
+def test_melody_contour_and_holds():
+    for name in ("Easy", "Hard"):
+        notes, _s = O.chart(_notes(), T, O.DIFFICULTIES[name])
+        mel = {n.beat: n for n in notes if n.kind == "melody"}
+        assert mel[1.0].column > mel[0.0].column  # 올라가면 오른쪽
+    hard, s = O.chart(_notes(), T, O.DIFFICULTIES["Hard"])  # 타격 정보가 없으면 채우기 없음, 동시치기는 마디 첫 박만
+    assert s.fills == 0 and all(n.beat % 4 == 0 for n in hard if n.kind == "chord")
+    mel = {n.beat: n for n in hard if n.kind == "melody"}
+    assert mel[5.5].column < mel[5.0].column  # 내려가면 왼쪽
+    assert mel[6.0].end_beat is not None and mel[2.0].end_beat is not None  # 길게 끄는 음 = 롱노트
+    with_fill, _s = O.chart(_notes(), T, O.DIFFICULTIES["Insane"], onsets=_onsets())
+    held = [n for n in with_fill if n.end_beat is not None]
+    assert any(f.kind == "fill" and h.beat < f.beat < h.end_beat for h in held for f in with_fill)  # 롱노트 잡는 동안 다른 열에 채우기
 
 
 def test_osu_text_format():
     d = O.DIFFICULTIES["Normal"]
-    notes, _s = O.chart(_notes(), T, d)
+    notes, _s = O.chart(_notes(), T, d, onsets=_onsets())
     text = O.osu_text(notes, T, d, O.Meta(title="Jogag Nabi", title_unicode="조각 나비", offset_ms=-10), "audio.ogg")
     assert text.startswith("osu file format v14\r\n")
     lines = text.split("\r\n")
@@ -68,7 +109,7 @@ def test_osu_text_format():
     assert len(objs) == len(notes)
     xs = {int(line.split(",")[0]) for line in lines[lines.index("[HitObjects]") + 1:] if line}
     assert xs <= {64, 192, 320, 448}
-    for (col, t, end), n in zip(objs, notes):
+    for (col, t, end), n in zip(objs, sorted(notes, key=lambda n: (n.beat, n.column))):
         assert col == n.column and t == round(T.time_at(n.beat) * 1000 - 10)
         assert (end is None) == (n.end_beat is None)
         if end is not None:
