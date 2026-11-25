@@ -5,6 +5,7 @@ Windows용 데스크톱 프로그램입니다. Python과 PySide6로 만들고 �
 
 **현재 버전: 0.6.5** (0.6.0 + 겹친 목소리 구간 피치 다시 찾기, 크롬북·가벼운 모드, 베이스 TAB, 악기 소리 분리·듣기) — STEP 1~5(편집기, 보컬 분리·자동 채보, 가사·음절 정렬, 발음·멜리스마, 청취·검토·내보내기·모델 비교)에
 v0.6 보컬 다듬기(Hybrid 보컬, 음표 검출 v4, 교정 제안, 음절 정렬 다듬기, 품질 탭)를 더한 상태입니다.
+v0.6.1~0.6.5(피치 다시 찾기 구간, 크롬북, 베이스 TAB, 악기 소리) 결과는 [SONATLAS_V0_6_5_REPORT.md](SONATLAS_V0_6_5_REPORT.md),
 v0.6 결과는 [SONATLAS_V0_6_0_IMPLEMENTATION_REPORT.md](SONATLAS_V0_6_0_IMPLEMENTATION_REPORT.md), STEP 3.5 결과는 [STEP_3_5_VALIDATION_REPORT.md](STEP_3_5_VALIDATION_REPORT.md),
 STEP 3 구현·검증 결과는 [STEP_3_IMPLEMENTATION_REPORT.md](STEP_3_IMPLEMENTATION_REPORT.md), 그 뒤 사용자 보고 4건의 수정은 [STEP_3_FOLLOWUP_REPORT.md](STEP_3_FOLLOWUP_REPORT.md),
 STEP 2.5 검증 결과는 [STEP_2_5_VALIDATION_REPORT.md](STEP_2_5_VALIDATION_REPORT.md)에 있습니다.
