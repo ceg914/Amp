@@ -586,6 +586,52 @@ class ProjectSession(QObject):
         self._track_analysis(handle)
         return handle
 
+    def _pitch_input_job(self):
+        src = self.pitch_source()
+        if src is None:
+            self.error.emit("분석할 수 없습니다", "프로젝트와 오디오를 먼저 여세요.", "")
+            return None
+        from amp.engine import pitch_runs as PR
+        from amp.engine.model_store import file_sha256
+
+        folder, duration = self.folder, float(self.audio.duration)
+        return lambda: PR.PitchInput(src["path"], src["kind"], src["input_id"], file_sha256(src["path"]),
+                                     folder.meta.original.sha256, duration, src["label"])
+
+    def run_multipitch(self, max_voices: int = 2) -> TaskHandle | None:
+        """v0.7.0: 다중 피치 → 성부 (analysis/voice_tracks.json·multi_pitch.npz). 이전 결과는 보관하고 사용자 성부는 남긴다."""
+        if self.busy:
+            return None
+        make = self._pitch_input_job()
+        if make is None:
+            return None
+        from amp.engine import voices as V
+
+        folder = self.folder
+
+        def job(progress, token):
+            return V.run_analysis(make(), folder.paths.analysis, run_worker, max_voices, progress, token,
+                                  app_data_dir("numba"))
+
+        handle = self._submit("다중 피치 분석", job)
+        self._track_analysis(handle)
+        return handle
+
+    def run_voice_band(self, vs, vid: str, t0: float, t1: float, fmin: float, fmax: float) -> TaskHandle | None:
+        if self.busy:
+            return None
+        make = self._pitch_input_job()
+        if make is None:
+            return None
+        from amp.engine import voices as V
+
+        def job(progress, token):
+            return V.run_band(make(), vs, vid, t0, t1, fmin, fmax, run_worker, progress, token, app_data_dir("numba"))
+
+        handle = self._submit("성부 음역 다시 분석", job)
+        self._track_analysis(handle)
+        return handle
+
     # --- 모델 비교 (STEP 5) -----------------------------------------------------
 
     def model_store(self):

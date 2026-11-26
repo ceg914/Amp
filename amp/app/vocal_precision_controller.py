@@ -147,6 +147,10 @@ class VocalPrecisionPanel(QWidget):
         self.sections.setDocumentMode(True)
         self.pitch = PitchModelPage()
         self.sections.addTab(self.pitch, "피치 모델")
+        from amp.app.voice_controller import MultiVoicePage
+
+        self.voices = MultiVoicePage()
+        self.sections.addTab(self.voices, "다중 보컬")
         lay.addWidget(self.sections)
 
 
@@ -157,6 +161,10 @@ class VocalPrecisionController(QObject):
         self.panel = VocalPrecisionPanel()
         w.song_tabs.insertTab(1, self.panel, TAB_TITLE)
         self.page = p = self.panel.pitch
+        self._layers: dict[str, dict] = {}
+        from amp.app.voice_controller import VoiceController
+
+        self.voices = VoiceController(w, self.panel.voices)
         self.statuses: list = []
         self.usable: set[str] = {"pyin"}
         self.runs: list[PR.PitchRun] = []
@@ -181,7 +189,16 @@ class VocalPrecisionController(QObject):
         self.runs = []
         self.page.summary.clear()
         self.page.regions.clear()
+        self.voices.reset()
         self.refresh()
+
+    def set_layers(self, group: str, layers: dict) -> None:
+        """피아노 롤 겹쳐 보기: 묶음(피치 모델 'pitch', 성부 'voices')마다 층을 바꾸고 합쳐 그린다."""
+        self._layers[group] = dict(layers)
+        merged = {}
+        for g in self._layers.values():
+            merged.update(g)
+        self.w.view.roll.overlay_curves.set_layers(merged)
 
     def _refresh_if_shown(self) -> None:
         if self.w.side_panel() is self.panel:
@@ -279,6 +296,7 @@ class VocalPrecisionController(QObject):
         self.runs = PR.PitchRunStore(folder.paths.analysis).runs() if folder is not None else []
         self._fill_runs()
         self._update_range()
+        self.voices.refresh()
 
     def _fill_runs(self) -> None:
         from amp.core.result_meta import STATUS_LABELS
@@ -375,7 +393,7 @@ class VocalPrecisionController(QObject):
                 with np.errstate(divide="ignore", invalid="ignore"):
                     midi = np.where(r.voiced, 69.0 + 12.0 * np.log2(r.f0_hz / 440.0), np.nan)
                 layers[r.run_id] = (r.start_frame, r.frame_rate, midi, _color(r.model_id))
-        self.w.view.roll.overlay_curves.set_layers(layers)
+        self.set_layers("pitch", layers)
 
     def run_by_id(self, run_id) -> PR.PitchRun | None:
         return next((r for r in self.runs if r.run_id == run_id), None)

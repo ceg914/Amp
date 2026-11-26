@@ -184,6 +184,43 @@ def cmd_pitch_model(args: dict) -> dict:
     return info
 
 
+def cmd_multipitch(args: dict) -> dict:
+    """v0.7.0: 다중 피치 후보 (프레임마다 여러 목소리의 f0 후보). start·end·fmin·fmax를 주면 그 구간·음역만."""
+    import numpy as np
+
+    from amp.engine.dsp import multipitch as MP
+    from amp.engine.dsp.pitch import to_pitch_sr
+
+    audio = _load(args["input"])
+    _progress(0.01, "오디오 디코딩 완료")
+    y = to_pitch_sr(audio.mono(), audio.sample_rate)
+    del audio
+    n_all = 1 + len(y) // MP.HOP
+    start, end = args.get("start"), args.get("end")
+    g0, g1, off, seg = 0, n_all, 0, y
+    if start is not None and end is not None:
+        g0 = max(0, int(np.floor(float(start) * 100)))
+        g1 = min(n_all, int(np.ceil(float(end) * 100)) + 1)
+        if g1 <= g0:
+            raise ValueError("구간이 비어 있습니다.")
+        off = max(0, g0 - 30)  # 앞뒤 0.3초 (창 128ms의 두 배 넘게)
+        last = min(n_all, g1 + 30)
+        seg = y[off * MP.HOP: (last - 1) * MP.HOP + 1]
+    t0 = __import__("time").perf_counter()
+    c = MP.candidates(seg, int(args.get("max_voices", 2)), float(args.get("fmin", MP.FMIN)),
+                      float(args.get("fmax", MP.FMAX)), _progress)
+    a, b = g0 - off, g1 - off
+    out = MP.Candidates(c.f0_hz[a:b], c.salience[a:b], c.evidence[a:b], c.odd_even[a:b], c.frame_db[a:b], g0)
+    out.save(os.path.join(args["out_dir"], "multipitch.npz"))
+    info = {"frames": int(b - a), "start_frame": int(g0), "total_frames": int(n_all),
+            "max_voices": int(args.get("max_voices", 2)), "fmin": float(args.get("fmin", MP.FMIN)),
+            "fmax": float(args.get("fmax", MP.FMAX)), "code_version": MP.CODE_VERSION,
+            "elapsed_s": round(__import__("time").perf_counter() - t0, 3), "versions": _versions()}
+    with open(os.path.join(args["out_dir"], "info.json"), "w", encoding="utf-8") as f:
+        json.dump(info, f, ensure_ascii=False)
+    return info
+
+
 def cmd_tempo(args: dict) -> dict:
     from amp.engine.dsp.tempo import estimate_tempo
 
@@ -355,7 +392,7 @@ def cmd_probe(args: dict) -> dict:
 
 
 COMMANDS = {"separate": cmd_separate, "pitch": cmd_pitch, "pitch_region": cmd_pitch_region,
-            "pitch_model": cmd_pitch_model, "tempo": cmd_tempo, "probe": cmd_probe,
+            "pitch_model": cmd_pitch_model, "multipitch": cmd_multipitch, "tempo": cmd_tempo, "probe": cmd_probe,
             "check_model": cmd_check_model, "asr": cmd_asr,
             "emissions": cmd_emissions, "ctc_align": cmd_ctc_align}
 
