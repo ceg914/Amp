@@ -540,6 +540,52 @@ class ProjectSession(QObject):
         self._track_analysis(handle)
         return handle
 
+    # --- 피치 모델 (v0.7.0) --------------------------------------------------------
+
+    def pitch_source(self) -> dict | None:
+        """피치 모델이 분석할 소리: 지금 보컬 분석에 쓰는 분리 결과의 보컬, 없으면 원본. 해시는 작업 스레드에서 계산한다."""
+        if self.folder is None or self.audio is None:
+            return None
+        m = self.manifest
+        if m is not None and "vocals" in m.files:
+            from amp.engine.hybrid import HYBRID
+            from amp.engine.model_store import MODEL_LABELS
+            from amp.engine.stem_import import EXTERNAL
+
+            kind = "hybrid" if m.model == HYBRID else "external" if m.model == EXTERNAL else "vocals"
+            return {"path": str(self.folder.paths.stems / m.files["vocals"]["path"]), "kind": kind,
+                    "input_id": f"stems:{m.stems_id}", "label": f"보컬 ({MODEL_LABELS.get(m.model, m.model)})"}
+        if self.original is None or self.original.path is None:
+            return None
+        return {"path": str(self.original.path), "kind": "original", "input_id": "", "label": "원본 (분리하지 않음)"}
+
+    def run_pitch_models(self, models: tuple, analysis_range: tuple | None = None, force: bool = False,
+                         device: str = "auto") -> TaskHandle | None:
+        """v0.7.0: 피치 모델을 차례로 실행해 analysis/pitch_models/에 따로 저장한다. 음표·가사는 바꾸지 않는다."""
+        if self.busy:
+            return None
+        src = self.pitch_source()
+        if src is None:
+            self.error.emit("피치 모델 분석을 할 수 없습니다", "프로젝트와 오디오를 먼저 여세요.", "")
+            return None
+        from amp.engine import pitch_runs as PR
+        from amp.engine.model_store import file_sha256
+
+        folder, duration = self.folder, float(self.audio.duration)
+
+        def job(progress, token):
+            inp = PR.PitchInput(src["path"], src["kind"], src["input_id"], file_sha256(src["path"]),
+                                folder.meta.original.sha256, duration, src["label"])
+            req = PR.PitchRunRequest(inp, str(folder.paths.analysis), tuple(models), device=device,
+                                     analysis_range=analysis_range, force=force, cache_root=str(folder.paths.cache),
+                                     numba_cache_dir=app_data_dir("numba"))
+            PR.PitchRunStore(folder.paths.analysis).mark_stale(inp)
+            return PR.run_models(req, run_worker, progress, token)
+
+        handle = self._submit("피치 모델 분석", job)
+        self._track_analysis(handle)
+        return handle
+
     # --- 모델 비교 (STEP 5) -----------------------------------------------------
 
     def model_store(self):

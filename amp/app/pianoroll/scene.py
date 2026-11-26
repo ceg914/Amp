@@ -12,7 +12,7 @@ from PySide6.QtWidgets import QGraphicsScene
 
 from amp.app import theme
 from amp.app.document import ProjectDocument
-from amp.app.pianoroll.items import NoteItem, PitchCurveItem, PlayheadItem
+from amp.app.pianoroll.items import NoteItem, OverlayCurvesItem, PitchCurveItem, PlayheadItem
 from amp.app.pianoroll.mapping import PITCH_MAX, PITCH_MIN, PianoRollMapper
 from amp.core.model import Note
 from amp.core.pitch import is_black_key
@@ -35,6 +35,8 @@ class PianoRollScene(QGraphicsScene):
         self.items_by_id: dict[str, NoteItem] = {}
         self.curve_item = PitchCurveItem(mapper)
         self.addItem(self.curve_item)
+        self.overlay_curves = OverlayCurvesItem(mapper)  # v0.7.0 피치 모델 결과 겹쳐 보기
+        self.addItem(self.overlay_curves)
         self.playhead = PlayheadItem(mapper)
         self.addItem(self.playhead)
         self._playhead_time = 0.0
@@ -376,6 +378,7 @@ class PianoRollScene(QGraphicsScene):
         for item in self.items_by_id.values():
             item.sync()
         self.curve_item.relayout()
+        self.overlay_curves.relayout()
         self.playhead.relayout(self._playhead_time)
         self.update_scene_rect()
         self.invalidate(self.sceneRect(), QGraphicsScene.SceneLayer.BackgroundLayer)

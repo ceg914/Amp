@@ -237,6 +237,9 @@ class MainWindow(QMainWindow):
         from amp.app.instrument_controller import InstrumentController
 
         self.instruments = InstrumentController(self)  # v0.6.4 악기 소리 (악기 탭)
+        from amp.app.vocal_precision_controller import VocalPrecisionController
+
+        self.precision = VocalPrecisionController(self)  # v0.7.0 노래 분석 → 보컬 정밀 (피치 모델 등)
         self._connect()
         self.inspector.analysis.set_settings(AnalysisSettings.from_dict(self._stored_settings()))
         self._set_model_files(self._stored_model_files())

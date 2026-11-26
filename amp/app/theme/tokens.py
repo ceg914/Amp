@@ -40,6 +40,9 @@ TRACK_COLORS = {"original": TEXT_2, "vocals": ACCENT_2, "instrumental": ACCENT,
                 "inst_drums": "#D2A066", "inst_bass": "#7FA6E0", "inst_guitar": "#DC8FA6", "inst_piano": "#B5CB7E",
                 "inst_other": "#8F879B"}
 
+# v0.7.0 피치 모델 겹쳐 보기 (보컬 분석 곡선은 ACCENT_2 그대로). 상태색·트랙 색과 겹치지 않게 고름
+PITCH_MODEL_COLORS = {"pyin": "#C9C2D3", "crepe_full": "#E3A86B", "crepe_tiny": "#C3D886", "fcpe": "#86AEEA"}
+
 # --- 글꼴 (명세 4장) ---
 FONT_UI = "Pretendard"
 FONT_MONO = "JetBrains Mono"

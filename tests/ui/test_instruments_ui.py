@@ -24,7 +24,8 @@ def six(monkeypatch):
 def test_tabs_are_grouped(window):
     w = window
     assert [w.right_tabs.tabText(i) for i in range(w.right_tabs.count())] == ["속성·분석", "노래 분석", "악기"]
-    assert [w.song_tabs.tabText(i) for i in range(w.song_tabs.count())] == ["가사", "검토", "교정 제안", "품질", "악보 비교"]
+    assert [w.song_tabs.tabText(i) for i in range(w.song_tabs.count())] == ["가사", "보컬 정밀", "검토", "교정 제안", "품질",
+                                                                           "악보 비교"]  # v0.7.0: 보컬 정밀 추가
     assert [w.instrument_tabs.tabText(i) for i in range(w.instrument_tabs.count())] == ["악기 소리", "베이스 TAB"]
     w.show_side_panel(w.suggest.panel)
     assert w.right_tabs.currentWidget() is w.song_tabs and w.side_panel() is w.suggest.panel

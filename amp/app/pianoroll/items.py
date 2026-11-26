@@ -220,6 +220,76 @@ class PitchCurveItem(QGraphicsItem):
         painter.drawPath(paths[True])
 
 
+class OverlayCurvesItem(QGraphicsItem):
+    """v0.7.0 피치 모델 결과 겹쳐 보기. 편집할 수 없는 그림이다. 층마다 (시작 프레임, 프레임률, MIDI 배열, 색, 이름).
+    분석 곡선보다 가늘게, 무성(NaN)에서 끊어 그린다."""
+
+    def __init__(self, mapper: PianoRollMapper) -> None:
+        super().__init__()
+        self._mapper = mapper
+        self._layers: dict[str, tuple] = {}
+        self._bounds = QRectF()
+        self.setZValue(Z_CURVE - 1)
+        self.setAcceptedMouseButtons(Qt.MouseButton.NoButton)
+        self.setFlag(QGraphicsItem.GraphicsItemFlag.ItemUsesExtendedStyleOption, True)
+
+    def set_layers(self, layers: dict[str, tuple]) -> None:
+        self._layers = {k: (int(s), float(fr), np.asarray(midi, dtype=np.float64), QColor(c))
+                        for k, (s, fr, midi, c) in layers.items()}
+        self.relayout()
+
+    def layer_keys(self) -> list[str]:
+        return list(self._layers)
+
+    def relayout(self) -> None:
+        self.prepareGeometryChange()
+        if not self._layers:
+            self._bounds = QRectF()
+        else:
+            m = self._mapper
+            t0 = min(s / fr for s, fr, _mi, _c in self._layers.values())
+            t1 = max((s + len(mi)) / fr for s, fr, mi, _c in self._layers.values())
+            self._bounds = QRectF(m.time_to_x(t0), 0, m.time_to_x(t1 - t0), m.scene_height)
+        self.update()
+
+    def boundingRect(self) -> QRectF:  # noqa: N802
+        return self._bounds
+
+    def paint(self, painter: QPainter, option: QStyleOptionGraphicsItem, widget=None) -> None:
+        if not self._layers:
+            return
+        m = self._mapper
+        exposed = option.exposedRect if option.exposedRect.isValid() else self._bounds
+        t0 = m.x_to_time(exposed.left()) - 0.05
+        t1 = m.x_to_time(exposed.right()) + 0.05
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+        painter.setBrush(Qt.BrushStyle.NoBrush)
+        for start, fr, midi, color in self._layers.values():
+            i0 = max(0, int(t0 * fr) - start)
+            i1 = min(len(midi), int(t1 * fr) - start + 2)
+            if i1 - i0 < 2:
+                continue
+            step = max(1, int(fr / m.px_per_sec / 2))
+            idx = np.arange(i0, i1, step)
+            xs = m.time_to_x((start + idx) / fr)
+            ys = (PITCH_MAX - midi[idx]) * m.row_height + m.row_height / 2
+            path = QPainterPath()
+            pen_down = False
+            for x, y in zip(np.atleast_1d(xs).tolist(), ys.tolist()):
+                if y != y:
+                    pen_down = False
+                    continue
+                if pen_down:
+                    path.lineTo(x, y)
+                else:
+                    path.moveTo(x, y)
+                    pen_down = True
+            pen = QPen(color, 1.2)
+            pen.setCosmetic(True)
+            painter.setPen(pen)
+            painter.drawPath(path)
+
+
 class PlayheadItem(QGraphicsItem):
     def __init__(self, mapper: PianoRollMapper) -> None:
         super().__init__()
