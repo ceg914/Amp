@@ -37,6 +37,7 @@ amp/
 │   ├── stem_compare.py         v0.7.0 악기 결과 비교용 보컬 유사 성분(1초 구간 최소제곱 투영, 근사 지표)
 │   ├── model_registry.py       v0.7.0 모델 등록 정보: 설치·파일 위치·크기·해시·장치·의존성·라이선스·상태 (torch를 불러오지 않음), 앱 데이터의 model_registry.json
 │   ├── profiles.py             v0.7.0 분석 프로필 Lite·Standard·Advanced → 설치된 모델로 실제 켤 수 있는 기능과 이유
+│   ├── analysis_plan.py        v0.7.0 분석 선택: 고른 기능 → 앞 단계 더하기·할 수 없는 것 빼기·실행 순서 (실험·미설치 모델은 '전체'에도 넣지 않음)
 │   ├── dsp/pitch_models.py     v0.7.0 CREPE(full·tiny)·FCPE 추론을 torch만으로 옮김 (가중치는 install_pitch로 설치한 패키지 파일)
 │   ├── pitch_runs.py           v0.7.0 피치 모델별 결과(analysis/pitch_models/): 공통 인터페이스·저장·재사용·구간·stale
 │   ├── dsp/multipitch.py       v0.7.0 다중 피치 후보 (평탄화·배음 합·반복 추정 제거·옥타브 고치기)
@@ -98,6 +99,12 @@ amp/
     ├── compare_controller.py   STEP 5 '악보 비교' 탭 (참조 악보 가져오기·정렬·음정 비교)
     ├── export_controller.py    STEP 5 채보·가사 내보내기 대화상자
     ├── vocal_precision_controller.py · voice_controller.py  v0.7.0 노래 분석 → 보컬 정밀 (피치 모델·다중 보컬·음향 분석)
+    ├── acoustics_controller.py v0.7.0 음향 분석 탭 (비브라토·호흡·발성·경계), 측정 비브라토 구간을 멜리스마 판정에 넘김
+    ├── pron_dictionary_dialog.py  v0.7.0 프로젝트 발음 사전 창 (가져오기·내보내기)
+    ├── analysis_dialog.py      v0.7.0 분석 선택 창(의존 관계·뺀 이유) + AnalysisChain(기존 기능을 차례로 부름)
+    ├── model_manager_dialog.py v0.7.0 모델 관리 창 (등록 정보·프로필별 기능, 해시는 누를 때만 작업 스레드에서)
+    ├── stall_monitor.py        v0.7.0 100ms 이상 화면 멈춤 기록 (마지막 동작·작업 이름, 저장은 사용자가). 500ms 로그(main_window)는 그대로
+    ├── widgets/analysis_lane.py  v0.7.0 비브라토·호흡·발성 경계 레인 (읽기 전용, 처음에는 꺼짐)
     ├── model_compare_controller.py  STEP 5 모델 비교 모드: A/B 패널(왼쪽), '모델 차이' 탭, A/B 청취(cmp_a·cmp_b 솔로 전환), 분석 소스 선택
     ├── workers.py              TaskRunner (QThreadPool)
     ├── autosave.py             자동 저장·비정상 종료 복구

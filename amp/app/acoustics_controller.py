@@ -202,6 +202,8 @@ class AcousticsController(QObject):
     # --- 표시 -----------------------------------------------------------------------
 
     def _fill(self) -> None:
+        if hasattr(self.w, "sync_analysis_lane"):
+            self.w.sync_analysis_lane()  # v0.7.0 분석 레인도 같은 결과로
         p = self.page
         for t in (p.vibrato, p.breaths, p.phrases, p.events, p.bounds):
             t.clear()

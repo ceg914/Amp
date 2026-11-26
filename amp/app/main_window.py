@@ -207,6 +207,11 @@ class MainWindow(QMainWindow):
         self._stall_timer.setInterval(STALL_TICK_MS)
         self._stall_timer.timeout.connect(self._check_stall)
         self._stall_timer.start()
+        from amp.app.stall_monitor import StallMonitor
+
+        # v0.7.0 (명세 14.5): 100ms 이상 멈춤을 마지막 동작·작업 이름과 함께 기록 (보기 → 화면 멈춤 기록). 위 500ms 로그와 별개
+        self.ui_stalls = StallMonitor(self)
+        self.ui_stalls.start()
         self._time = 0.0
         self._tracked: list[TaskHandle] = []
         self._player_error_shown = False
@@ -261,6 +266,13 @@ class MainWindow(QMainWindow):
         self._set_model_files(self._stored_model_files())
         self.lite = lite_mode()
         self._setup_pronunciation()
+        saved_lanes = [k for k in str(self.settings.value("view/analysis_lanes", "") or "").split(",") if k]
+        for k, a in self.lane_actions.items():  # v0.7.0 분석 레인: 처음에는 모두 꺼짐, 켠 줄은 다음 실행에도
+            a.blockSignals(True)
+            a.setChecked(k in saved_lanes)
+            a.blockSignals(False)
+        self._apply_analysis_lanes()
+        self.analysis_lane.seekRequested.connect(self.seek)
         if self.lite:
             self._apply_lite()
         self._update_title()
@@ -322,6 +334,18 @@ class MainWindow(QMainWindow):
         self.lyric_lane = LyricLane(self.doc, self.timeline)
         grid.addWidget(self.lyric_label, 5, 0)
         grid.addWidget(self.lyric_lane, 5, 1)
+        from amp.app.widgets.analysis_lane import AnalysisLane
+
+        # v0.7.0 분석 레인 (비브라토·호흡·발성 경계). 처음에는 모두 꺼 둔다 (보기 → 분석 레인)
+        self.analysis_label = QLabel("분석")
+        self.analysis_label.setFixedWidth(KEYBOARD_WIDTH)
+        self.analysis_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.analysis_label.setProperty("role", "secondary")
+        self.analysis_lane = AnalysisLane(self.timeline)
+        grid.addWidget(self.analysis_label, 6, 0)
+        grid.addWidget(self.analysis_lane, 6, 1)
+        self.analysis_lane.hide()
+        self.analysis_label.hide()
         grid.setRowStretch(4, 1)
         grid.setColumnStretch(1, 1)
 
@@ -358,6 +382,7 @@ class MainWindow(QMainWindow):
                 a.setShortcuts([QKeySequence(s) for s in shortcut])
             else:
                 a.setShortcut(QKeySequence(shortcut))
+        a.triggered.connect(lambda *_a, t=text: self.ui_stalls.note_action(t))  # 멈춤 기록의 '마지막 동작'
         if checkable:
             a.setCheckable(True)
             a.setChecked(checked)
@@ -404,6 +429,14 @@ class MainWindow(QMainWindow):
         self.act_pitch_regions = A("피치 다시 찾기 구간 (겹친 목소리)…", self.edit_pitch_regions)
         self.act_probe = A("GPU 확인", self.probe_gpu, icon_name="cpu")
         self.act_sample = A("샘플 데이터 생성 (시험용, 실제 분석 아님)", self.run_sample_analysis)
+        self.act_analysis_select = A("분석 선택…", self.choose_analysis, "Ctrl+F5")  # v0.7.0
+        self.act_models = A("모델 관리…", self.show_model_manager)
+        self.act_ui_stalls = A("화면 멈춤 기록…", self.show_ui_stalls)
+        self.lane_actions = {}
+        from amp.app.widgets.analysis_lane import ROWS as LANE_ROWS
+
+        for key, label in LANE_ROWS:
+            self.lane_actions[key] = A(f"{label} 레인", lambda _on=False: self._apply_analysis_lanes(), checkable=True)
 
         self.act_export = A("오디오 내보내기…", lambda: self.export_dialog([]), "Ctrl+Shift+E", icon_name="download")
 
@@ -446,9 +479,10 @@ class MainWindow(QMainWindow):
             m.addAction(a)
         self.menu_play = m
         m = mb.addMenu("분석(&A)")
-        for a in (self.act_analyze, self.act_redetect, self.act_reseparate, self.act_import_stems, self.act_cancel_analysis, None,
-                  self.act_no_vocal, self.act_pitch_regions, self.act_compare_runs, self.act_probe, self.act_clear_cache,
-                  None, self.act_sample, None, self.act_bass_analyze, self.act_bass_edit):
+        for a in (self.act_analyze, self.act_analysis_select, self.act_redetect, self.act_reseparate, self.act_import_stems,
+                  self.act_cancel_analysis, None, self.act_no_vocal, self.act_pitch_regions, self.act_compare_runs,
+                  self.act_probe, self.act_models, self.act_clear_cache, None, self.act_sample, None, self.act_bass_analyze,
+                  self.act_bass_edit):
             m.addSeparator() if a is None else m.addAction(a)
         self.model_compare.build_menu(m)
         self.hybrid.build_menu(m)
@@ -468,9 +502,13 @@ class MainWindow(QMainWindow):
         self.compare.build_menu(self.menu_project, m)
         m.addSeparator()
         self.vocal.build_menu(m, self.lyrics.menu)
+        lanes = m.addMenu("분석 레인")
+        for a in self.lane_actions.values():
+            lanes.addAction(a)
         self.view_menu = m
         m = mb.addMenu("도움말(&H)")
         m.addAction(self.act_help)
+        m.addAction(self.act_ui_stalls)
         m.addAction(self.act_about)
 
     def _build_toolbar(self) -> None:
@@ -1024,6 +1062,7 @@ class MainWindow(QMainWindow):
 
     def _track(self, handle: TaskHandle, label: str) -> None:
         self._tracked.append(handle)
+        self.ui_stalls.task = label
         handle.progress.connect(lambda f, msg, h=handle: self._on_task_progress(h, f, msg))
         handle.ended.connect(lambda h=handle: self._on_task_ended(h))
         self.progress.setValue(0)
@@ -1043,6 +1082,7 @@ class MainWindow(QMainWindow):
         if not self._tracked:
             for w in (self.progress, self.progress_label, self.cancel_button):
                 w.hide()
+            self.ui_stalls.task = ""
         self._update_actions()
 
     def _cancel_tracked(self) -> None:
@@ -1471,6 +1511,63 @@ class MainWindow(QMainWindow):
                                   audio.duration if audio is not None else 0.0, self.player.position(), self)
         if dlg.exec() == NoVocalRangesDialog.DialogCode.Accepted:
             self._apply_no_vocal(dlg.ranges())
+
+    # --- v0.7.0 분석 레인·분석 선택·모델 관리·화면 멈춤 기록 ---------------------------------
+
+    def _apply_analysis_lanes(self) -> None:
+        rows = [k for k, a in self.lane_actions.items() if a.isChecked()]
+        self.analysis_lane.set_rows(rows)
+        self.analysis_label.setVisible(bool(rows))
+        self.settings.setValue("view/analysis_lanes", ",".join(rows))
+        if rows:
+            self.sync_analysis_lane()
+
+    def sync_analysis_lane(self) -> None:
+        prec = getattr(self, "precision", None)
+        self.analysis_lane.set_result(prec.acoustics.res if prec is not None else None)
+
+    def choose_analysis(self) -> None:
+        from amp.app.analysis_dialog import AnalysisChain, AnalysisDialog, context_for
+
+        if not self.session.is_open or self.session.audio is None:
+            self._show_status_error("먼저 오디오를 열거나 프로젝트를 여세요.")
+            return
+        if self.session.busy:
+            self._show_status_error("다른 작업이 끝난 뒤에 고르세요.")
+            return
+        dlg = AnalysisDialog(self, context_for(self))
+        if dlg.exec() != AnalysisDialog.DialogCode.Accepted:
+            return
+        self.analysis_chain = AnalysisChain(self, dlg.plan())
+        self.analysis_chain.start()
+
+    def show_model_manager(self) -> None:
+        from amp.app.model_manager_dialog import ModelManagerDialog
+
+        dlg = ModelManagerDialog(self, self.session.model_registry(save=False))
+        dlg.exec()
+
+    def show_ui_stalls(self) -> None:
+        mon = self.ui_stalls
+        s = mon.summary()
+        recent = list(mon.records)[-8:]
+        lines = [f"100ms 이상 멈춤 {s['count']}번 (가장 긴 것 {s['worst_ms']:.0f}ms · 200ms 이상 {s['over_200ms']} · "
+                 f"500ms 이상 {s['over_500ms']})", "타이머 간격(25ms)만큼 오차가 있습니다. '마지막 동작'은 단서일 뿐 원인 판정이 아닙니다.", ""]
+        lines += [f"{r.at[11:23]}  {r.duration_ms:.0f}ms  · 마지막 동작: {r.context or '-'} · 작업: {r.task or '-'}" for r in recent]
+        box = QMessageBox(self)
+        box.setWindowTitle("화면 멈춤 기록")
+        box.setText("\n".join(lines))
+        save = box.addButton("파일로 저장…", QMessageBox.ButtonRole.ActionRole)
+        box.addButton("닫기", QMessageBox.ButtonRole.RejectRole)
+        box.exec()
+        if box.clickedButton() is save:
+            path, _f = QFileDialog.getSaveFileName(self, "화면 멈춤 기록 저장", "sonatlas-ui-stalls.json", "JSON (*.json)")
+            if path:
+                try:
+                    mon.save(path)
+                    self.statusBar().showMessage(f"저장했습니다: {path}", 6000)
+                except OSError as e:
+                    self._show_status_error(f"저장하지 못했습니다: {e}")
 
     def _setup_pronunciation(self) -> None:
         """v0.7.0: 설치된 발음 자료로 영어(CMUdict)·일본어 한자(MeCab+UniDic) 변환기를 켠다.
