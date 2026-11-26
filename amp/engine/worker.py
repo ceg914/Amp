@@ -221,6 +221,30 @@ def cmd_multipitch(args: dict) -> dict:
     return info
 
 
+def cmd_acoustic_features(args: dict) -> dict:
+    """v0.7.0: 프레임 음향 지표 (RMS·스펙트럼 중심·평탄도·고역 비율·HNR·H1-H2). f0는 args["f0_npz"]의 f0_hz."""
+    import numpy as np
+
+    from amp.engine.acoustics.features import VERSION, frame_features
+    from amp.engine.dsp.pitch import to_pitch_sr
+
+    audio = _load(args["input"])
+    y = to_pitch_sr(audio.mono(), audio.sample_rate)
+    del audio
+    _progress(0.1, "음향 지표 계산 중")
+    f0 = None
+    if args.get("f0_npz"):
+        with np.load(args["f0_npz"], allow_pickle=False) as z:
+            f0 = z["f0_hz"].astype(np.float64)
+    feat = frame_features(y, f0)
+    np.savez_compressed(os.path.join(args["out_dir"], "features.npz"), **feat)
+    info = {"frames": int(len(feat["rms_db"])), "version": VERSION, "versions": _versions()}
+    with open(os.path.join(args["out_dir"], "info.json"), "w", encoding="utf-8") as f:
+        json.dump(info, f)
+    _progress(1.0, "음향 지표 완료")
+    return info
+
+
 def cmd_tempo(args: dict) -> dict:
     from amp.engine.dsp.tempo import estimate_tempo
 
@@ -392,7 +416,8 @@ def cmd_probe(args: dict) -> dict:
 
 
 COMMANDS = {"separate": cmd_separate, "pitch": cmd_pitch, "pitch_region": cmd_pitch_region,
-            "pitch_model": cmd_pitch_model, "multipitch": cmd_multipitch, "tempo": cmd_tempo, "probe": cmd_probe,
+            "pitch_model": cmd_pitch_model, "multipitch": cmd_multipitch,
+            "acoustic_features": cmd_acoustic_features, "tempo": cmd_tempo, "probe": cmd_probe,
             "check_model": cmd_check_model, "asr": cmd_asr,
             "emissions": cmd_emissions, "ctc_align": cmd_ctc_align}
 

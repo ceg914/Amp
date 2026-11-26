@@ -632,6 +632,28 @@ class ProjectSession(QObject):
         self._track_analysis(handle)
         return handle
 
+    def run_acoustics(self, snap) -> TaskHandle | None:
+        """v0.7.0: 비브라토·호흡·프레이즈·발성·발성 경계 분석. snap은 acoustics.run.Snapshot (음표·가사 스냅샷).
+        결과는 analysis/에 따로 저장하고 음표·가사는 바꾸지 않는다."""
+        if self.busy:
+            return None
+        make = self._pitch_input_job()
+        if make is None:
+            return None
+        from amp.engine.acoustics import run as AR
+
+        folder = self.folder
+
+        def job(progress, token):
+            inp = make()
+            AR.mark_stale(folder.paths.analysis, f"{inp.kind}:{inp.input_id}:{inp.input_hash[:16]}", inp.source_sha256)
+            return AR.run(inp, folder.paths.analysis, run_worker, snap, str(folder.paths.cache), progress, token,
+                          app_data_dir("numba"))
+
+        handle = self._submit("음향 분석", job)
+        self._track_analysis(handle)
+        return handle
+
     # --- 모델 비교 (STEP 5) -----------------------------------------------------
 
     def model_store(self):

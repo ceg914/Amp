@@ -151,6 +151,10 @@ class VocalPrecisionPanel(QWidget):
 
         self.voices = MultiVoicePage()
         self.sections.addTab(self.voices, "다중 보컬")
+        from amp.app.acoustics_controller import AcousticPage
+
+        self.acoustics = AcousticPage()
+        self.sections.addTab(self.acoustics, "음향 분석")
         lay.addWidget(self.sections)
 
 
@@ -165,6 +169,9 @@ class VocalPrecisionController(QObject):
         from amp.app.voice_controller import VoiceController
 
         self.voices = VoiceController(w, self.panel.voices)
+        from amp.app.acoustics_controller import AcousticsController
+
+        self.acoustics = AcousticsController(w, self.panel.acoustics)
         self.statuses: list = []
         self.usable: set[str] = {"pyin"}
         self.runs: list[PR.PitchRun] = []
@@ -190,6 +197,7 @@ class VocalPrecisionController(QObject):
         self.page.summary.clear()
         self.page.regions.clear()
         self.voices.reset()
+        self.acoustics.reset()
         self.refresh()
 
     def set_layers(self, group: str, layers: dict) -> None:
@@ -297,6 +305,7 @@ class VocalPrecisionController(QObject):
         self._fill_runs()
         self._update_range()
         self.voices.refresh()
+        self.acoustics.refresh()
 
     def _fill_runs(self) -> None:
         from amp.core.result_meta import STATUS_LABELS
