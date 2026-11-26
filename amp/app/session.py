@@ -839,6 +839,29 @@ class ProjectSession(QObject):
         handle.finished.connect(lambda out: seq == self._seq and self.alignmentReady.emit(out))
         return handle
 
+    def registry_context(self):
+        """모델 등록 정보를 찾을 곳 (v0.7.0). 앱 모델 폴더·사용자가 고른 RoFormer 파일·저장해 둔 해시."""
+        from amp.app.lite import lite_mode
+        from amp.engine import model_registry as R
+
+        path = app_data_dir(R.FILE_NAME)
+        return R.RegistryContext(models_dir=app_data_dir("models"), roformer_files=dict(self.model_files or {}),
+                                 lite=lite_mode(), hash_cache=R.load_hash_cache(path)), path
+
+    def model_registry(self, hash_files: bool = False, save: bool = True) -> list:
+        """모델 등록 정보를 살펴(필요하면 해시 계산) 앱 데이터 폴더의 model_registry.json에 적는다.
+        hash_files=True는 큰 파일을 읽으므로 작업 스레드에서 부른다. 파일을 바꾸거나 내려받지 않는다."""
+        from amp.engine import model_registry as R
+
+        ctx, path = self.registry_context()
+        statuses = R.scan(ctx, hash_files=hash_files)
+        if save:
+            try:
+                R.save(path, statuses, ctx)
+            except OSError:
+                pass  # 기록을 못 해도 등록 정보는 쓴다
+        return statuses
+
     def lyrics_install_status(self) -> dict:
         """GUI 프로세스에서 무거운 라이브러리를 불러오지 않고 설치·내려받기 상태만 본다."""
         import importlib.util

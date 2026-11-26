@@ -10,7 +10,8 @@ amp/
 │   ├── tempo.py                TempoMap: 초 ↔ 박, 스냅, 격자
 │   ├── editing.py              이동·길이·분할·병합 순수 함수
 │   ├── fileio.py               원자적 쓰기(+.bak), 긴 경로, 디스크 부족·권한 오류 메시지
-│   └── errors.py               사용자 메시지를 담는 예외 계층
+│   ├── errors.py               사용자 메시지를 담는 예외 계층
+│   └── result_meta.py          v0.7.0 분석 결과 공통 머리말(원본·실제 입력 해시·모델·설정·구간)과 상태(not_analyzed~unavailable, stale)
 ├── audio/                      디코딩, 파형 요약, PCM 변환·믹서, Windows 기본 출력 조회 (Qt 없음)
 │   ├── pcm.py                  PcmMixer: 트랙별 음량·음소거·솔로. 상태가 바뀌면 12ms 음량 램프(A/B 전환 크로스페이드), 여러 트랙 상태를 한 번에 바꾸기
 │   ├── stream.py               STEP 5 PlaybackStream: 장치 프레임 ↔ 원본 시간, 구간 반복(이음매 6ms 페이드), 느린 재생
@@ -29,8 +30,12 @@ amp/
 │   ├── baselines/              STEP 2 알고리즘 고정본(v1). 변경 전후 비교에만 쓰고 앱은 쓰지 않는다
 │   ├── notes.py                피치 곡선 → 음표 (v3: 접근음 흡수)
 │   ├── transcription.py        분리 → 피치 → BPM → 음표 파이프라인, 음표만 재검출
-│   ├── stems.py                stems/ 목록(stems.json) 쓰기·검증·불러오기
+│   ├── stems.py                stems/ 목록(stems.json) 쓰기·검증·불러오기. v0.7.0: 같은 키로 다시 분리해도 만들지 않은 악기 파일은 남기고 반주에서 만든 것은 stale
 │   ├── model_store.py          STEP 5 모델별 분리 결과 보관소 stems/models/<키>/ (키 = 원본·모델·버전·체크포인트·설정 해시), 이전 평면 결과 옮기기
+│   ├── instruments.py          v0.6.4 악기 소리 분리. v0.7.0: (악기, 입력 원본/반주, 만든 모델)별 자리(drums@instrumental-<모델>.wav), 반주 해시 기록
+│   ├── bass.py · bass_pipeline.py   v0.6.3 베이스 음 검출·운지·TAB, 베이스 stem 찾기(입력별 캐시 id)
+│   ├── model_registry.py       v0.7.0 모델 등록 정보: 설치·파일 위치·크기·해시·장치·의존성·라이선스·상태 (torch를 불러오지 않음), 앱 데이터의 model_registry.json
+│   ├── profiles.py             v0.7.0 분석 프로필 Lite·Standard·Advanced → 설치된 모델로 실제 켤 수 있는 기능과 이유
 │   ├── model_compare.py        STEP 5 모델 비교 실행: 모델별 작업 프로세스 순차 실행, GPU 메모리 부족은 묻기(oom_gpu), 취소해도 끝난 결과 보관, 모델별 채보
 │   ├── stem_import.py          외부 분리 결과 가져오기: 리샘플·채널·교차 상관 어긋남 보정·원본 일치 검사, model 'external'
 │   ├── cache.py                cache/ 키·원자적 기록·정리
@@ -67,7 +72,7 @@ amp/
 │   ├── export.py               WAV/MP3 내보내기
 │   └── legacy.py               .ampproj → 프로젝트 폴더 변환 (+백업)
 ├── storage/                    STEP 1 단일 파일(.ampproj) 형식 — 이전 파일 읽기와 자동 복구 스냅샷에 사용
-├── devtools/                   검증용 도구 (앱 실행에는 쓰지 않음)
+├── devtools/                   검증용 도구 (앱 실행에는 쓰지 않음). windows_check.py: v0.7.0 사용자 PC 점검(모델·GPU·프로필 → 결과 파일)
 │   ├── synth.py                합성 노래·반주·숨소리 (시험·벤치마크·검증 도구 자가 점검)
 │   ├── evaluation.py           음표 F1·시작/끝 오차, 프레임 피치 cent 오차·옥타브 오류·무성 오경보
 │   ├── benchmark.py            v1↔v2 비교 (기본 사례 8개 + 변형 사례 8개)
