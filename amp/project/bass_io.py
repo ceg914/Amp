@@ -46,8 +46,10 @@ def to_dict(state: BassState) -> dict:
                     "settings": a.settings, "notes": [_note_out(n) for n in a.notes], "pitch": pitch}
     proj = _notes_project(state)
     edits = {"notes": [_note_out(n, proj.note_status(n)) for n in sorted(state.notes, key=lambda n: n.start)]}
-    return schema.stamp(schema.BASS, {"options": state.options.to_dict(), "source": dict(state.source),
-                                      "analysis": analysis, "edits": edits})
+    body = {"options": state.options.to_dict(), "source": dict(state.source), "analysis": analysis, "edits": edits}
+    if state.fingering:  # v0.7.0 사용자가 정한 줄 (없으면 적지 않아 이전 파일과 같다)
+        body["fingering"] = {str(k): int(v) for k, v in state.fingering.items()}
+    return schema.stamp(schema.BASS, body)
 
 
 def from_dict(d: dict) -> BassState:
@@ -71,4 +73,10 @@ def from_dict(d: dict) -> BassState:
             created_at=str(an.get("created", "")), audio_fingerprint=str(an.get("audio_sha256", "")),
             warnings=tuple(an.get("warnings", ())), settings=dict(an.get("settings") or {}))
     notes = tuple(ser.note_from_dict(n) for n in (d.get("edits") or {}).get("notes", []))
-    return BassState(BassOptions.from_dict(d.get("options")), analysis, notes, dict(d.get("source") or {}))
+    fing = {}
+    for k, v in (d.get("fingering") or {}).items():
+        try:
+            fing[str(k)] = int(v)
+        except (TypeError, ValueError):
+            continue
+    return BassState(BassOptions.from_dict(d.get("options")), analysis, notes, dict(d.get("source") or {}), fing)

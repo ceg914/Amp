@@ -13,6 +13,7 @@ import os
 from datetime import datetime, timezone
 
 from PySide6.QtCore import QObject, Qt, QTimer, Signal
+from PySide6.QtGui import QUndoCommand
 from PySide6.QtWidgets import (
     QCheckBox,
     QComboBox,
@@ -20,6 +21,7 @@ from PySide6.QtWidgets import (
     QFormLayout,
     QHBoxLayout,
     QLabel,
+    QLineEdit,
     QMessageBox,
     QPlainTextEdit,
     QPushButton,
@@ -32,7 +34,8 @@ from amp.app.document import ProjectDocument
 from amp.app.pianoroll.view import PianoRollView
 from amp.app.widgets.keyboard import PianoKeyboard
 from amp.core.model import AnalysisResult, ModelInfo, Project, Score
-from amp.engine.bass import (BASS_NOTES_VERSION, GRIDS, OPEN_PREFS, TUNINGS, BassOptions, BassState, quantize,
+from amp.engine.bass import (BASS_NOTES_VERSION, GRIDS, OPEN_PREFS, PICKUPS, TUPLETS, TUNINGS, BassError, BassOptions,
+                             BassState, format_meter, parse_meter, quantize, string_names,
                              summary, text_tab)
 
 EDIT_SHORTCUT = "Ctrl+Shift+B"
@@ -68,11 +71,28 @@ class BassPanel(QWidget):
         self.grid = QComboBox()
         for v, label in GRIDS.items():
             self.grid.addItem(label, v)
+        self.tuplets = QComboBox()  # v0.7.0
+        for k, label in TUPLETS.items():
+            self.tuplets.addItem(label, k)
+        self.pickup = QComboBox()
+        for k, label in PICKUPS.items():
+            self.pickup.addItem(label, k)
+        self.meter = QLineEdit()
+        self.meter.setPlaceholderText("예: 9:3, 17:4 (마디:박 수)")
+        self.meter.setToolTip("박자가 바뀌는 마디와 그 마디부터의 박 수. 1마디는 템포 첫 박이 든 마디입니다. 비우면 곡 박자 하나.")
+        self.riff = QCheckBox("반복 리프는 같은 운지로 (실험)")
+        self.riff.setToolTip("같은 음높이 4개 묶음이 다시 나오면 처음 운지를 따릅니다. 조각 나비 기준 TAB에서 기본 개방현 설정으로는 "
+                             "일치가 390 → 384음으로 줄어 기본은 꺼 둡니다.")
         form.addRow("조율", self.tuning)
         form.addRow("최대 프렛", self.max_fret)
         form.addRow("개방현", self.open_strings)
         form.addRow("박자 격자", self.grid)
+        form.addRow("셋잇단", self.tuplets)
+        form.addRow("첫 박 앞 음", self.pickup)
+        form.addRow("박자표 변화", self.meter)
+        form.addRow("", self.riff)
         lay.addLayout(form)
+        self._meter: tuple = ()
         self.use_original = QCheckBox("분리하지 않고 원본 그대로 분석 (베이스만 녹음한 파일)")
         lay.addWidget(self.use_original)
         self.analyze = QPushButton(f"베이스 분석 ({ANALYZE_SHORTCUT})")
@@ -86,6 +106,14 @@ class BassPanel(QWidget):
         self.edit = QPushButton(f"피아노 롤에서 베이스 편집 ({EDIT_SHORTCUT})")
         self.edit.setCheckable(True)
         lay.addWidget(self.edit)
+        frow = QHBoxLayout()  # v0.7.0 사용자가 정하는 줄
+        frow.addWidget(QLabel("고른 음의 줄"))
+        self.finger_string = QComboBox()
+        self.finger_apply = QPushButton("적용")
+        self.finger_apply.setToolTip("베이스 편집에서 고른 음을 이 줄로 칩니다. '자동'은 지정을 지웁니다. 실행 취소할 수 있습니다.")
+        frow.addWidget(self.finger_string, 1)
+        frow.addWidget(self.finger_apply)
+        lay.addLayout(frow)
         self.preview = QPlainTextEdit()
         self.preview.setReadOnly(True)
         self.preview.setLineWrapMode(QPlainTextEdit.LineWrapMode.NoWrap)
@@ -110,15 +138,19 @@ class BassPanel(QWidget):
         self.listen.setCheckable(True)
         self.listen.setToolTip("분리해 둔 베이스만 들립니다 (왼쪽 트랙 패널 Bass 줄의 헤드폰과 같음)")
         lay.addWidget(self.listen)
-        note = QLabel("GP5는 Guitar Pro·TuxGuitar·MuseScore에서 열립니다. 템포는 처음 BPM 하나만 씁니다. 자동 채보라 "
-                      "줄·프렛 배치와 박 위치는 직접 확인하세요.")
+        note = QLabel("GP5는 Guitar Pro·TuxGuitar·MuseScore에서 열립니다. 템포 변화·박자표 변화·셋잇단·붙임줄을 씁니다 "
+                      "(다른 프로그램에서 연 결과는 확인하지 않았습니다). 자동 채보라 줄·프렛 배치와 박 위치는 직접 확인하세요.")
         note.setWordWrap(True)
         note.setProperty("role", "secondary")
         lay.addWidget(note)
         self.set_options(BassOptions())
-        for w in (self.tuning, self.open_strings, self.grid):
+        for w in (self.tuning, self.open_strings, self.grid, self.tuplets, self.pickup):
             w.currentIndexChanged.connect(lambda _i: self.optionsChanged.emit())
+        self.tuning.currentIndexChanged.connect(lambda _i: self._fill_strings())
         self.max_fret.valueChanged.connect(lambda _v: self.optionsChanged.emit())
+        self.riff.toggled.connect(lambda _c: self.optionsChanged.emit())
+        self.meter.editingFinished.connect(self._meter_edited)
+        self.meter_error = ""
         self.analyze.clicked.connect(self.analyzeRequested.emit)
         self.edit.toggled.connect(self.editModeToggled.emit)
         self.export_gp5.clicked.connect(self.exportGp5Requested.emit)
@@ -128,10 +160,38 @@ class BassPanel(QWidget):
 
     def options(self) -> BassOptions:
         return BassOptions(tuning=str(self.tuning.currentData()), max_fret=int(self.max_fret.value()),
-                           open_strings=str(self.open_strings.currentData()), grid=float(self.grid.currentData()))
+                           open_strings=str(self.open_strings.currentData()), grid=float(self.grid.currentData()),
+                           tuplets=str(self.tuplets.currentData()), meter=self._meter, pickup=str(self.pickup.currentData()),
+                           riff=self.riff.isChecked())
+
+    def _meter_edited(self) -> None:
+        try:
+            m = parse_meter(self.meter.text())
+        except BassError as e:
+            self.meter_error = str(e)
+            self.meter.setToolTip(str(e))
+            self.meter.setProperty("invalid", True)
+            self.meter.style().polish(self.meter)
+            return
+        self.meter_error = ""
+        self.meter.setProperty("invalid", False)
+        self.meter.style().polish(self.meter)
+        if m != self._meter:
+            self._meter = m
+            self.meter.setText(format_meter(m))
+            self.optionsChanged.emit()
+
+    def _fill_strings(self) -> None:
+        keep = self.finger_string.currentData()
+        self.finger_string.clear()
+        self.finger_string.addItem("자동", None)
+        names = string_names(BassOptions(tuning=str(self.tuning.currentData())))
+        for i, n in enumerate(names):
+            self.finger_string.addItem(f"{i + 1}번째 낮은 줄 ({n})", i)
+        self.finger_string.setCurrentIndex(max(0, self.finger_string.findData(keep)))
 
     def set_options(self, o: BassOptions) -> None:
-        widgets = (self.tuning, self.max_fret, self.open_strings, self.grid)
+        widgets = (self.tuning, self.max_fret, self.open_strings, self.grid, self.tuplets, self.pickup, self.riff, self.meter)
         for w in widgets:
             w.blockSignals(True)
         try:
@@ -140,13 +200,33 @@ class BassPanel(QWidget):
             self.open_strings.setCurrentIndex(max(0, self.open_strings.findData(o.open_strings)))
             self.grid.setCurrentIndex(max(0, next((i for i in range(self.grid.count())
                                                    if abs(float(self.grid.itemData(i)) - o.grid) < 1e-9), 0)))
+            self.tuplets.setCurrentIndex(max(0, self.tuplets.findData(o.tuplets)))
+            self.pickup.setCurrentIndex(max(0, self.pickup.findData(o.pickup)))
+            self.riff.setChecked(bool(o.riff))
+            self._meter = tuple(o.meter)
+            self.meter.setText(format_meter(o.meter))
         finally:
             for w in widgets:
                 w.blockSignals(False)
+        self._fill_strings()
 
     def set_has_notes(self, has: bool) -> None:
         self.export_gp5.setEnabled(has)
         self.export_text.setEnabled(has)
+
+
+class FingeringCommand(QUndoCommand):
+    """v0.7.0 사용자가 정한 줄 바꾸기 (베이스 실행 취소 기록)."""
+
+    def __init__(self, ctl: "BassController", old: dict, new: dict, text: str) -> None:
+        super().__init__(text)
+        self._ctl, self._old, self._new = ctl, dict(old), dict(new)
+
+    def redo(self) -> None:
+        self._ctl._apply_fingering(self._new)
+
+    def undo(self) -> None:
+        self._ctl._apply_fingering(self._old)
 
 
 class BassController(QObject):
@@ -170,6 +250,7 @@ class BassController(QObject):
         self.active = False
         self._loading = False
         self._source: dict = {}
+        self.fingering: dict = {}  # v0.7.0 {음 id: 줄 번호}
         self._handle = None
         self._preview_timer = QTimer(self)
         self._preview_timer.setSingleShot(True)
@@ -188,12 +269,15 @@ class BassController(QObject):
         self.panel.exportTextRequested.connect(self.export_text)
         self.panel.exportAudioRequested.connect(self.export_audio)
         self.panel.listen.toggled.connect(lambda on: w.instruments.set_solo("bass", on))
+        self.panel.finger_apply.clicked.connect(lambda: self.apply_fingering(self.panel.finger_string.currentData()))
+        self.view.roll.selectionChanged.connect(self._update_finger_button)
         self.view.editFailed.connect(w._show_status_error)
         self.view.notePreviewRequested.connect(w.listening.preview_pitch)
         self.view.selectionInfoChanged.connect(lambda s: self.active and w.selection_label.setText(s))
         self.view.hoverInfoChanged.connect(lambda s: self.active and w.hover_label.setText(s))
         self.view.roll.selectionChanged.connect(w._update_actions)
         self.load_from_project()
+        self._update_finger_button()
 
     # --- 상태 --------------------------------------------------------------------
 
@@ -203,7 +287,7 @@ class BassController(QObject):
 
     def tab(self):
         """지금 작업본으로 만든 TAB (보컬 프로젝트 템포 기준)."""
-        return quantize(self.doc.score.notes(), self.w.doc.score.tempo, self.panel.options())
+        return quantize(self.doc.score.notes(), self.w.doc.score.tempo, self.panel.options(), self.fingering)
 
     def load_from_project(self) -> None:
         st = self.state
@@ -216,6 +300,7 @@ class BassController(QObject):
         finally:
             self._loading = False
         self._source = dict(st.source) if st else {}
+        self.fingering = dict(st.fingering) if st else {}
         self.panel.set_options(st.options if st else BassOptions())
         audio = getattr(self.w.session, "audio", None)
         if audio is not None:
@@ -228,9 +313,10 @@ class BassController(QObject):
 
     def _store(self) -> None:
         """베이스 작업본을 프로젝트에 넣고 저장할 변경으로 표시한다 (보컬 실행 취소 기록과는 따로)."""
+        ids = {n.id for n in self.doc.score.notes()}
         self.w.doc.project.bass = BassState(self.panel.options(), self.doc.project.analysis,
                                             tuple(sorted(self.doc.score.notes(), key=lambda n: n.start)),
-                                            dict(self._source))
+                                            dict(self._source), {k: v for k, v in self.fingering.items() if k in ids})
         self.w.doc.mark_modified()
 
     def _on_bass_edited(self, *_args) -> None:
@@ -243,6 +329,43 @@ class BassController(QObject):
     def _on_options(self) -> None:
         if self.state is not None or self.doc.score.notes():
             self._store()
+        self._preview_timer.start()
+
+    # --- v0.7.0 사용자가 정한 줄 -------------------------------------------------------
+
+    def selected_note_ids(self) -> list[str]:
+        try:
+            return [i for i in self.view.selected_ids() if i in self.doc.score]
+        except RuntimeError:
+            return []
+
+    def _update_finger_button(self) -> None:
+        try:
+            self.panel.finger_apply.setEnabled(self.active and bool(self.selected_note_ids()))
+        except RuntimeError:  # 창을 닫는 중 (단추가 먼저 지워짐)
+            pass
+
+    def apply_fingering(self, string: int | None, ids: list[str] | None = None) -> bool:
+        """고른 음을 그 줄로 (None이면 자동으로 되돌림). 그 줄로 칠 수 없는 음은 TAB에서 지정이 무시된다 (fixed_ignored)."""
+        ids = ids if ids is not None else self.selected_note_ids()
+        if not ids:
+            self.w._show_status_error("베이스 편집에서 줄을 정할 음을 고르세요.")
+            return False
+        new = dict(self.fingering)
+        for i in ids:
+            if string is None:
+                new.pop(i, None)
+            else:
+                new[i] = int(string)
+        if new == self.fingering:
+            return False
+        label = "줄 자동으로" if string is None else f"줄 지정 ({string + 1}번째 낮은 줄)"
+        self.doc.undo_stack.push(FingeringCommand(self, self.fingering, new, label))
+        return True
+
+    def _apply_fingering(self, mapping: dict) -> None:
+        self.fingering = dict(mapping)
+        self._store()
         self._preview_timer.start()
 
     def _on_main_tempo(self) -> None:
@@ -280,6 +403,16 @@ class BassController(QObject):
             head += f" · 프렛 {s['fret_range'][0]}~{s['fret_range'][1]}"
         if s["unplayable"]:
             head += f" · 칠 수 없는 음 {s['unplayable']}개 (조율·최대 프렛 밖)"
+        if s["moved"]:
+            head += f" · 같은 칸이라 잘게 옮긴 음 {s['moved']}개"
+        if s["dropped"]:
+            head += f" · 같은 소리로 보고 뺀 음 {s['dropped']}개"
+        fixed = sum(1 for n in tab.notes if "fixed" in n.flags)
+        ignored = sum(1 for n in tab.notes if "fixed_ignored" in n.flags)
+        if fixed or ignored:
+            head += f" · 직접 정한 줄 {fixed}개" + (f" (그 줄로 칠 수 없어 무시 {ignored}개)" if ignored else "")
+        if self.panel.meter_error:
+            head += f" · 박자표 변화 오류: {self.panel.meter_error}"
         bar = self.panel.preview.verticalScrollBar().value()
         self.panel.preview.setPlainText(head + "\n" + text_tab(tab, bars_per_line=2))
         self.panel.preview.verticalScrollBar().setValue(bar)
@@ -368,6 +501,7 @@ class BassController(QObject):
         self.mode_label.setVisible(on)
         shown.setFocus()
         self._sync_toggles()
+        self._update_finger_button()
         w._update_actions()
 
     def _sync_toggles(self) -> None:

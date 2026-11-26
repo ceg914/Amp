@@ -20,9 +20,12 @@ from PySide6.QtWidgets import (
     QFileDialog,
     QFormLayout,
     QGridLayout,
+    QHBoxLayout,
     QLabel,
     QPushButton,
     QSizePolicy,
+    QTreeWidget,
+    QTreeWidgetItem,
     QVBoxLayout,
     QWidget,
 )
@@ -34,11 +37,16 @@ TRACK_PREFIX = "inst_"  # 재생기 트랙 이름 (inst_drums 등)
 KINDS = {"basic": ("htdemucs", I.MODEL_STEMS["htdemucs"]), "six": ("htdemucs_6s", I.MODEL_STEMS["htdemucs_6s"])}
 
 
+def _ident(v) -> str:
+    return f"{v.key}/{v.slot or v.name}"
+
+
 def _fmt_time(sec: float) -> str:
     return f"{int(sec // 60)}:{int(sec % 60):02d}"
 
 
 class InstrumentPanel(QWidget):
+    compareRequested = Signal(str)  # v0.7.0 결과 비교: play / measure / spectrogram
     extractRequested = Signal(str)  # KINDS 키
     exportRequested = Signal(str)  # 악기 이름
     revealRequested = Signal(str)
@@ -107,6 +115,35 @@ class InstrumentPanel(QWidget):
         note.setWordWrap(True)
         note.setProperty("role", "secondary")
         lay.addWidget(note)
+        # v0.7.0 결과 비교 (명세 15.2): 원본·반주·모델별 결과를 골라 듣고(A/B), 스펙트로그램으로 보고, 근사 지표를 잰다
+        cmp_title = QLabel("결과 비교")
+        cmp_title.setObjectName("panelTitle")
+        lay.addWidget(cmp_title)
+        self.compare = QTreeWidget()
+        self.compare.setHeaderLabels(["악기", "만든 방법", "보컬 유사 성분 (근사)"])
+        self.compare.setRootIsDecorated(False)
+        self.compare.setMinimumHeight(120)
+        lay.addWidget(self.compare)
+        crow = QHBoxLayout()
+        self.compare_play = QPushButton("이 결과로 듣기")
+        self.compare_play.setToolTip("고른 결과를 왼쪽 트랙 패널의 그 악기 줄에서 재생합니다 (음소거·솔로·음량은 그대로). "
+                                     "다른 결과를 골라 다시 누르면 A/B로 바꿔 들을 수 있습니다.")
+        self.compare_spec = QPushButton("스펙트로그램")
+        self.compare_spec.setToolTip("고른 결과를 가운데 스펙트로그램으로 봅니다.")
+        self.compare_measure = QPushButton("보컬 유사 성분 재기")
+        self.compare_measure.setToolTip("지금 보컬 분석에 쓰는 분리 결과의 보컬을 기준으로, 악기 파일마다 보컬과 닮은 성분의 비중을 잽니다.")
+        for b, k in ((self.compare_play, "play"), (self.compare_spec, "spectrogram"), (self.compare_measure, "measure")):
+            b.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
+            b.clicked.connect(lambda _c=False, k=k: self.compareRequested.emit(k))
+            crow.addWidget(b)
+        crow.addStretch(1)
+        lay.addLayout(crow)
+        from amp.engine.stem_compare import NOTE as CMP_NOTE
+
+        cmp_note = QLabel(CMP_NOTE + " 같은 소리는 반주·원본 줄과 함께 켜면 겹쳐 들립니다.")
+        cmp_note.setWordWrap(True)
+        cmp_note.setProperty("role", "secondary")
+        lay.addWidget(cmp_note)
         lay.addStretch(1)
 
 
@@ -122,6 +159,10 @@ class InstrumentController(QObject):
         self.panel.extractRequested.connect(self.extract)
         self.panel.exportRequested.connect(self.export)
         self.panel.revealRequested.connect(self.reveal)
+        self.panel.compareRequested.connect(self.on_compare)
+        self.choice: dict[str, str] = {}  # v0.7.0 악기 → 듣기로 고른 결과 (slot·키) (프로젝트를 바꾸면 비움)
+        self.shares: dict[str, dict] = {}  # 파일 경로 → 보컬 유사 성분 (잰 값, 메모리에만)
+        self.variants: dict[str, list] = {}
         self._loading: set[str] = set()
         self._cache: dict = {}  # 악기 → AudioData (들리거나 파형을 보는 동안만)
         self._peaks: dict = {}  # 악기 → WaveformPeaks
@@ -146,6 +187,8 @@ class InstrumentController(QObject):
     def _on_project_reset(self) -> None:
         self._gen += 1
         self._source_chosen = False
+        self.choice = {}
+        self.shares = {}
         self.reset_tracks()
         self.refresh()
 
@@ -156,11 +199,20 @@ class InstrumentController(QObject):
     def refresh(self) -> None:
         folder = self.w.session.folder
         self.found = {}
+        self.variants = {}
         if folder is not None:
             try:
                 self.found = I.find_stems(folder.paths.stems, folder.meta.original.sha256)
+                self.variants = I.find_all_stems(folder.paths.stems, folder.meta.original.sha256)
             except OSError:
                 self.found = {}
+        for name, ident in list(self.choice.items()):  # 듣기로 고른 결과가 아직 있으면 그것
+            v = next((x for x in self.variants.get(name, ()) if _ident(x) == ident), None)
+            if v is None:
+                self.choice.pop(name, None)
+            else:
+                self.found[name] = v
+        self._fill_compare()
         self._fill_sources()
         self._durations = {}
         for name in I.INSTRUMENTS:
@@ -215,6 +267,141 @@ class InstrumentController(QObject):
         busy = s.busy
         for name in I.INSTRUMENTS:
             self.panel.export[name].setEnabled(name in self.found and not busy)
+
+    # --- 결과 비교 (v0.7.0 명세 15.2) ------------------------------------------------------
+
+    def _fill_compare(self) -> None:
+        tree = self.panel.compare
+        keep = self._chosen_item()
+        tree.clear()
+        for name, vs in self.variants.items():
+            for v in vs:
+                playing = self.found.get(name) is not None and _ident(self.found[name]) == _ident(v)
+                sh = self.shares.get(str(v.path))
+                share = "재지 않음" if sh is None else ("보컬 구간 없음" if sh["vocal_share_db"] is None
+                                                       else f"{sh['vocal_share_db']:+.1f} dB")
+                it = QTreeWidgetItem([("▶ " if playing else "") + I.INSTRUMENTS[name], v.model_label, share])
+                it.setData(0, Qt.ItemDataRole.UserRole, (name, _ident(v)))
+                it.setToolTip(1, str(v.path))
+                tree.addTopLevelItem(it)
+                if keep == (name, _ident(v)):
+                    tree.setCurrentItem(it)
+        for i in range(3):
+            tree.resizeColumnToContents(i)
+        has = tree.topLevelItemCount() > 0
+        for b in (self.panel.compare_play, self.panel.compare_spec, self.panel.compare_measure):
+            b.setEnabled(has)
+
+    def _chosen_item(self):
+        it = self.panel.compare.currentItem()
+        return it.data(0, Qt.ItemDataRole.UserRole) if it is not None else None
+
+    def _variant(self, name: str, ident: str):
+        return next((v for v in self.variants.get(name, ()) if _ident(v) == ident), None)
+
+    def on_compare(self, kind: str) -> None:
+        chosen = self._chosen_item()
+        if kind == "measure":
+            self.measure_shares()
+            return
+        if chosen is None:
+            self.panel.message.setText("비교할 결과를 목록에서 고르세요.")
+            return
+        name, ident = chosen
+        if kind == "play":
+            self.choose_variant(name, ident)
+        elif kind == "spectrogram":
+            self.show_spectrogram(name, ident)
+
+    def choose_variant(self, name: str, ident: str) -> bool:
+        """그 악기 줄에서 들을 결과를 바꾼다. 음소거·솔로·음량은 바꾸지 않는다."""
+        v = self._variant(name, ident)
+        if v is None:
+            return False
+        cur = self.found.get(name)
+        self.choice[name] = ident
+        if cur is not None and _ident(cur) == ident:
+            return False
+        self.found[name] = v
+        track = TRACK_PREFIX + name
+        self._cache.pop(name, None)
+        self._peaks.pop(name, None)
+        self._gen += 1  # 불러오던 이전 파일 결과는 버린다
+        self._loading.discard(name)
+        if track in self.w.player.tracks:
+            self.w.player.set_track(track, None)
+        self.sync(track)
+        self._fill_compare()
+        self.panel.message.setText(f"{I.INSTRUMENTS[name]} 줄을 '{v.model_label}' 결과로 바꿨습니다. 믹서 설정은 그대로입니다.")
+        return True
+
+    def show_spectrogram(self, name: str, ident: str) -> None:
+        v = self._variant(name, ident)
+        if v is None:
+            return
+        w = self.w
+        path, label = str(v.path), f"{I.INSTRUMENTS[name]} · {v.model_label}"
+
+        def job(progress, token):
+            import soundfile as sf
+
+            from amp.audio.data import AudioData
+
+            data, sr = sf.read(path, dtype="float32", always_2d=True)
+            return AudioData(np.ascontiguousarray(data), sr)
+
+        def done(audio):
+            if getattr(w.listening, "lane_mode", "") not in ("spec", "both", "spec_curve"):
+                w.listening.set_lane_mode("both")
+            w.spectrogram.set_source(label, audio)
+            self.panel.message.setText(f"스펙트로그램: {label}")
+
+        handle = w.runner.submit(f"{I.INSTRUMENTS[name]} 스펙트로그램 불러오기", job)
+        handle.finished.connect(done)
+        handle.failed.connect(lambda msg, _tb: self.panel.message.setText(f"불러오지 못했습니다: {msg}"))
+
+    def reference_vocals(self):
+        """보컬 유사 성분의 기준: 지금 보컬 분석에 쓰는 분리 결과의 보컬 파일."""
+        folder = self.w.session.folder
+        if folder is None:
+            return None
+        from amp.engine.model_store import ModelStore
+
+        store = ModelStore(folder.paths.stems, folder.meta.original.sha256)
+        key = store.active_key()
+        e = store.entry(key) if key else None
+        if e is None or "vocals" not in e.manifest.files:
+            return None
+        return e.path / e.manifest.files["vocals"]["path"]
+
+    def measure_shares(self) -> None:
+        ref = self.reference_vocals()
+        if ref is None:
+            self.panel.message.setText("기준 보컬이 없습니다. 보컬 분석(분리)을 먼저 하세요.")
+            return
+        paths = [str(v.path) for vs in self.variants.values() for v in vs]
+        if not paths:
+            return
+
+        def job(progress, token):
+            from amp.engine.stem_compare import vocal_share_files
+
+            out = {}
+            for i, p in enumerate(paths):
+                token.raise_if_cancelled()
+                progress(i / len(paths), f"보컬 유사 성분 재는 중 {i + 1}/{len(paths)}")
+                out[p] = vocal_share_files(p, ref).to_dict()
+            return out
+
+        def done(out):
+            self.shares.update(out)
+            self._fill_compare()
+            self.panel.message.setText(f"악기 파일 {len(out)}개의 보컬 유사 성분을 쟀습니다 (기준: {ref.parent.name}의 보컬). "
+                                       "근사 지표입니다.")
+
+        handle = self.w.runner.submit("보컬 유사 성분 재기", job)
+        handle.finished.connect(done)
+        handle.failed.connect(lambda msg, _tb: self.panel.message.setText(f"재지 못했습니다: {msg}"))
 
     # --- 분리 --------------------------------------------------------------------
 

@@ -33,7 +33,8 @@ amp/
 │   ├── stems.py                stems/ 목록(stems.json) 쓰기·검증·불러오기. v0.7.0: 같은 키로 다시 분리해도 만들지 않은 악기 파일은 남기고 반주에서 만든 것은 stale
 │   ├── model_store.py          STEP 5 모델별 분리 결과 보관소 stems/models/<키>/ (키 = 원본·모델·버전·체크포인트·설정 해시), 이전 평면 결과 옮기기
 │   ├── instruments.py          v0.6.4 악기 소리 분리. v0.7.0: (악기, 입력 원본/반주, 만든 모델)별 자리(drums@instrumental-<모델>.wav), 반주 해시 기록
-│   ├── bass.py · bass_pipeline.py   v0.6.3 베이스 음 검출·운지·TAB, 베이스 stem 찾기(입력별 캐시 id)
+│   ├── bass.py · bass_pipeline.py   v0.6.3 베이스 음 검출·운지·TAB, 베이스 stem 찾기(입력별 캐시 id). v0.7.0: 박당 24눈금 양자화(템포 맵·박자표 변화·못갖춘마디·32분·셋잇단), 같은 칸 음은 잘게 옮기고(64분음표보다 가까우면 같은 소리로 보고 기록), 실제 분석 시간 보관, 사용자 지정 줄
+│   ├── stem_compare.py         v0.7.0 악기 결과 비교용 보컬 유사 성분(1초 구간 최소제곱 투영, 근사 지표)
 │   ├── model_registry.py       v0.7.0 모델 등록 정보: 설치·파일 위치·크기·해시·장치·의존성·라이선스·상태 (torch를 불러오지 않음), 앱 데이터의 model_registry.json
 │   ├── profiles.py             v0.7.0 분석 프로필 Lite·Standard·Advanced → 설치된 모델로 실제 켤 수 있는 기능과 이유
 │   ├── dsp/pitch_models.py     v0.7.0 CREPE(full·tiny)·FCPE 추론을 torch만으로 옮김 (가중치는 install_pitch로 설치한 패키지 파일)
@@ -69,7 +70,7 @@ amp/
 │   ├── align.py · intonation.py     악보 ↔ 음원 정렬(상호상관 + DTW + 우연 기준), 음정 비교(센트·도달 시간·비브라토 중심)
 │   ├── model_diff.py           두 분리 모델로 만든 채보의 차이(음표 대응·음높이·시각·재발음 분할·유성·옥타브), '모델 비교' 검토 항목. 우열 판정 없음
 │   └── source_switch.py        분석 소스 전환 영향 미리 보기 (실제 반영과 같은 plan_reanalysis·linking.reconcile로 계산)
-├── export/                     STEP 5 채보·가사 내보내기: USTX(OpenUtau 0.6), MIDI, MusicXML, JSON, CSV, LRC
+├── export/                     STEP 5 채보·가사 내보내기: USTX(OpenUtau 0.6), MIDI, MusicXML, JSON, CSV, LRC. v0.6.3 베이스 GP5·텍스트 TAB (v0.7.0: 셋잇단 3:2, 마디마다 박자, 템포 변화 믹스 테이블)
 ├── project/                    프로젝트 폴더 (Qt 없음)
 │   ├── layout.py               폴더 구조, Windows 이름 규칙, 중복 이름 처리
 │   ├── schema.py               파일 종류·스키마 버전·마이그레이션

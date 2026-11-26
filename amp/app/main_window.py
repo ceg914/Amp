@@ -171,6 +171,22 @@ Demucs htdemucs의 베이스 소리를 쓰며, 없으면 한 번 다시 분리�
 '샘플 데이터 생성'은 오디오 길이만 보고 고정 패턴을 만드는 시험용 기능입니다.</p>"""
 
 
+def overlap_notice(rows, state_of) -> str:
+    """v0.7.0 (명세 15.3): 원본·반주와 악기 트랙이 함께 들리면 같은 소리가 겹친다는 안내. 믹서 설정은 바꾸지 않는다.
+    rows: 지금 쓸 수 있는 줄 이름들, state_of: 이름 → {"gain", "mute", "solo"}."""
+    names = list(rows)
+    st = {n: state_of(n) for n in names}
+    solo = [n for n in names if st[n]["solo"]]
+    heard = solo if solo else [n for n in names if not st[n]["mute"] and st[n]["gain"] > 0]
+    inst = [n for n in heard if n in INSTRUMENT_LABELS]
+    base = [n for n in heard if n in ("original", "instrumental")]
+    if not inst or not base:
+        return ""
+    who = " · ".join(ROW_LABELS[n] for n in base + inst)
+    return (f"같은 소리가 겹쳐 들립니다 ({who}): {'원본' if 'original' in base else '반주'}에 이미 악기 소리가 들어 있습니다. "
+            "믹서 설정은 그대로 두었습니다.")
+
+
 class MainWindow(QMainWindow):
     def __init__(self, recovery_dir: str | None = None, autosave_interval_ms: int = 60_000,
                  projects_root: str | None = None) -> None:
@@ -930,6 +946,7 @@ class MainWindow(QMainWindow):
             self.tracks.set_group_checked(group, silent)
             if not silent:
                 self._mute_snapshots.pop(group, None)
+        self.tracks.set_overlap_notice(overlap_notice(self.tracks.group_rows("all"), self.player.track_state))
 
     def _show_track_waveform(self, name: str) -> None:
         self.tracks.select(name)

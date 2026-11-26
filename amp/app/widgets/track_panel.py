@@ -248,6 +248,11 @@ class TrackPanel(QWidget):
         inst_head.addWidget(inst_label, 1)
         inst_head.addWidget(self.mute_inst)
         rows_lay.addWidget(self.inst_title)
+        self.overlap_note = QLabel("")  # v0.7.0 반주·원본과 악기 트랙이 함께 들릴 때 안내 (믹서는 바꾸지 않음)
+        self.overlap_note.setProperty("role", "warning")
+        self.overlap_note.setWordWrap(True)
+        self.overlap_note.hide()
+        rows_lay.addWidget(self.overlap_note)
         self.inst_rows = {name: TrackRow(name) for name in INSTRUMENT_LABELS}
         for row in self.inst_rows.values():
             rows_lay.addWidget(row)
@@ -281,6 +286,10 @@ class TrackPanel(QWidget):
             b.blockSignals(True)
             b.setChecked(on)
             b.blockSignals(False)
+
+    def set_overlap_notice(self, text: str) -> None:
+        self.overlap_note.setText(text)
+        self.overlap_note.setVisible(bool(text))
 
     def set_instruments(self, names) -> None:
         """보일 악기 트랙 (재생기 트랙 이름). 분리한 악기만 보인다."""
