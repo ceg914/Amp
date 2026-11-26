@@ -204,11 +204,16 @@ class ModelStore:
         info = sf.info(str(src))
         if info.frames != e.manifest.frames or info.samplerate != e.manifest.sample_rate:
             raise ValueError(f"{name}의 길이·샘플레이트가 보관한 분리 결과와 다릅니다.")
-        dst = e.path / f"{name}.wav"
+        extra = dict(extra or {})  # 만든 모델·입력 (v0.6.7 반주에서 악기 분리, v0.7.0 입력 해시)
+        # v0.7.0: 같은 악기라도 입력(원본/반주)·모델이 다르면 다른 자리에 둔다. 있던 파일은 덮어쓰지 않는다
+        taken = set(e.manifest.files) | {p.stem for p in e.path.glob("*.wav")}
+        slot = stem_store.free_slot(taken, name, str(extra.get("input") or "original"),
+                                    str(extra.get("made_by") or e.model))
+        dst = e.path / f"{slot}.wav"
         os.replace(src, dst)
-        files = {**e.manifest.files, name: {"path": dst.name, "size": dst.stat().st_size, "frames": int(info.frames),
+        files = {**e.manifest.files, slot: {"path": dst.name, "size": dst.stat().st_size, "frames": int(info.frames),
                                             "added": datetime.now(timezone.utc).isoformat(timespec="seconds"),
-                                            **(extra or {})}}  # extra: 만든 모델·입력 (v0.6.7 반주에서 악기 분리)
+                                            **extra}}
         atomic_write_json(e.path / stem_store.MANIFEST, replace(e.manifest, files=files).to_dict())
         if self.active_key() == key:
             self.activate(key)  # 위쪽 목록에도 베이스 경로를 넣는다 (보컬·반주 항목은 같음)

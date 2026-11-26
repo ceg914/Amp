@@ -113,6 +113,7 @@ def commit(tmp_dir: str | os.PathLike, stems_dir: str | os.PathLike, source_sha2
     tmp_dir, stems_dir = Path(tmp_dir), Path(stems_dir)
     info = json.loads((tmp_dir / "info.json").read_text(encoding="utf-8"))
     stems_dir.mkdir(parents=True, exist_ok=True)
+    previous = read_manifest(stems_dir)
     old = stems_dir / MANIFEST
     if old.exists():
         old.unlink()  # 교체 중 중단되면 '결과 없음'으로 보이게 먼저 무효화한다
@@ -125,6 +126,7 @@ def commit(tmp_dir: str | os.PathLike, stems_dir: str | os.PathLike, source_sha2
         sfi = sf.info(str(dst))
         channels = sfi.channels
         files[name] = {"path": dst.name, "size": dst.stat().st_size, "frames": sfi.frames}
+    kept = _carry_over(previous, stems_dir, tmp_dir, str(info.get("model", "")), int(info["frames"]))
     for name in OPTIONAL_STEMS:
         src = tmp_dir / f"{name}.wav"
         dst = stems_dir / f"{name}.wav"
@@ -132,8 +134,7 @@ def commit(tmp_dir: str | os.PathLike, stems_dir: str | os.PathLike, source_sha2
             os.replace(src, dst)
             sfi = sf.info(str(dst))
             files[name] = {"path": dst.name, "size": dst.stat().st_size, "frames": sfi.frames}
-        elif dst.exists():  # 다시 분리했는데 이번에는 없음: 이전 파일을 남기지 않는다
-            dst.unlink()
+    files.update(kept)
     manifest = StemManifest(
         model=str(info.get("model", "")), source_sha256=source_sha256, sample_rate=int(info["sample_rate"]),
         frames=int(info["frames"]), channels=channels,
@@ -142,6 +143,74 @@ def commit(tmp_dir: str | os.PathLike, stems_dir: str | os.PathLike, source_sha2
     )
     atomic_write_json(stems_dir / MANIFEST, manifest.to_dict())
     return manifest
+
+
+def stem_base(slot: str) -> str:
+    """목록 안 이름 → 악기 이름. 'drums', 'drums@instrumental-htdemucs_6s' → 'drums' (v0.7.0)."""
+    return slot.split("@", 1)[0]
+
+
+def free_slot(taken, name: str, source: str, made_by: str) -> str:
+    """새 악기 파일을 둘 목록 이름. 기본 자리(name)가 비었으면 그것, 아니면 입력·모델을 붙인 자리.
+    이미 있는 자리는 쓰지 않는다 (있던 파일을 덮어쓰지 않음)."""
+    taken = set(taken)
+    if name not in taken:
+        return name
+    safe = "".join(c if c.isalnum() or c == "_" else "_" for c in (made_by or "x"))
+    base = f"{name}@{source}-{safe}"
+    slot, n = base, 2
+    while slot in taken:
+        slot, n = f"{base}-{n}", n + 1
+    return slot
+
+
+def _carry_over(previous: StemManifest | None, stems_dir: Path, tmp_dir: Path, model: str, frames: int) -> dict:
+    """같은 폴더에 다시 분리할 때 이번에 만들지 않은 악기 파일을 목록에 남긴다 (v0.7.0). 파일을 지우지 않는다.
+
+    - 원본에서 같은 모델로 만든 기본 자리 파일은 이번 결과가 새로 만들면 바뀐다 (사용자가 '다시 분리'를 고른 것)
+    - 반주에서 만든 것 등 다른 입력·모델의 파일이 기본 자리에 있으면 새 파일에 자리를 내주고 이름을 바꿔 옮긴다
+    - 반주에서 만든 파일은 반주가 새로 만들어졌으므로 '오래됨(stale)'으로 적는다 (반주 해시가 같으면 그대로)"""
+    if previous is None:
+        return {}
+    kept: dict = {}
+    new_inst_sha: list[str] = []
+
+    def inst_sha() -> str:
+        if not new_inst_sha:
+            p = stems_dir / "instrumental.wav"
+            h = hashlib.sha256()
+            with open(p, "rb") as f:
+                for chunk in iter(lambda: f.read(1 << 22), b""):
+                    h.update(chunk)
+            new_inst_sha.append(h.hexdigest())
+        return new_inst_sha[0]
+
+    taken = set(previous.files)
+    for slot, meta in previous.files.items():
+        base = stem_base(slot)
+        if base not in OPTIONAL_STEMS or not isinstance(meta, dict):
+            continue
+        path = stems_dir / str(meta.get("path", ""))
+        if not path.is_file() or path.stat().st_size != int(meta.get("size", -1)) \
+                or int(meta.get("frames", frames)) != frames:
+            continue  # 목록과 맞지 않는 파일은 목록에서만 뺀다
+        source = str(meta.get("input") or "original")
+        made_by = str(meta.get("made_by") or previous.model)
+        meta = dict(meta)
+        if slot == base and (tmp_dir / f"{base}.wav").exists():
+            if source == "original" and made_by == model:
+                continue  # 같은 모델·같은 입력: 이번 결과로 바뀐다
+            new_slot = free_slot(taken | set(kept) | {base}, base, source, made_by)
+            dst = stems_dir / f"{new_slot}.wav"
+            os.replace(path, dst)
+            meta["path"] = dst.name
+            slot = new_slot
+        if source == "instrumental" and not meta.get("stale"):
+            if meta.get("input_sha256") != inst_sha():
+                meta.update(stale=True, stale_reason="보컬·반주를 다시 분리해 이 파일을 만든 반주와 지금 반주가 다릅니다.")
+        kept[slot] = meta
+        taken.add(slot)
+    return kept
 
 
 def optional_path(stems_dir: str | os.PathLike, manifest: StemManifest | None, name: str) -> Path | None:

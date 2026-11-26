@@ -19,7 +19,6 @@ from pathlib import Path
 
 from amp.core.errors import AnalysisError
 from amp.core.model import Note
-from amp.engine import stems as stem_store
 from amp.engine.bass import BASS_NOTES_VERSION, BassOptions, detect_bass_notes
 from amp.engine.cache import AnalysisCache
 from amp.engine.context import CancelToken, ProgressFn
@@ -56,6 +55,15 @@ class BassOutput:
     pitch_meta: dict
 
 
+def _bass_variants(entry):
+    from amp.engine.instruments import stem_variants
+
+    vs = [v for v in stem_variants(entry) if v.name == "bass"]
+    vs.sort(key=lambda v: v.added, reverse=True)
+    vs.sort(key=lambda v: (v.stale, v.slot != "bass"))  # 오래되지 않은 것, 기본 자리를 먼저 (v0.7.0)
+    return vs
+
+
 def find_bass_stem(stems_dir: str | Path, source_sha256: str) -> tuple[str, Path] | None:
     """(보관 키, 베이스 파일). 지금 쓰는 분리 결과를 먼저, 그다음 최근 결과."""
     store = ModelStore(stems_dir, source_sha256)
@@ -63,18 +71,23 @@ def find_bass_stem(stems_dir: str | Path, source_sha256: str) -> tuple[str, Path
     entries.sort(key=lambda e: e.manifest.created, reverse=True)
     entries.sort(key=lambda e: not e.active)
     for e in entries:
-        p = stem_store.optional_path(e.path, e.manifest, "bass")
-        if p is not None:
-            return e.key, p
+        vs = _bass_variants(e)
+        if vs:
+            return e.key, vs[0].path
     return None
 
 
-def bass_input_id(stems_dir: str | Path, source_sha256: str, key: str) -> str:
+def bass_input_id(stems_dir: str | Path, source_sha256: str, key: str, path: str | Path | None = None) -> str:
     e = ModelStore(stems_dir, source_sha256).entry(key)
     if e is None:
         return f"bass:{key}"
-    f = e.manifest.files.get("bass", {})
-    return f"bass:{e.manifest.stems_id}:{f.get('added', '')}:{f.get('size', '')}"
+    name = Path(path).name if path is not None else "bass.wav"
+    slot, f = next(((s, v) for s, v in e.manifest.files.items() if isinstance(v, dict) and v.get("path") == name),
+                   ("bass", e.manifest.files.get("bass", {})))
+    ident = f"bass:{e.manifest.stems_id}:{f.get('added', '')}:{f.get('size', '')}"
+    if slot != "bass":  # v0.7.0: 같은 폴더의 다른 베이스 파일(입력·모델이 다름)은 캐시도 따로
+        ident += f":{slot}:{f.get('input', '')}:{f.get('input_sha256', '')}"
+    return ident
 
 
 class BassPipeline:
@@ -108,7 +121,7 @@ class BassPipeline:
                     reused["separation"] = True
                     report(0.0, "보관한 베이스 분리 결과 사용")
                 store_key, path = found
-                input_id = bass_input_id(stems_dir, req.source_sha256, store_key)
+                input_id = bass_input_id(stems_dir, req.source_sha256, store_key, path)
                 source = {"kind": "stem", "store_key": store_key, "path": str(path),
                           "separated": not reused["separation"]}
             token.raise_if_cancelled()
@@ -148,7 +161,9 @@ class BassPipeline:
             if not (tmp / "bass.wav").is_file():
                 raise AnalysisError("분리 결과에 베이스가 없습니다. Demucs htdemucs로만 베이스를 따로 낼 수 있습니다.")
             if existing is not None:
-                entry = store.add_stem(existing.key, "bass", tmp / "bass.wav")
+                entry = store.add_stem(existing.key, "bass", tmp / "bass.wav",
+                                       {"made_by": self.separation_model, "input": "original",
+                                        "input_sha256": req.source_sha256})
             else:
                 entry = store.commit(tmp, identity, {"device": req.device, "purpose": "bass"})
         finally:
@@ -157,7 +172,7 @@ class BassPipeline:
                 store.root.rmdir()
             except OSError:
                 pass
-        p = stem_store.optional_path(entry.path, entry.manifest, "bass")
-        if p is None:
+        vs = [v for v in _bass_variants(entry) if v.model == self.separation_model and v.input == "original"]
+        if not vs:
             raise AnalysisError("베이스 분리 결과를 저장하지 못했습니다.")
-        return entry.key, p
+        return entry.key, vs[0].path

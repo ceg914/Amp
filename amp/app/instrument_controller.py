@@ -99,10 +99,10 @@ class InstrumentPanel(QWidget):
         self.message.setProperty("role", "secondary")
         self.message.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
         lay.addWidget(self.message)
-        note = QLabel(f"분리는 곡 전체를 한 번 더 처리합니다. 이미 있는 악기 파일은 다시 만들지 않습니다. "
+        note = QLabel(f"분리는 곡 전체를 한 번 더 처리합니다. 같은 소리(반주·원본)를 같은 모델로 분리한 악기 파일이 있으면 다시 만들지 않습니다. "
                       f"악기 하나는 1분에 약 {I.MB_PER_MIN:.0f}MB(WAV 24bit)를 씁니다. "
                       "'나머지'는 보컬과 위 악기들을 뺀 소리라 분리 모델에 따라 내용이 다릅니다. "
-                      "반주에서 분리하면 결과는 보컬 분석에 쓰는 분리 결과 폴더에 더하고, 그 폴더에 이미 있는 악기는 다시 만들지 않습니다. "
+                      "반주에서 분리하면 결과는 보컬 분석에 쓰는 분리 결과 폴더에 더합니다. 원본에서 만든 악기와 반주에서 만든 악기는 따로 보관합니다. "
                       "htdemucs_6s의 피아노 분리는 Demucs 설명서에도 아직 잘 되지 않는다고 적혀 있습니다.")
         note.setWordWrap(True)
         note.setProperty("role", "secondary")
@@ -243,10 +243,12 @@ class InstrumentController(QObject):
         model = MODEL_LABELS.get(result.model, result.model)
         if getattr(result, "source_model", ""):
             model += f", {MODEL_LABELS.get(result.source_model, result.source_model)} 반주에서"
+        else:
+            model += ", 원본에서"
         if result.separated:
             text = f"저장했습니다: {names(result.added)} ({model})."
             if result.kept:
-                text += f" {names(result.kept)}은(는) 이미 있어 그대로 두었습니다."
+                text += f" {names(result.kept)}은(는) 같은 소리·같은 모델로 이미 있어 그대로 두었습니다."
         else:
             text = f"이미 분리해 둔 소리가 있어 다시 분리하지 않았습니다 ({names(result.kept)}, {model})."
         self.panel.message.setText(text)
