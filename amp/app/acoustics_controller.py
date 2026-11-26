@@ -140,10 +140,15 @@ class AcousticsController(QObject):
         from amp.engine.acoustics import run as AR
 
         folder = self.w.session.folder
+        loaded = False
         if folder is not None and self.res is None:
             self.res = AR.load(folder.paths.analysis)
+            loaded = self.res is not None
         self._fill()
         self.update_actions()
+        vocal = getattr(self.w, "vocal", None)
+        if loaded and vocal is not None and self.vibrato_spans():
+            vocal.refresh()
 
     def update_actions(self) -> None:
         s = self.w.session
@@ -178,6 +183,21 @@ class AcousticsController(QObject):
         self.res = res
         self._fill()
         self.update_actions()
+        vocal = getattr(self.w, "vocal", None)
+        if vocal is not None:
+            vocal.refresh()  # 측정한 비브라토 구간을 멜리스마 판정에 넘긴다
+
+    def vibrato_spans(self) -> list[tuple[float, float]]:
+        """멜리스마 판정에 넘길 비브라토 구간. 소스가 바뀐(stale) 결과나 '불확실' 구간은 쓰지 않는다."""
+        from amp.core import result_meta as RM
+
+        r = self.res
+        if r is None:
+            return []
+        m = r.meta.get("vibrato")
+        if m is not None and m.status == RM.STALE:
+            return []
+        return [(s.start, s.end) for s in r.vibrato if s.status == "completed"]
 
     # --- 표시 -----------------------------------------------------------------------
 

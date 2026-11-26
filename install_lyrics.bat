@@ -1,6 +1,7 @@
 @echo off
 rem Installs openai-whisper (lyrics recognition) into .venv. Run install_separation.bat first (PyTorch).
-rem Options: --dry-run
+rem Options: --dry-run, --japanese (MeCab+UniDic kanji readings, about 250MB),
+rem          --dictionaries-only (pronunciation dictionaries only, no whisper, no PyTorch needed)
 rem Keep this file ASCII-only (see scripts\messages\README.txt).
 chcp 65001 >nul
 setlocal

@@ -929,6 +929,22 @@ class ProjectSession(QObject):
         handle.finished.connect(lambda out: seq == self._seq and self.recognitionReady.emit(out[0], out[1]))
         return handle
 
+    def run_recognition_region(self, lyric_settings: dict, analysis: AnalysisSettings,
+                               region: tuple[float, float]) -> TaskHandle | None:
+        """v0.7.0: 선택 구간만 다시 인식. 결과(그 구간의 Recognition, 캐시 재사용 여부)는 handle.finished로 받는다."""
+        if self.busy:
+            return None
+        try:
+            req = self.lyrics_request(lyric_settings, analysis)
+        except AnalysisError as e:
+            self.error.emit("가사를 인식할 수 없습니다", str(e), "")
+            return None
+        from amp.lyrics.engine import LyricsEngine
+
+        handle = self._submit("구간 가사 다시 인식", lambda p, t: LyricsEngine().recognize_region(req, region, p, t))
+        self._track_analysis(handle)
+        return handle
+
     def run_alignment(self, lyric_settings: dict, analysis: AnalysisSettings, mode: str = "all",
                       ids: list[str] | None = None, stage: str = "") -> TaskHandle | None:
         if self.busy:

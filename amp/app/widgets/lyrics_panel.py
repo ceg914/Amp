@@ -273,6 +273,16 @@ class LyricsPanel(QScrollArea):
         row.addWidget(self.btn_pron_regen)
         row.addWidget(self.btn_pron_regen_all)
         f.addRow(row)
+        row = QHBoxLayout()  # v0.7.0 프로젝트 발음 사전
+        self.btn_pron_dict = QPushButton("발음 사전에 추가")
+        self.btn_pron_dict.setToolTip("고른 음절이 든 단어의 지금 발음을 이 프로젝트의 발음 사전에 넣습니다. 같은 단어의 자동 발음에 "
+                                      "쓰입니다 (직접 고친 발음은 그대로). 실행 취소할 수 있습니다.")
+        self.btn_pron_dict_edit = QPushButton("발음 사전…")
+        self.btn_pron_dict_edit.setToolTip("이 프로젝트의 발음 사전을 보고 고칩니다. 다른 프로젝트와는 파일로 가져오기·내보내기를 합니다.")
+        row.addWidget(self.btn_pron_dict)
+        row.addWidget(self.btn_pron_dict_edit)
+        row.addStretch(1)
+        f.addRow(row)
         len_hint = QLabel(LENGTH_HINT)
         len_hint.setWordWrap(True)
         len_hint.setProperty("role", "secondary")
@@ -331,6 +341,7 @@ class LyricsPanel(QScrollArea):
         self.pron_edit.returnPressed.connect(self._apply_pron)
         for btn, kind in ((self.btn_pron_confirm, "pron_confirm"), (self.btn_pron_reset, "pron_reset"),
                           (self.btn_pron_regen, "pron_regen"), (self.btn_pron_regen_all, "pron_regen_all"),
+                          (self.btn_pron_dict, "pron_to_dict"), (self.btn_pron_dict_edit, "pron_dict_edit"),
                           (self.btn_mel_set, "mel_set"), (self.btn_mel_not, "mel_not"), (self.btn_mel_clear, "mel_clear"),
                           (self.btn_mel_add, "mel_add"), (self.btn_mel_remove, "mel_remove"),
                           (self.btn_mel_ok, "mel_reviewed")):
@@ -531,7 +542,8 @@ class LyricsPanel(QScrollArea):
     def _vocal_buttons(self, one: bool, any_sel: bool) -> None:
         for b in (self.btn_pron_apply, self.btn_mel_set, self.btn_mel_not, self.btn_mel_add, self.btn_mel_remove):
             b.setEnabled(one)
-        for b in (self.btn_pron_confirm, self.btn_pron_reset, self.btn_pron_regen, self.btn_mel_clear, self.btn_mel_ok):
+        for b in (self.btn_pron_confirm, self.btn_pron_reset, self.btn_pron_regen, self.btn_pron_dict, self.btn_mel_clear,
+                  self.btn_mel_ok):
             b.setEnabled(any_sel)
         self.pron_edit.setEnabled(one)
         self.ipa_edit.setEnabled(one)

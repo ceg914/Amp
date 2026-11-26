@@ -82,7 +82,7 @@ def project_to_members(project: Project, project_path: str | None = None) -> dic
         "project.json": _dump({"audio": audio}),
         "score.json": _dump(ser.score_to_dict(project.score)),
     }
-    if not project.lyrics.is_empty:  # 자동 저장·복구에도 가사 편집을 담는다
+    if not project.lyrics.is_empty or project.lyrics.pron_dictionary:  # 자동 저장·복구에도 가사 편집·발음 사전을 담는다
         members["lyrics.json"] = _dump(lyrics_io.lyrics_to_dict(project.lyrics))
         members["alignment.json"] = _dump(lyrics_io.alignment_to_dict(project.lyrics))
     if project.analysis is not None:

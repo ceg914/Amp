@@ -289,6 +289,22 @@ class PronEntry:
 
 
 @dataclass(frozen=True)
+class PronDictEntry:
+    """사용자 발음 사전 항목 (v0.7.0). 프로젝트의 가사 상태 안에 둔다(다른 프로젝트와 섞이지 않고 실행 취소와 함께 되돌아감).
+
+    ``key`` 는 가사 원문 단어(어절) 또는 음절, ``text`` 는 발음 표기(단어면 음절을 이어 쓰거나 '.'으로 나눔),
+    ``ipa`` 는 단어면 '.'으로 음절을 나눈 IPA(선택). 사전 값도 가사 글자에서 정한 발음이며 실제 부른 발음을 들은 것이 아니다.
+    """
+
+    key: str
+    text: str
+    ipa: str = ""
+    language: str = ""
+    scope: str = "word"  # word / syllable
+    note: str = ""
+
+
+@dataclass(frozen=True)
 class HistoryEntry:
     time: str
     action: str
@@ -305,6 +321,7 @@ class LyricsState:
     recognition: Recognition | None = None
     history: tuple[HistoryEntry, ...] = ()
     pronunciation: Mapping[str, PronEntry] = field(default_factory=dict)  # 음절 id → 발음 (STEP 4)
+    pron_dictionary: tuple[PronDictEntry, ...] = ()  # 이 프로젝트의 사용자 발음 사전 (v0.7.0)
 
     @property
     def is_empty(self) -> bool:

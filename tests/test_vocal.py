@@ -270,3 +270,28 @@ def test_analysis_never_changes_notes_or_lyrics():
     vocal.analyze(st, ns, curve([(1.0, 1.8, 61)]), onset_at([]))
     vocal.all_durations(st, {n.id: n for n in ns}, curve([(1.0, 1.8, 61)]))
     assert (st, list(ns)) == before
+
+
+def test_measured_vibrato_marks_semitone_wobble_as_uncertain_not_melisma():
+    """v0.7.0: 반음 안에서 오가는 음표들이 측정된 비브라토 구간 안에 있으면 멜리스마로 세지 않는다. 비브라토 정보가 없으면 이전 판정."""
+    from amp.lyrics import ops, vocal
+    from amp.lyrics.model import LyricsState, NoteLink
+
+    from tests.conftest import note
+
+    notes = [note("a", 1.0, 1.4, 64), note("b", 1.4, 1.8, 65), note("c", 1.8, 2.2, 64)]
+    st = ops.apply_text(LyricsState(), "아")
+    sid = st.text.syllables[0].id
+    st = ops.set_times(st, {sid: (1.0, 2.2)}, source="model")
+    st = st.__class__(st.text, st.alignment.with_links({sid: [NoteLink(n.id, 0.9, "user", True) for n in notes]}),
+                      st.recognition, st.history, st.pronunciation)
+    before = vocal.analyze(st, notes)[sid]
+    assert before.kind == "melisma"  # 음표가 0.25초보다 길어 이전 규칙의 비브라토 과분할 조건에는 걸리지 않음
+    after = vocal.analyze(st, notes, vibrato=[(0.9, 2.3)])[sid]
+    assert after.kind == "uncertain" and "vibrato_measured" in after.flags and not after.is_melisma
+    partial = vocal.analyze(st, notes, vibrato=[(1.0, 1.3)])[sid]  # 구간의 25%만 비브라토 → 그대로
+    assert partial.kind == "melisma"
+    wide = [note("a", 1.0, 1.4, 64), note("b", 1.4, 1.8, 67), note("c", 1.8, 2.2, 64)]  # 3반음 → 비브라토로 보지 않음
+    st2 = st.__class__(st.text, st.alignment.with_links({sid: [NoteLink(n.id, 0.9, "user", True) for n in wide]}),
+                       st.recognition, st.history, st.pronunciation)
+    assert vocal.analyze(st2, wide, vibrato=[(0.9, 2.3)])[sid].kind == "melisma"

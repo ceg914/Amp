@@ -107,6 +107,7 @@ class LyricsController(QObject):
     def _build_actions(self) -> None:
         A = self.w._action
         self.act_recognize = A("가사 자동 인식 (Whisper)", self.recognize, "F6")
+        self.act_recognize_region = A("선택 구간만 다시 인식", self.recognize_region, "Shift+F6")
         self.act_align = A("가사 시간 정렬 (전체)", lambda: self.align("all"), "F7")
         self.act_align_changed = A("바뀐 부분만 다시 정렬", lambda: self.align("changed"), "Shift+F7")
         self.act_auto_link = A("음표와 자동 연결", self.auto_link)
@@ -119,7 +120,8 @@ class LyricsController(QObject):
 
     def build_menu(self, menubar, before=None) -> None:
         m = menubar.addMenu("가사(&Y)") if before is None else menubar.insertMenu(before, None)
-        for a in (self.act_recognize, self.act_align, self.act_align_changed, self.act_auto_link, None, self.act_import,
+        for a in (self.act_recognize, self.act_recognize_region, self.act_align, self.act_align_changed, self.act_auto_link,
+                  None, self.act_import,
                   self.act_offset, None, self.act_loop, self.act_loop_off, None, self.act_show, self.act_models):
             m.addSeparator() if a is None else m.addAction(a)
         self.menu = m
@@ -179,6 +181,7 @@ class LyricsController(QObject):
         has_text = not self.doc.lyrics.text.is_empty
         for a in (self.act_recognize, self.panel.recognize):
             a.setEnabled(is_open and not busy)
+        self.act_recognize_region.setEnabled(is_open and not busy)
         for a in (self.act_align, self.act_align_changed, self.panel.align_all, self.panel.align_changed):
             a.setEnabled(is_open and not busy and has_text)
         for a in (self.act_auto_link, self.panel.auto_link, self.act_offset):
@@ -269,6 +272,47 @@ class LyricsController(QObject):
         self._chain_info("[1/3] 가사 인식 중…" if align_after else "가사 인식 중…")
         handle.failed.connect(lambda msg, _tb, c=chain: self._chain_stopped(c, "recognize", f"실패했습니다 ({msg})"))
         handle.cancelled.connect(lambda c=chain: self._chain_stopped(c, "recognize", "취소했습니다"))
+
+    def region_for_recognition(self) -> tuple[float, float] | None:
+        """다시 인식할 구간: 켜 둔 반복 구간 → 고른 음절들의 시간 구간 순서."""
+        if self.loop is not None:
+            a, b = self.loop
+            return (float(a), float(b)) if b > a else None
+        al = self.doc.lyrics.alignment
+        spans = [al.timing(sid) for sid in self.lane.selected if al.timing(sid).aligned]
+        spans = [t for t in spans if t.end is not None and t.start is not None and t.end > t.start]
+        if spans:
+            return (min(t.start for t in spans), max(t.end for t in spans))
+        return None
+
+    def recognize_region(self, region: tuple[float, float] | None = None) -> None:
+        """v0.7.0: 선택 구간만 다시 인식해 인식 원본의 그 구간만 바꾼다. 지금 가사 텍스트·시간·연결은 바꾸지 않는다."""
+        self._save_settings()
+        region = region or self.region_for_recognition()
+        if region is None:
+            self.w._show_status_error("다시 인식할 구간이 없습니다. 반복 구간을 켜거나 시간 정렬된 음절을 고르세요.")
+            return
+        handle = self.session.run_recognition_region(self.panel.settings(), self._analysis_settings(), region)
+        if handle is None:
+            return
+        handle.finished.connect(lambda out, r=region: self.on_region_recognition(out[0], r, out[1]))
+
+    def on_region_recognition(self, rec, region: tuple[float, float], reused: bool = False) -> None:
+        from dataclasses import replace
+
+        st = self.doc.lyrics
+        old_n = len(st.recognition.segments) if st.recognition is not None else 0
+        merged = lyr_engine.merge_region(st.recognition, rec, region)
+        info = merged.settings["regions"][-1]
+        new = replace(st, recognition=merged).with_history("구간 다시 인식", f"{region[0]:.2f}~{region[1]:.2f}초")
+        if not self.doc.push_lyrics(new, "구간 다시 인식"):
+            return
+        text_note = "" if st.text.is_empty else " 지금 가사 텍스트·시간·연결은 그대로입니다 (인식 원본만 바꿈)."
+        self.w.statusBar().showMessage(
+            f"{region[0]:.1f}~{region[1]:.1f}초를 다시 인식했습니다: 이전 인식 {info['replaced']}줄 → 새 인식 {info['added']}줄"
+            f" (전체 {old_n} → {len(merged.segments)}줄){' · 캐시 사용' if reused else ''}.{text_note}", 12000)
+        if info["added"]:
+            self.panel.filter.setCurrentIndex(self.panel.filter.findData("review"))
 
     def on_recognition(self, rec, reused: bool) -> None:
         chain = self.chain

@@ -248,7 +248,7 @@ def load_step5_files(paths: ProjectPaths, report: LoadReport):
 
 def save_lyrics_files(paths: ProjectPaths, state: LyricsState) -> None:
     """가사가 없고 파일도 없으면 만들지 않는다. 가사를 모두 지웠으면 빈 파일로 남긴다."""
-    if state.is_empty and not paths.lyrics_json.exists() and not paths.alignment_json.exists():
+    if state.is_empty and not state.pron_dictionary and not paths.lyrics_json.exists() and not paths.alignment_json.exists():
         return
     paths.analysis.mkdir(parents=True, exist_ok=True)
     atomic_write_json(paths.lyrics_json, schema.stamp(schema.LYRICS, lyrics_io.lyrics_to_dict(state)), backup=True)

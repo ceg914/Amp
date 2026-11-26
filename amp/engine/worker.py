@@ -302,9 +302,22 @@ def cmd_asr(args: dict) -> dict:
     y_in = y.copy()
     for a, b in ranges:  # 보컬 없는 구간은 소리를 지워 넣는다 (반주가 섞인 전주에서 가사를 지어내지 않게)
         y_in[int(float(a) * 16000): int(float(b) * 16000)] = 0.0
+    region = args.get("region")  # v0.7.0 선택 구간만 다시 인식: 그 구간(앞뒤 0.5초 여유)만 잘라 넣고 시각을 되돌린다
+    offset = 0.0
+    if region:
+        a0 = max(0.0, float(region[0]) - asr.REGION_PAD_S)
+        b0 = min(len(y_in) / 16000.0, float(region[1]) + asr.REGION_PAD_S)
+        y_in = y_in[int(a0 * 16000): int(b0 * 16000)]
+        offset = a0
+    opts = dict(args.get("options") or {})
+    if region:
+        opts["gap_fill"] = False
     result = asr.transcribe(y_in, model_name=args.get("model", "auto"), language=args.get("language", "auto"),
                             device=args.get("device", "auto"), download_root=args["download_root"], report=_progress,
-                            options=args.get("options"))
+                            options=opts or None)
+    if region:
+        result["segments"] = asr.shift_segments(result["segments"], offset, float(region[0]), float(region[1]))
+        result["region"] = [float(region[0]), float(region[1])]
     db = _frame_rms_db(y)
     act = activity_mask(db, floor_db=20.0)
     ref = float(np.percentile(db, 95)) if len(db) else 0.0

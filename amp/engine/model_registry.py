@@ -82,6 +82,15 @@ CATALOG: dict[str, ModelInfo] = {m.model_id: m for m in (
     ModelInfo("fcpe", "FCPE", "pitch", ("mono_pitch",), ("torchfcpe", "torch"), ("torch",), ("cpu", "cuda"),
               weights="torchfcpe 패키지 안의 fcpe_c_v001.pt", weights_license="torchfcpe 패키지 라이선스와 같음",
               install_hint="pitch", experimental=True),
+    # v0.7.0 발음 자료 (가사 글자 → 발음. 학습 모델이 아니라 사전)
+    ModelInfo("cmudict", "CMU 발음 사전 (영어)", "pronunciation", ("english_pronunciation",), ("cmudict",), ("cmudict",),
+              weights="cmudict 패키지 안의 data/cmudict.dict (자료만 읽고 패키지 코드는 불러오지 않음)",
+              weights_license="BSD-2-Clause 계열 (Carnegie Mellon University, data/LICENSE)", install_hint="pron",
+              code_license="SONATLAS 구현 (amp/lyrics/pronunciation/english.py). cmudict 패키지 코드(GPL-3.0)는 쓰지 않음"),
+    ModelInfo("unidic_lite", "MeCab + UniDic (일본어 한자 읽기)", "pronunciation", ("japanese_kanji_reading",),
+              ("fugashi", "unidic-lite"), ("fugashi", "unidic_lite"),
+              weights="unidic-lite 패키지 안의 사전 (설치 약 250MB)", weights_license="BSD-3-Clause (UniDic Consortium)",
+              install_hint="pron_japanese"),
 )}
 
 
@@ -266,6 +275,15 @@ def _status(info: ModelInfo, ctx: RegistryContext, find_spec, hash_files: bool, 
                 st.reason = "모델 파일 크기가 예상과 다릅니다 (내려받다 끊겼을 수 있음)."
         else:
             st.state, st.reason = DOWNLOAD_ON_FIRST_USE, "모델 파일이 아직 없습니다. 처음 정렬할 때 내려받습니다."
+    elif info.model_id in ("cmudict", "unidic_lite"):
+        pkg, rel = {"cmudict": ("cmudict", "data/cmudict.dict"), "unidic_lite": ("unidic_lite", "dicdir/sys.dic")}[info.model_id]
+        d = _package_dir(pkg, find_spec)
+        p = d / rel if d is not None else None
+        if p is not None and p.is_file():
+            files = [p]
+            st.state = AVAILABLE
+        else:
+            st.state, st.reason = FILE_MISSING, f"{pkg} 패키지에 사전 파일({rel})이 없습니다."
     elif info.model_id in ("crepe_full", "crepe_tiny", "fcpe"):
         pkg, fname = {"crepe_full": ("torchcrepe", "full.pth"), "crepe_tiny": ("torchcrepe", "tiny.pth"),
                       "fcpe": ("torchfcpe", "fcpe_c_v001.pt")}[info.model_id]

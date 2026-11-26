@@ -13,7 +13,8 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 # 별도 설치(보컬 분리·가사 인식)이거나, 없으면 다른 방법으로 넘어가거나 안내를 띄우는 선택 패키지
-OPTIONAL = {"torch", "demucs", "whisper", "tqdm", "safetensors", "miniaudio"}
+# v0.7.0 fugashi: 일본어 한자 읽기 (install_lyrics --japanese, 없으면 한자는 '변환 불가')
+OPTIONAL = {"torch", "demucs", "whisper", "tqdm", "safetensors", "miniaudio", "fugashi"}
 BUNDLED = {"shiboken6": "PySide6"}  # PySide6와 함께 설치된다
 DIST_NAME = {"yaml": "pyyaml", "guitarpro": "pyguitarpro"}  # import 이름 → pip 패키지 이름
 

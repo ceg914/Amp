@@ -244,6 +244,7 @@ class MainWindow(QMainWindow):
         self.inspector.analysis.set_settings(AnalysisSettings.from_dict(self._stored_settings()))
         self._set_model_files(self._stored_model_files())
         self.lite = lite_mode()
+        self._setup_pronunciation()
         if self.lite:
             self._apply_lite()
         self._update_title()
@@ -1453,6 +1454,30 @@ class MainWindow(QMainWindow):
                                   audio.duration if audio is not None else 0.0, self.player.position(), self)
         if dlg.exec() == NoVocalRangesDialog.DialogCode.Accepted:
             self._apply_no_vocal(dlg.ranges())
+
+    def _setup_pronunciation(self) -> None:
+        """v0.7.0: 설치된 발음 자료로 영어(CMUdict)·일본어 한자(MeCab+UniDic) 변환기를 켠다.
+        사용자 발음 사전은 프로젝트마다 lyrics.json에 있다. 가벼운 모드에서는 켜지 않는다."""
+        from amp.lyrics import pronunciation as pron
+        from amp.lyrics.pronunciation import english as pron_en
+
+        if self.lite:
+            return
+        try:
+            p = pron_en.find_installed()
+            if p is not None and pron.enable_english(p):
+                log.info("영어 발음 사전 사용: %s", p)
+                import threading
+
+                # 사전 읽기(약 1~2초)를 화면 스레드 밖에서 미리 해 둔다. 그 전에 영어 가사를 고치면 그때 읽는다
+                threading.Thread(target=pron.preload, name="pron-preload", daemon=True).start()
+        except Exception as e:  # noqa: BLE001 - 발음 사전 문제로 앱이 멈추지 않게 (13.3)
+            log.warning("영어 발음 사전을 켜지 못했습니다: %s", e)
+        try:
+            if pron.enable_kanji():
+                log.info("일본어 한자 읽기(MeCab+UniDic) 사용")
+        except Exception as e:  # noqa: BLE001
+            log.warning("일본어 한자 읽기를 켜지 못했습니다: %s", e)
 
     def _apply_lite(self) -> None:
         """가벼운 모드 (크롬북 등): 메모리·디스크를 많이 쓰는 기능의 메뉴·단추를 숨긴다. 프로젝트 형식은 같다."""

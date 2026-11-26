@@ -23,6 +23,20 @@ def _qt_identity():
     QCoreApplication.setApplicationName("AmpTests")
 
 
+@pytest.fixture(autouse=True)
+def _optional_pronunciation_off(monkeypatch):
+    """v0.7.0: 영어(CMUdict)·한자(MeCab) 변환기는 설치 여부에 따라 앱이 켠다. 시험 결과가 개발 PC에 무엇이 설치됐는지에
+    따라 달라지지 않도록 기본은 '설치 안 됨'으로 보고, 시험이 끝나면 켠 변환기를 끈다. 켜서 보는 시험은 직접 켠다."""
+    from amp.lyrics import pronunciation as pron
+    from amp.lyrics.pronunciation import english, kanji
+
+    monkeypatch.setattr(english, "find_installed", lambda find_spec=None: None)
+    monkeypatch.setattr(kanji, "available", lambda find_spec=None: False)
+    saved = list(pron._EXTRA)
+    yield
+    pron._EXTRA[:] = saved
+
+
 def make_tone(seconds=2.0, sr=22050, channels=2, freq=440.0):
     t = np.arange(int(seconds * sr)) / sr
     x = 0.4 * np.sin(2 * np.pi * freq * t).astype(np.float32)

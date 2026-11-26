@@ -21,8 +21,8 @@ log = logging.getLogger(__name__)
 DISPLAY_MODES = (("lyrics", "가사만"), ("pron", "발음만"), ("lyrics_pron", "가사 + 발음"), ("lyrics_ipa", "가사 + IPA"),
                  ("all", "전체 (가사·발음·IPA)"))
 LANE_SUB = {"lyrics": "none", "pron": "pron", "lyrics_pron": "pron", "lyrics_ipa": "ipa", "all": "pron"}
-VOCAL_ACTIONS = {"pron_confirm", "pron_reset", "pron_regen", "pron_regen_all", "mel_set", "mel_not", "mel_clear", "mel_add",
-                 "mel_remove", "mel_reviewed"}
+VOCAL_ACTIONS = {"pron_to_dict", "pron_dict_edit", "pron_confirm", "pron_reset", "pron_regen", "pron_regen_all", "mel_set",
+                 "mel_not", "mel_clear", "mel_add", "mel_remove", "mel_reviewed"}
 
 
 class VocalDetailController(QObject):
@@ -70,6 +70,8 @@ class VocalDetailController(QObject):
         self.act_lengths.toggled.connect(self.set_show_lengths)
         self.act_regen_all = QAction("발음 전체 다시 생성 (자동 발음만)", self)
         self.act_regen_all.triggered.connect(lambda: self.on_action("pron_regen_all", []))
+        self.act_dictionary = QAction("발음 사전… (이 프로젝트)", self)
+        self.act_dictionary.triggered.connect(self.edit_dictionary)
 
     def build_menu(self, view_menu, lyrics_menu=None) -> None:
         m = view_menu.addMenu("가사·발음 표시")
@@ -82,6 +84,7 @@ class VocalDetailController(QObject):
         if lyrics_menu is not None:
             lyrics_menu.addSeparator()
             lyrics_menu.addAction(self.act_regen_all)
+            lyrics_menu.addAction(self.act_dictionary)
 
     def _connect(self) -> None:
         d = self.doc
@@ -127,7 +130,9 @@ class VocalDetailController(QObject):
         onset = an.onset_envelope if an is not None else None
         ranges = self.w.inspector.analysis.settings().no_vocal_ranges
         try:
-            self.groups = vocal.analyze(ly, notes, curve, onset, ranges)
+            prec = getattr(self.w, "precision", None)
+            vib = prec.acoustics.vibrato_spans() if prec is not None else []
+            self.groups = vocal.analyze(ly, notes, curve, onset, ranges, vibrato=vib)
             self.durations = vocal.all_durations(ly, {n.id: n for n in notes}, curve, ranges)
         except Exception:  # noqa: BLE001 - 판정이 실패해도 편집 화면은 살린다 (데이터는 바꾸지 않았다)
             log.exception("멜리스마·길이 분석 실패")
@@ -157,10 +162,57 @@ class VocalDetailController(QObject):
         except RuntimeError:
             return []
 
+    def _add_to_dictionary(self, st, sid: str) -> None:
+        """v0.7.0: 음절이 든 단어의 지금 발음을 이 프로젝트의 발음 사전에 넣고 자동 발음을 다시 만든다 (실행 취소 가능)."""
+        from amp.lyrics.pronunciation import dictionary as D
+
+        word = next((w for ln in st.text.lines for w in ln.words if any(s.id == sid for s in w.syllables)), None)
+        if word is None:
+            return
+        entry, why = D.entry_for_word(word.text, [st.pronunciation.get(s.id) for s in word.syllables])
+        if entry is None:
+            self.w._show_status_error(why)
+            return
+        d = D.PronDictionary.of(st.pron_dictionary).add(entry)
+        new, n, kept = pronunciation.set_dictionary(st, d.as_tuple(), "발음 사전에 추가", f"{word.text} → [{entry.text}]")
+        if new is st:
+            self.w.statusBar().showMessage(f"'{word.text}'는 이미 같은 발음으로 사전에 있습니다.", 5000)
+            return
+        self._push(new, "발음 사전에 추가")
+        self.w.statusBar().showMessage(f"'{word.text}' → [{entry.text}]를 이 프로젝트의 발음 사전에 넣었습니다 ({len(d)}개). "
+                                       f"자동 발음 {n}개가 바뀌었고 직접 고친 발음 {kept}개는 그대로 두었습니다.", 8000)
+
+    def edit_dictionary(self) -> None:
+        """발음 사전 창. '적용'하면 바뀐 사전을 실행 취소 가능한 편집 하나로 넣는다."""
+        from amp.app.pron_dictionary_dialog import PronDictionaryDialog
+
+        st = self.doc.lyrics
+        start = ""
+        try:
+            start = str(self.w.session.folder.root) if self.w.session.folder is not None else ""
+        except AttributeError:
+            pass
+        dlg = PronDictionaryDialog(st.pron_dictionary, self.w, start)
+        if dlg.exec() != PronDictionaryDialog.DialogCode.Accepted:
+            return
+        self.apply_dictionary(dlg.entries())
+
+    def apply_dictionary(self, entries) -> bool:
+        st = self.doc.lyrics
+        new, n, kept = pronunciation.set_dictionary(st, entries, "발음 사전 수정", f"{len(tuple(entries))}개")
+        if new is st or not self._push(new, "발음 사전 수정"):
+            return False
+        self.w.statusBar().showMessage(f"발음 사전 {len(new.pron_dictionary)}개를 적용했습니다. 자동 발음 {n}개가 바뀌었고 "
+                                       f"직접 고친 발음 {kept}개는 그대로 두었습니다.", 8000)
+        return True
+
     def on_action(self, kind: str, ids: list) -> None:
         st = self.doc.lyrics
         ids = [i for i in ids if i in st.text.index]
         status = self.w.statusBar()
+        if kind == "pron_dict_edit":
+            self.edit_dictionary()
+            return
         if kind == "pron_regen_all":
             new, n, kept = pronunciation.regenerate(st)
             self._push(new, "발음 다시 생성")
@@ -172,7 +224,9 @@ class VocalDetailController(QObject):
         notes_by_id = {n.id: n for n in self.doc.score.notes()}
         sid = ids[0]
         try:
-            if kind == "pron_confirm":
+            if kind == "pron_to_dict":
+                self._add_to_dictionary(st, sid)
+            elif kind == "pron_confirm":
                 self._push(pronunciation.confirm(st, ids), "발음 확정")
             elif kind == "pron_reset":
                 self._push(pronunciation.reset(st, ids), "기본 발음으로 되돌림")

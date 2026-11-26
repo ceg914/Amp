@@ -125,6 +125,30 @@ class LyricsEngine:
         raw = json.loads((d / "asr.json").read_text(encoding="utf-8"))
         return recognition_from_raw(raw, req, params), reused
 
+    def recognize_region(self, req: LyricsRequest, region: tuple[float, float], progress: ProgressFn | None = None,
+                         token: CancelToken | None = None) -> tuple[Recognition, bool]:
+        """v0.7.0: 선택 구간만 다시 인식한다. 돌려주는 Recognition에는 그 구간의 결과만 있다 (merge_region으로 합침)."""
+        progress = progress or (lambda f, m: None)
+        token = token or CancelToken()
+        a, b = float(region[0]), float(region[1])
+        if not b > a:
+            raise ValueError("다시 인식할 구간의 끝이 시작보다 뒤여야 합니다.")
+        params = {"model": req.model, "language": req.language, "device": req.device,
+                  "ranges": [list(r) for r in req.no_vocal_ranges], "region": [round(a, 3), round(b, 3)], "v": ASR_VERSION}
+
+        def compute(out: Path) -> None:
+            self._call("asr", {"input": req.vocals_path, "out_dir": str(out), "model": req.model,
+                               "language": req.language, "device": req.device, "download_root": req.whisper_root,
+                               "no_vocal_ranges": [list(r) for r in req.no_vocal_ranges], "region": [a, b]},
+                       progress, token, req)
+
+        def check(d: Path) -> None:
+            json.loads((d / "asr.json").read_text(encoding="utf-8"))["segments"]
+
+        d, reused = self._cached(req, "asr_region", params, compute, check, progress, token)
+        raw = json.loads((d / "asr.json").read_text(encoding="utf-8"))
+        return recognition_from_raw(raw, req, params), reused
+
     # --- 정렬 ----------------------------------------------------------------
 
     def emissions(self, req: LyricsRequest, progress: ProgressFn, token: CancelToken) -> tuple[Path, dict, bool]:
@@ -201,6 +225,27 @@ def recognition_from_raw(raw: dict, req: LyricsRequest | None = None, params: di
     return Recognition(str(raw.get("model", "")), str(raw.get("model_version", "")), str(raw.get("language", "")),
                        raw.get("language_probability"), str(raw.get("device", "")), _now(), settings,
                        req.input_id if req else "", tuple(segs), warnings)
+
+
+def merge_region(old: Recognition | None, new: Recognition, region: tuple[float, float]) -> Recognition:
+    """선택 구간 다시 인식 결과를 인식 원본에 합친다 (v0.7.0). 가운데가 구간 안인 이전 구간은 빼고 새 구간을 넣는다.
+    새 구간에는 '구간 다시 인식' 검토 사유를 붙인다. 가사 텍스트(사용자 가사)는 바꾸지 않는다 (인식 원본만)."""
+    from dataclasses import replace
+
+    a, b = float(region[0]), float(region[1])
+    inside = lambda s: a <= (s.start + s.end) / 2.0 <= b  # noqa: E731
+    kept = [s for s in (old.segments if old is not None else ()) if not inside(s)]
+    added = [replace(s, review=s.review + (review.R_REGION,)) for s in new.segments]
+    segs = sorted(kept + added, key=lambda s: (s.start, s.end))
+    segs = [replace(s, id=f"seg{i}") for i, s in enumerate(segs)]
+    base = old if old is not None else new
+    regions = list((base.settings or {}).get("regions") or []) + [{"start": round(a, 3), "end": round(b, 3),
+                                                                     "model": new.model, "language": new.language,
+                                                                     "created": new.created,
+                                                                     "replaced": len(old.segments) - len(kept) if old else 0,
+                                                                     "added": len(added)}]
+    warnings = tuple(dict.fromkeys(base.warnings + new.warnings))
+    return replace(base, settings={**(base.settings or {}), "regions": regions}, segments=tuple(segs), warnings=warnings)
 
 
 def _letters(s: str) -> str:

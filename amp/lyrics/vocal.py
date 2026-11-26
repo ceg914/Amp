@@ -50,7 +50,8 @@ FLAG_LABELS = {
     "new_syllable_inside": "음표 묶음 안에서 다른 음절이 시작됨", "gap": "음표 사이가 0.25초 넘게 비어 있음",
     "low_confidence": "신뢰도 낮은 음표가 있음", "outside_span": "음절 시간 구간 밖의 음표가 있음",
     "possible_oversplit": "같은 높이인데 다시 발음한 흔적이 없음(음표가 잘못 나뉘었을 수 있음)",
-    "vibrato_split": "비브라토가 음표 여러 개로 나뉜 것으로 보임", "rearticulated": "음높이가 바뀌는 곳에서 다시 발음함(다른 음절일 수 있음)",
+    "vibrato_split": "비브라토가 음표 여러 개로 나뉜 것으로 보임",
+    "vibrato_measured": "이 구간에서 비브라토가 측정됨: 음표가 비브라토 때문에 나뉘었을 수 있음 (v0.7.0 음향 분석)", "rearticulated": "음높이가 바뀌는 곳에서 다시 발음함(다른 음절일 수 있음)",
     "uncovered_voicing": "음표가 없는 유성 구간이 있음(음표가 빠졌을 수 있음)", "no_reartic_info": "재발음 지표가 없어 반복 여부를 판단하지 못함",
     "missing_note": "연결된 음표 중 지금 없는 음표가 있음", "user_review": "음표가 바뀌어 사용자 판정을 다시 확인해야 함",
 }
@@ -204,6 +205,16 @@ class _Context:
     all_notes: list[Note] = field(default_factory=list)
     ends: list[float] = field(default_factory=list)  # all_notes의 시작 시각 (정렬됨, 탐색 시작점)
     longest: float = 0.0  # 가장 긴 음표 길이: 시작이 (t - longest)보다 앞인 음표는 t 뒤까지 이어질 수 없다
+    vibrato: list[tuple[float, float]] = field(default_factory=list)  # v0.7.0 측정한 비브라토 구간 (시작, 끝)
+
+
+VIBRATO_COVER = 0.6  # 음표 묶음 구간의 이 비율 이상이 측정된 비브라토면 비브라토 과분할을 의심한다
+
+
+def _vibrato_cover(a: float, b: float, ctx: _Context) -> float:
+    if b <= a or not ctx.vibrato:
+        return 0.0
+    return union_length((max(a, s), min(b, e)) for s, e in ctx.vibrato if e > a and s < b) / (b - a)
 
 
 def direction_of(pitches: list[int]) -> str:
@@ -324,6 +335,11 @@ def _classify(sid: str, ctx: _Context) -> VocalGroup | None:
               and all(x * y < 0 for x, y in zip(steps, steps[1:])) and all(n.duration < VIBRATO_SPLIT_MAX_S for n in core)):
             kind, conf = "uncertain", 0.3
             flags.append("vibrato_split")
+        elif (all(abs(s) <= 1 for s in steps) and max(pitches) - min(pitches) <= 1
+              and _vibrato_cover(core[0].start, core[-1].end, ctx) >= VIBRATO_COVER):
+            # v0.7.0: 반음 안에서 오가는 음표들이 측정된 비브라토 구간에 들어 있으면 멜리스마로 세지 않는다 (판정은 사용자 몫)
+            kind, conf = "uncertain", 0.35
+            flags.append("vibrato_measured")
         elif (all(n.duration < SLIDE_NOTE_MAX_S for n in core[:-1]) and direction_of(pitches) in ("ascending", "descending")
               and not any(r is True for r in reart) and _continuous(core[0], core[-1], ctx)):
             kind, conf = "pitch_slide", 0.6
@@ -377,15 +393,18 @@ def _apply_user(g: VocalGroup | None, sid: str, d: MelismaDecision, ctx: _Contex
 
 
 def analyze(state: LyricsState, notes: Iterable[Note], curve: PitchCurve | None = None, onset: np.ndarray | None = None,
-            no_vocal_ranges: Iterable[tuple[float, float]] = (), ids: Iterable[str] | None = None) -> dict[str, VocalGroup]:
-    """음절마다 음표 묶음 판정. 연결 음표가 없는 음절은 결과에 없다."""
+            no_vocal_ranges: Iterable[tuple[float, float]] = (), ids: Iterable[str] | None = None,
+            vibrato: Iterable[tuple[float, float]] = ()) -> dict[str, VocalGroup]:
+    """음절마다 음표 묶음 판정. 연결 음표가 없는 음절은 결과에 없다.
+    vibrato: v0.7.0 음향 분석에서 측정한 비브라토 구간 (없으면 이전과 같은 판정)."""
     all_notes = sorted(notes, key=lambda n: (n.start, n.id))
     by_id = {n.id: n for n in all_notes}
     voiced = voiced_mask(curve, no_vocal_ranges) if curve is not None and len(curve) else None
     al = state.alignment
     starts = sorted((t.start, sid) for sid, t in al.timings.items() if t.aligned and sid in state.text.index)
     ctx = _Context(state, by_id, curve, None if onset is None else np.asarray(onset, dtype=np.float64), voiced, starts,
-                   all_notes, [n.start for n in all_notes], max((n.duration for n in all_notes), default=0.0))
+                   all_notes, [n.start for n in all_notes], max((n.duration for n in all_notes), default=0.0),
+                   sorted((float(a), float(b)) for a, b in vibrato if b > a))
     out: dict[str, VocalGroup] = {}
     chosen = state.text.order if ids is None else [i for i in ids if i in state.text.index]
     for sid in chosen:

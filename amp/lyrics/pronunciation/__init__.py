@@ -3,7 +3,11 @@
 발음은 가사 원문에서 추정한 값이다. 가수의 실제 발음을 인식한 것이 아니다.
 
 - 언어별 변환기(``LanguagePronunciationAdapter``)를 음절 종류(한글·가나·라틴 문자 …)에 따라 고른다. 한 줄에 여러 언어가 섞여도 된다.
-- 한국어: 표준 발음법 규칙(``korean``). 일본어: 가나 박 단위(``japanese``). 영어·한자·숫자: 검증된 변환기가 없어 '변환 불가'.
+- 한국어: 표준 발음법 규칙(``korean``). 일본어: 가나 박 단위(``japanese``). 숫자: 읽는 법이 문맥마다 달라 '변환 불가'.
+- 영어 (v0.7.0): CMU 발음 사전 자료가 설치되어 있고 앱이 ``enable_english``를 부른 경우에만 (``english``). 아니면 '변환 불가'.
+- 일본어 한자 (v0.7.0): fugashi+UniDic이 설치되어 있고 앱이 ``enable_kanji``를 부른 경우에만 줄 문맥으로 읽기 (``kanji``).
+- 사용자 발음 사전 (v0.7.0, ``dictionary``): 프로젝트마다 따로(``LyricsState.pron_dictionary``). 자동 발음을 만들 때 단어·음절 항목을
+  먼저 쓴다. 음절에서 직접 고친 발음이 더 우선이다.
 - 사용자가 고친 발음(``user_edited``)은 다시 만들 때 덮어쓰지 않는다. 원문이나 문맥이 바뀌면 ``stale`` (재검토 필요)만 붙인다.
 - 자동 생성 결과는 ``CONVERTER``·``VERSION`` 을 남긴다. 규칙이 바뀌어 버전이 오르면 자동 생성 결과만 다시 만든다.
 """
@@ -118,11 +122,62 @@ class JapaneseKanaAdapter:
 
 
 ADAPTERS: tuple[LanguagePronunciationAdapter, ...] = (KoreanAdapter(), JapaneseKanaAdapter())
+_EXTRA: list = []  # v0.7.0 선택 변환기 (영어 사전이 설치되어 있을 때 앱이 켬)
+
+
+def enable_english(path) -> bool:
+    """CMU 발음 사전 파일로 영어 변환기를 켠다. 파일을 읽지 못하면 False (영어는 계속 '변환 불가')."""
+    from amp.lyrics.pronunciation import english
+
+    disable_english()
+    try:
+        _EXTRA.append(english.EnglishAdapter(path))
+    except OSError:
+        return False
+    return True
+
+
+def disable_english() -> None:
+    _EXTRA[:] = [a for a in _EXTRA if getattr(a, "language", "") != "en"]
+
+
+def english_enabled() -> bool:
+    return any(getattr(a, "language", "") == "en" for a in _EXTRA)
+
+
+def preload() -> None:
+    """켜 둔 선택 변환기의 사전을 미리 읽는다 (작업 스레드에서 부름). 실패해도 조용히 넘어간다 (쓸 때 다시 시도)."""
+    for a in list(_EXTRA):
+        try:
+            getattr(a, "preload", lambda: None)()
+        except Exception:  # noqa: BLE001
+            pass
+
+
+def enable_kanji(tagger_factory=None) -> bool:
+    """일본어 한자 읽기(MeCab+UniDic)를 켠다. fugashi·사전이 없으면 False. 분석기는 처음 쓸 때 연다."""
+    from amp.lyrics.pronunciation import kanji
+
+    disable_kanji()
+    if tagger_factory is None and not kanji.available():
+        return False
+    _EXTRA.append(kanji.KanjiReadingAdapter(tagger_factory))
+    return True
+
+
+def disable_kanji() -> None:
+    _EXTRA[:] = [a for a in _EXTRA if getattr(a, "name", "") != "japanese-mecab-unidic"]
+
+
+def kanji_enabled() -> bool:
+    return any(getattr(a, "name", "") == "japanese-mecab-unidic" for a in _EXTRA)
+
+
 _UNAVAILABLE = {tx.LATIN: ("en", N_EN), tx.KANJI: ("ja", N_KANJI), tx.NUMBER: ("", N_NUMBER), tx.JAMO: ("ko", N_JAMO)}
 
 
 def _adapter_for(kind: str) -> LanguagePronunciationAdapter | None:
-    for a in ADAPTERS:
+    for a in (*_EXTRA, *ADAPTERS):
         if kind in a.kinds:
             return a
     return None
@@ -139,9 +194,19 @@ def _line_units(line: LyricLine):
     return flat
 
 
-def generate(text: LyricsText) -> dict[str, PronEntry]:
-    """모든 음절의 자동 발음. 같은 변환기를 쓰는 음절이 이어지는 구간마다 문맥을 보고 변환한다."""
+def _dict_of(entries):
+    if not entries:
+        return None
+    from amp.lyrics.pronunciation.dictionary import PronDictionary
+
+    return entries if isinstance(entries, PronDictionary) else PronDictionary.of(entries)
+
+
+def generate(text: LyricsText, dictionary=None) -> dict[str, PronEntry]:
+    """모든 음절의 자동 발음. 같은 변환기를 쓰는 음절이 이어지는 구간마다 문맥을 보고 변환한다.
+    dictionary(사용자 발음 사전 항목들)가 있으면 변환 결과보다 먼저 쓴다."""
     out: dict[str, PronEntry] = {}
+    d = _dict_of(dictionary)
     for line in text.lines:
         flat = _line_units(line)
         i = 0
@@ -158,11 +223,46 @@ def generate(text: LyricsText) -> dict[str, PronEntry]:
                 j += 1
             run = flat[i:j]
             units = [(u[0].text, u[0].reading, u[1], u[2] or k == len(run) - 1) for k, u in enumerate(run)]
-            for (syl, _w, _b), r in zip(run, adapter.convert(units)):
+            results = adapter.convert_run(flat, i, j) if hasattr(adapter, "convert_run") else adapter.convert(units)
+            for (syl, _w, _b), r in zip(run, results):
                 out[syl.id] = _entry(syl.id, syl.text, r, adapter.name)
             i = j
+        if d is not None:
+            _apply_dictionary(line, out, d)
     _fill_ipa(text, out, auto=True)
     return out
+
+
+def _apply_dictionary(line: LyricLine, out: dict[str, PronEntry], d) -> None:
+    """사용자 사전: 단어 항목(음절 수가 맞을 때만 나눠 넣음) → 음절 항목 순서로 자동 발음을 바꾼다."""
+    from amp.lyrics.pronunciation.dictionary import split_units
+
+    model = f"{CONVERTER}/user-dictionary"
+    for w in line.words:
+        sylls = list(w.syllables)
+        e = d.word(w.text) or d.word(w.text.strip(string.punctuation + "…·“”‘’"))
+        if e is not None:
+            parts = split_units(e.text)
+            ipas = e.ipa.split(".") if e.ipa else []
+            if len(parts) == len(sylls):
+                for k, sy in enumerate(sylls):
+                    old = out[sy.id]
+                    ipa = ipas[k] if len(ipas) == len(sylls) else ""
+                    lang = e.language or old.language
+                    out[sy.id] = PronEntry(sy.id, sy.text, parts[k], ipa, lang, "generated", "valid", False, model,
+                                           VERSION, ("사용자 사전",), (), False, parts[k], ipa, False)
+                continue
+            for sy in sylls:
+                old = out[sy.id]
+                out[sy.id] = replace(old, notes=old.notes + (f"사용자 사전 '{w.text}'의 음절 수({len(parts)})가 가사 음절 수"
+                                                             f"({len(sylls)})와 달라 적용하지 않았습니다.",))
+        for sy in sylls:
+            se = d.syllable(sy.text)
+            if se is not None:
+                old = out[sy.id]
+                lang = se.language or old.language
+                out[sy.id] = PronEntry(sy.id, sy.text, se.text, se.ipa, lang, "generated", "valid", False, model, VERSION,
+                                       ("사용자 사전",), (), False, se.text, se.ipa, False)
 
 
 def _entry(sid: str, original: str, r: AdapterResult, adapter_name: str) -> PronEntry:
@@ -215,7 +315,7 @@ def _fill_ipa(text: LyricsText, entries: dict[str, PronEntry], auto: bool) -> No
 def sync(state: LyricsState) -> LyricsState:
     """텍스트에 맞춰 발음을 맞춘다. 자동 생성 항목은 새로 만들고, 사용자 항목은 값을 지키며 원문·문맥이 바뀌었으면 재검토 표시."""
     text = state.text
-    gen = generate(text)
+    gen = generate(text, state.pron_dictionary)
     old = state.pronunciation
     out: dict[str, PronEntry] = {}
     for s in text.syllables:
@@ -268,7 +368,7 @@ def set_user(state: LyricsState, sid: str, value: str, ipa: str | None = None) -
     if sid not in state.text.index:
         raise KeyError(sid)
     syl = state.text.syllable(sid)
-    base = state.pronunciation.get(sid) or generate(state.text)[sid]
+    base = state.pronunciation.get(sid) or generate(state.text, state.pron_dictionary)[sid]
     value = value.strip()
     notes: tuple[str, ...] = ()
     lang = base.language
@@ -320,6 +420,29 @@ def regenerate(state: LyricsState, ids: Iterable[str] | None = None) -> tuple[Ly
     if out.pronunciation == state.pronunciation:
         return state, len(chosen) - kept, kept
     return out.with_history("발음 다시 생성", f"{len(chosen) - kept}개"), len(chosen) - kept, kept
+
+
+def set_dictionary(state: LyricsState, entries, action: str = "발음 사전 수정",
+                   detail: str = "") -> tuple[LyricsState, int, int]:
+    """프로젝트 사용자 발음 사전을 바꾸고 자동 발음을 다시 만든다. 직접 고친 발음은 값을 그대로 둔다.
+    (새 상태, 값이 바뀐 자동 발음 수, 지킨 사용자 발음 수). 바뀐 것이 없으면 state를 그대로 돌려준다."""
+    entries = tuple(entries)
+    if entries == state.pron_dictionary:
+        return state, 0, 0
+    new = sync(replace(state, pron_dictionary=entries))
+    old_p, new_p = state.pronunciation, dict(new.pronunciation)
+    changed = kept = 0
+    for sid, e in new_p.items():
+        o = old_p.get(sid)
+        if e.user_edited:
+            kept += 1
+            # 사전에 넣은 값이 사용자 발음과 같으면 사전 때문에 재검토 표시를 새로 붙이지 않는다
+            if o is not None and not o.stale and e.stale and e.original_text == o.original_text and e.auto_text == e.text:
+                new_p[sid] = replace(e, stale=False)
+        elif o is None or (o.text, o.ipa, o.status) != (e.text, e.ipa, e.status):
+            changed += 1
+    new = replace(new, pronunciation=new_p)
+    return new.with_history(action, detail), changed, kept
 
 
 def summary(state: LyricsState) -> dict[str, int]:

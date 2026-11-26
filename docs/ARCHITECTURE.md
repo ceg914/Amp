@@ -54,12 +54,15 @@ amp/
 │   ├── linking.py              자동 연결(1:1·1:N·N:1, 신뢰도), 순서대로 연결, 사용자 연결, 음표 변경 뒤 재연결(reconcile)
 │   ├── asr.py · review.py      Whisper 인식(작업 프로세스 안), 환각 의심 '검토 필요' 규칙
 │   ├── mms.py · ctc.py         MMS_FA wav2vec2(PyTorch로 직접 구현) · numpy CTC 강제 정렬(고정점·보컬 활동·끝 추정)
-│   ├── engine.py               인식·정렬 실행, 캐시(asr·mms), 결과 반영(사용자 수정값 보호)
-│   ├── io.py                   lyrics.json(v2: 발음) · alignment.json(v3: 멜리스마 판정) ↔ 객체, STEP 1 형식 옮기기
+│   ├── engine.py               인식·정렬 실행, 캐시(asr·mms·asr_region), 결과 반영(사용자 수정값 보호). v0.7.0 선택 구간만 다시 인식(merge_region: 인식 원본만 바꿈)
+│   ├── io.py                   lyrics.json(v2: 발음, v0.7.0 pron_dictionary 선택 키) · alignment.json(v3: 멜리스마 판정) ↔ 객체, STEP 1 형식 옮기기
 │   ├── pronunciation/          발음 엔진 (STEP 4): 언어별 변환기 선택, 생성·동기화(사용자 값 보호·재검토 표시)·확정·되돌리기
 │   │   ├── korean.py           표준 발음법 규칙(제5·9~29항)을 줄 단위 문맥으로 적용 → 발음 한글, 간략 IPA
-│   │   └── japanese.py         가나 박 → 가타카나·IPA (한자는 변환 불가)
-│   └── vocal.py                음절 구간·유성 가창 길이, 멜리스마 판정(종류 + 근거 속성), 사용자 판정 편집·음표 변경 뒤 옮기기
+│   │   ├── japanese.py         가나 박 → 가타카나·IPA
+│   │   ├── dictionary.py       v0.7.0 사용자 발음 사전 (프로젝트마다 LyricsState.pron_dictionary, 파일 가져오기·내보내기)
+│   │   ├── english.py          v0.7.0 영어: CMUdict 자료(설치돼 있을 때만) → 최대 두음 음절 나누기 → IPA
+│   │   └── kanji.py            v0.7.0 일본어 한자 읽기: MeCab+UniDic(선택 설치), 줄 문맥, 여러 한자 낱말은 '불확실'
+│   └── vocal.py                음절 구간·유성 가창 길이, 멜리스마 판정(종류 + 근거 속성, v0.7.0 측정 비브라토 구간), 사용자 판정 편집·음표 변경 뒤 옮기기
 ├── compare/                    STEP 5 비교·검토 (Qt 없음, 사용자 데이터 읽기 전용). v0.7.0 pitch_compare.py: 피치 모델 차이
 │   ├── review.py               분석 오류 검토 규칙(근거 숫자를 사유에 적음)·검토 상태(지문이 바뀌면 재검토)
 │   ├── score_io.py · reference.py   MIDI·MusicXML(MXL) 가져오기, 참조 악보 데이터

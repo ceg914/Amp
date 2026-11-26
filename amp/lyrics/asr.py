@@ -179,6 +179,21 @@ def find_gaps(active: np.ndarray, segments: list[dict], dt: float = 0.02) -> lis
     return sorted(chosen)
 
 
+REGION_PAD_S = 0.5
+
+
+def shift_segments(segments: list[dict], offset: float, a: float, b: float) -> list[dict]:
+    """잘라 넣은 구간의 인식 결과 시각을 원래 곡 시각으로 되돌리고, 선택 구간 [a, b]와 겹치지 않는 결과는 버린다."""
+    out = []
+    for s in segments:
+        s2 = dict(s, start=float(s["start"]) + offset, end=float(s["end"]) + offset,
+                  words=[dict(w, start=float(w["start"]) + offset, end=float(w["end"]) + offset)
+                         for w in s.get("words") or ()])
+        if s2["end"] > a and s2["start"] < b:
+            out.append(s2)
+    return out
+
+
 def merge_second_pass(first: list[dict], second: list[dict]) -> list[dict]:
     """다시 들은 결과를 1차 결과에 넣는다. 의심스러운 결과는 받지 않고, 받은 결과와 겹치는 1차 의심 구간은 뺀다."""
 

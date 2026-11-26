@@ -23,6 +23,7 @@ from amp.lyrics.model import (
     LyricWord,
     MelismaDecision,
     NoteLink,
+    PronDictEntry,
     PronEntry,
     Recognition,
     SyllableTiming,
@@ -194,7 +195,29 @@ def lyrics_to_dict(state: LyricsState) -> dict:
     body["history"] = [{"time": h.time, "action": h.action, "detail": h.detail} for h in state.history]
     body["stats"] = {"lines": len(state.text.lines), "syllables": len(state.text.syllables)}
     body["pronunciation"] = pronunciation_to_dict(state)
+    if state.pron_dictionary:  # v0.7.0 프로젝트 사용자 발음 사전 (없으면 적지 않아 이전 파일과 같다)
+        body["pron_dictionary"] = pron_dictionary_to_dict(state.pron_dictionary)
     return body
+
+
+def pron_dictionary_to_dict(entries) -> dict:
+    return {"note": "이 프로젝트에서만 쓰는 사용자 발음 사전입니다. 가사 글자에서 정한 발음이며 실제 부른 발음을 들은 값이 아닙니다.",
+            "entries": [{"key": e.key, "text": e.text, "ipa": e.ipa, "language": e.language, "scope": e.scope,
+                         "note": e.note} for e in entries]}
+
+
+def pron_dictionary_from_dict(d, warnings: list[str]) -> tuple[PronDictEntry, ...]:
+    out: dict = {}
+    for x in (d or {}).get("entries") or () if isinstance(d, dict) else ():
+        try:
+            e = PronDictEntry(str(x["key"]), str(x["text"]), str(x.get("ipa", "")), str(x.get("language", "")),
+                              str(x.get("scope", "word")), str(x.get("note", "")))
+        except (KeyError, TypeError, AttributeError) as err:
+            warnings.append(f"발음 사전 항목 하나를 읽지 못했습니다: {err}")
+            continue
+        if e.key and e.scope in ("word", "syllable"):
+            out[(e.scope, e.key)] = e
+    return tuple(out.values())
 
 
 # --- alignment.json -------------------------------------------------------------------
@@ -285,7 +308,8 @@ def state_from_dicts(lyrics: dict | None, alignment: dict | None, warnings: list
                  for h in lyrics.get("history") or () if isinstance(h, dict))
     al = alignment_from_dict(alignment or {}, warnings)
     pron = pronunciation_from_dict(lyrics.get("pronunciation"), set(text.order), warnings)
-    return LyricsState(text, al, rec, hist, pron)
+    pdict = pron_dictionary_from_dict(lyrics.get("pron_dictionary"), warnings)
+    return LyricsState(text, al, rec, hist, pron, pdict)
 
 
 # --- STEP 1 형식(notes.json 안의 lyrics + 음표 syllable_id) 옮기기 ---------------------

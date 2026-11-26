@@ -27,7 +27,10 @@ def _adopt_sample_lyrics(current: LyricsState, result: AnalysisResult) -> Lyrics
     from amp.lyrics import io as lyrics_io
     from amp.storage.serialization import lyrics_to_dict
 
-    return pronunciation.sync(lyrics_io.from_legacy(lyrics_to_dict(result.lyrics), dict(result.lyric_links)))
+    from dataclasses import replace
+
+    new = lyrics_io.from_legacy(lyrics_to_dict(result.lyrics), dict(result.lyric_links))
+    return pronunciation.sync(replace(new, pron_dictionary=current.pron_dictionary))
 
 
 class ReplaceNotesCommand(QUndoCommand):
@@ -340,7 +343,7 @@ class ProjectDocument(QObject):
         if new is not old and new.text != old.text:
             new = pronunciation.sync(new)
         if new is old or (new.text == old.text and new.alignment == old.alignment and new.recognition == old.recognition
-                          and new.pronunciation == old.pronunciation):
+                          and new.pronunciation == old.pronunciation and new.pron_dictionary == old.pron_dictionary):
             return False
         self.undo_stack.push(SetLyricsCommand(self, old, new, text))
         return True
