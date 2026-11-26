@@ -430,6 +430,8 @@ class MainWindow(QMainWindow):
         self.act_probe = A("GPU 확인", self.probe_gpu, icon_name="cpu")
         self.act_sample = A("샘플 데이터 생성 (시험용, 실제 분석 아님)", self.run_sample_analysis)
         self.act_analysis_select = A("분석 선택…", self.choose_analysis, "Ctrl+F5")  # v0.7.0
+        self.act_analysis_export = A("분석 결과 내보내기 (JSON·CSV·TXT·PNG·구간 WAV)…", self.export_analysis)
+        self.act_validation = A("검증 자료 만들기…", self.edit_validation)
         self.act_models = A("모델 관리…", self.show_model_manager)
         self.act_ui_stalls = A("화면 멈춤 기록…", self.show_ui_stalls)
         self.lane_actions = {}
@@ -481,8 +483,8 @@ class MainWindow(QMainWindow):
         m = mb.addMenu("분석(&A)")
         for a in (self.act_analyze, self.act_analysis_select, self.act_redetect, self.act_reseparate, self.act_import_stems,
                   self.act_cancel_analysis, None, self.act_no_vocal, self.act_pitch_regions, self.act_compare_runs,
-                  self.act_probe, self.act_models, self.act_clear_cache, None, self.act_sample, None, self.act_bass_analyze,
-                  self.act_bass_edit):
+                  self.act_probe, self.act_models, self.act_clear_cache, None, self.act_validation, self.act_sample, None,
+                  self.act_bass_analyze, self.act_bass_edit):
             m.addSeparator() if a is None else m.addAction(a)
         self.model_compare.build_menu(m)
         self.hybrid.build_menu(m)
@@ -490,6 +492,7 @@ class MainWindow(QMainWindow):
         m = mb.addMenu("내보내기(&X)")
         m.addAction(self.act_export)
         m.addAction(self.exporter.act)
+        m.addAction(self.act_analysis_export)
         m.addSeparator()
         m.addAction(self.act_bass_gp5)
         m.addAction(self.act_bass_text)
@@ -1540,6 +1543,43 @@ class MainWindow(QMainWindow):
             return
         self.analysis_chain = AnalysisChain(self, dlg.plan())
         self.analysis_chain.start()
+
+    def export_analysis(self) -> None:
+        from amp.app.analysis_export_dialog import AnalysisExportDialog, run_export
+
+        f = self.session.folder
+        if f is None or self.session.audio is None:
+            self._show_status_error("먼저 오디오를 열거나 프로젝트를 여세요.")
+            return
+        region = self.player.loop_region if self.player.loop_enabled else None
+        tracks = {n for n in TRACK_LABELS if self.session.track_audio(n) is not None}
+        dlg = AnalysisExportDialog(self, str(f.paths.exports), region, tracks)
+        if dlg.exec() != AnalysisExportDialog.DialogCode.Accepted:
+            return
+        choice = dlg.choice()
+        if not choice["folder"]:
+            return
+        handle = self.runner.submit("분석 결과 내보내기", run_export(self, choice))
+        self._track(handle, "분석 결과 내보내기")
+
+        def done(out):
+            written, skipped = out
+            msg = f"분석 결과 파일 {len(written)}개를 썼습니다: {choice['folder']}"
+            if skipped:
+                msg += " · 건너뜀: " + "; ".join(f"{k} ({v})" for k, v in skipped.items())
+            self.statusBar().showMessage(msg, 15000)
+            self.last_analysis_export = out
+
+        handle.finished.connect(done)
+        handle.failed.connect(lambda msg, _tb: self._show_status_error(f"분석 결과를 내보내지 못했습니다: {msg}"))
+
+    def edit_validation(self) -> None:
+        from amp.app.validation_dialog import ValidationDialog
+
+        if self.session.folder is None or self.session.audio is None:
+            self._show_status_error("먼저 오디오를 열거나 프로젝트를 여세요.")
+            return
+        ValidationDialog(self).exec()
 
     def show_model_manager(self) -> None:
         from amp.app.model_manager_dialog import ModelManagerDialog

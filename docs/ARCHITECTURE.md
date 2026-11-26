@@ -37,6 +37,7 @@ amp/
 │   ├── stem_compare.py         v0.7.0 악기 결과 비교용 보컬 유사 성분(1초 구간 최소제곱 투영, 근사 지표)
 │   ├── model_registry.py       v0.7.0 모델 등록 정보: 설치·파일 위치·크기·해시·장치·의존성·라이선스·상태 (torch를 불러오지 않음), 앱 데이터의 model_registry.json
 │   ├── profiles.py             v0.7.0 분석 프로필 Lite·Standard·Advanced → 설치된 모델로 실제 켤 수 있는 기능과 이유
+│   ├── validation.py           v0.7.0 검증 자료: 10~30초 구간의 확인한 결과 저장(validation/, 자료 종류 구분)·지금 결과와 비교
 │   ├── analysis_plan.py        v0.7.0 분석 선택: 고른 기능 → 앞 단계 더하기·할 수 없는 것 빼기·실행 순서 (실험·미설치 모델은 '전체'에도 넣지 않음)
 │   ├── dsp/pitch_models.py     v0.7.0 CREPE(full·tiny)·FCPE 추론을 torch만으로 옮김 (가중치는 install_pitch로 설치한 패키지 파일)
 │   ├── pitch_runs.py           v0.7.0 피치 모델별 결과(analysis/pitch_models/): 공통 인터페이스·저장·재사용·구간·stale
@@ -71,7 +72,7 @@ amp/
 │   ├── align.py · intonation.py     악보 ↔ 음원 정렬(상호상관 + DTW + 우연 기준), 음정 비교(센트·도달 시간·비브라토 중심)
 │   ├── model_diff.py           두 분리 모델로 만든 채보의 차이(음표 대응·음높이·시각·재발음 분할·유성·옥타브), '모델 비교' 검토 항목. 우열 판정 없음
 │   └── source_switch.py        분석 소스 전환 영향 미리 보기 (실제 반영과 같은 plan_reanalysis·linking.reconcile로 계산)
-├── export/                     STEP 5 채보·가사 내보내기: USTX(OpenUtau 0.6), MIDI, MusicXML, JSON, CSV, LRC. v0.6.3 베이스 GP5·텍스트 TAB (v0.7.0: 셋잇단 3:2, 마디마다 박자, 템포 변화 믹스 테이블)
+├── export/                     v0.7.0 analysis_export.py: 보컬·음향 분석 결과 JSON·CSV·TXT (새 악보 없음). STEP 5 채보·가사 내보내기: USTX(OpenUtau 0.6), MIDI, MusicXML, JSON, CSV, LRC. v0.6.3 베이스 GP5·텍스트 TAB (v0.7.0: 셋잇단 3:2, 마디마다 박자, 템포 변화 믹스 테이블)
 ├── project/                    프로젝트 폴더 (Qt 없음)
 │   ├── layout.py               폴더 구조, Windows 이름 규칙, 중복 이름 처리
 │   ├── schema.py               파일 종류·스키마 버전·마이그레이션
@@ -82,7 +83,7 @@ amp/
 │   ├── export.py               WAV/MP3 내보내기
 │   └── legacy.py               .ampproj → 프로젝트 폴더 변환 (+백업)
 ├── storage/                    STEP 1 단일 파일(.ampproj) 형식 — 이전 파일 읽기와 자동 복구 스냅샷에 사용
-├── devtools/                   검증용 도구 (앱 실행에는 쓰지 않음). windows_check.py: v0.7.0 사용자 PC 점검(모델·GPU·프로필 → 결과 파일)
+├── devtools/                   검증용 도구 (앱 실행에는 쓰지 않음). windows_check.py: v0.7.0 사용자 PC 점검(모델·GPU·프로필 → 결과 파일). multipitch_eval.py·final_eval_v07.py: v0.7.0 합성 평가 (final_eval은 최종 보고에만 쓴 새 사례)
 │   ├── synth.py                합성 노래·반주·숨소리 (시험·벤치마크·검증 도구 자가 점검)
 │   ├── evaluation.py           음표 F1·시작/끝 오차, 프레임 피치 cent 오차·옥타브 오류·무성 오경보
 │   ├── benchmark.py            v1↔v2 비교 (기본 사례 8개 + 변형 사례 8개)
@@ -105,6 +106,8 @@ amp/
     ├── model_manager_dialog.py v0.7.0 모델 관리 창 (등록 정보·프로필별 기능, 해시는 누를 때만 작업 스레드에서)
     ├── stall_monitor.py        v0.7.0 100ms 이상 화면 멈춤 기록 (마지막 동작·작업 이름, 저장은 사용자가). 500ms 로그(main_window)는 그대로
     ├── widgets/analysis_lane.py  v0.7.0 비브라토·호흡·발성 경계 레인 (읽기 전용, 처음에는 꺼짐)
+    ├── analysis_export_dialog.py · analysis_png.py  v0.7.0 분석 결과 내보내기 창, 피치·비브라토·스펙트로그램 PNG·구간 WAV (작업 스레드)
+    ├── validation_dialog.py    v0.7.0 검증 자료 창 (저장·비교·묻고 지우기)
     ├── model_compare_controller.py  STEP 5 모델 비교 모드: A/B 패널(왼쪽), '모델 차이' 탭, A/B 청취(cmp_a·cmp_b 솔로 전환), 분석 소스 선택
     ├── workers.py              TaskRunner (QThreadPool)
     ├── autosave.py             자동 저장·비정상 종료 복구
