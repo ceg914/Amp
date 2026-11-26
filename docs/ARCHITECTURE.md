@@ -36,6 +36,11 @@ amp/
 │   ├── bass.py · bass_pipeline.py   v0.6.3 베이스 음 검출·운지·TAB, 베이스 stem 찾기(입력별 캐시 id)
 │   ├── model_registry.py       v0.7.0 모델 등록 정보: 설치·파일 위치·크기·해시·장치·의존성·라이선스·상태 (torch를 불러오지 않음), 앱 데이터의 model_registry.json
 │   ├── profiles.py             v0.7.0 분석 프로필 Lite·Standard·Advanced → 설치된 모델로 실제 켤 수 있는 기능과 이유
+│   ├── dsp/pitch_models.py     v0.7.0 CREPE(full·tiny)·FCPE 추론을 torch만으로 옮김 (가중치는 install_pitch로 설치한 패키지 파일)
+│   ├── pitch_runs.py           v0.7.0 피치 모델별 결과(analysis/pitch_models/): 공통 인터페이스·저장·재사용·구간·stale
+│   ├── dsp/multipitch.py       v0.7.0 다중 피치 후보 (평탄화·배음 합·반복 추정 제거·옥타브 고치기)
+│   ├── voices.py               v0.7.0 성부 추적·VoiceTrack·편집·저장(voice_tracks.json·multi_pitch.npz)
+│   ├── acoustics/              v0.7.0 비브라토·호흡/프레이즈·발성/음향 지표·발성 경계·화음 관계 (독립 모듈)
 │   ├── model_compare.py        STEP 5 모델 비교 실행: 모델별 작업 프로세스 순차 실행, GPU 메모리 부족은 묻기(oom_gpu), 취소해도 끝난 결과 보관, 모델별 채보
 │   ├── stem_import.py          외부 분리 결과 가져오기: 리샘플·채널·교차 상관 어긋남 보정·원본 일치 검사, model 'external'
 │   ├── cache.py                cache/ 키·원자적 기록·정리
@@ -55,7 +60,7 @@ amp/
 │   │   ├── korean.py           표준 발음법 규칙(제5·9~29항)을 줄 단위 문맥으로 적용 → 발음 한글, 간략 IPA
 │   │   └── japanese.py         가나 박 → 가타카나·IPA (한자는 변환 불가)
 │   └── vocal.py                음절 구간·유성 가창 길이, 멜리스마 판정(종류 + 근거 속성), 사용자 판정 편집·음표 변경 뒤 옮기기
-├── compare/                    STEP 5 비교·검토 (Qt 없음, 사용자 데이터 읽기 전용)
+├── compare/                    STEP 5 비교·검토 (Qt 없음, 사용자 데이터 읽기 전용). v0.7.0 pitch_compare.py: 피치 모델 차이
 │   ├── review.py               분석 오류 검토 규칙(근거 숫자를 사유에 적음)·검토 상태(지문이 바뀌면 재검토)
 │   ├── score_io.py · reference.py   MIDI·MusicXML(MXL) 가져오기, 참조 악보 데이터
 │   ├── align.py · intonation.py     악보 ↔ 음원 정렬(상호상관 + DTW + 우연 기준), 음정 비교(센트·도달 시간·비브라토 중심)
@@ -88,6 +93,7 @@ amp/
     ├── review_controller.py    STEP 5 검토 탭 (다른 기능이 넣는 extra_items 포함)
     ├── compare_controller.py   STEP 5 '악보 비교' 탭 (참조 악보 가져오기·정렬·음정 비교)
     ├── export_controller.py    STEP 5 채보·가사 내보내기 대화상자
+    ├── vocal_precision_controller.py · voice_controller.py  v0.7.0 노래 분석 → 보컬 정밀 (피치 모델·다중 보컬·음향 분석)
     ├── model_compare_controller.py  STEP 5 모델 비교 모드: A/B 패널(왼쪽), '모델 차이' 탭, A/B 청취(cmp_a·cmp_b 솔로 전환), 분석 소스 선택
     ├── workers.py              TaskRunner (QThreadPool)
     ├── autosave.py             자동 저장·비정상 종료 복구
