@@ -4,19 +4,21 @@
 #   ./install_chromebook.sh               기본 설치 (가벼운 모드: 피치·음표·편집·가사 직접 입력·내보내기)
 #   ./install_chromebook.sh --separation  보컬 분리(CPU용 PyTorch + Demucs, 약 1.2GB 추가)도 설치
 #   ./install_chromebook.sh --lyrics      가사 자동 인식(Whisper)도 설치 (분리 설치 필요, 모델은 처음 쓸 때 1.5~3GB 내려받음)
+#   ./install_chromebook.sh --pitch       외부 피치 모델 CREPE·FCPE 가중치도 설치 (분리 설치 필요, 약 110MB)
 #   ./install_chromebook.sh --no-apt      시스템 패키지 설치(sudo apt-get)를 건너뜀
 #
 # 같은 명령을 여러 번 실행해도 됩니다 (이미 설치된 것은 건너뜀).
 set -euo pipefail
 cd "$(dirname "$(readlink -f "$0")")"
 ROOT="$(pwd)"
-WITH_SEP=0; WITH_LYR=0; APT=1
+WITH_SEP=0; WITH_LYR=0; WITH_PITCH=0; APT=1
 for a in "$@"; do
   case "$a" in
     --separation) WITH_SEP=1 ;;
     --lyrics) WITH_SEP=1; WITH_LYR=1 ;;
+    --pitch) WITH_SEP=1; WITH_PITCH=1 ;;
     --no-apt) APT=0 ;;
-    -h|--help) sed -n '2,9p' "$0"; exit 0 ;;
+    -h|--help) sed -n '2,10p' "$0"; exit 0 ;;
     *) echo "[SONATLAS] 모르는 옵션: $a (--help 참고)" >&2; exit 2 ;;
   esac
 done
@@ -61,6 +63,9 @@ if [ "$WITH_SEP" = 1 ]; then
 fi
 if [ "$WITH_LYR" = 1 ]; then
   .venv/bin/python scripts/install_lyrics.py
+fi
+if [ "$WITH_PITCH" = 1 ]; then
+  .venv/bin/python scripts/install_pitch.py
 fi
 
 # 4) 시작 확인 (화면 없이 패키지만)

@@ -144,6 +144,46 @@ def cmd_pitch_region(args: dict) -> dict:
     return meta
 
 
+def cmd_pitch_model(args: dict) -> dict:
+    """v0.7.0: 외부 단성 피치 모델(CREPE·FCPE)로 피치를 찾는다. start·end를 주면 그 구간만(앞뒤 pad초 문맥 포함).
+    결과 프레임은 pYIN과 같은 100fps 격자이고, start_frame은 곡 전체 기준 첫 프레임 번호다."""
+    import numpy as np
+
+    from amp.engine.dsp import pitch_models as PM
+    from amp.engine.dsp.pitch import to_pitch_sr
+
+    audio = _load(args["input"])
+    _progress(0.01, "오디오 디코딩 완료")
+    y = to_pitch_sr(audio.mono(), audio.sample_rate)
+    del audio
+    n_all = 1 + len(y) // PM.HOP
+    start, end = args.get("start"), args.get("end")
+    g0, g1 = 0, n_all
+    seg = y
+    off = 0
+    if start is not None and end is not None:
+        pad = float(args.get("pad", 1.0))
+        g0 = max(0, int(np.floor(float(start) * PM.FRAME_RATE)))
+        g1 = min(n_all, int(np.ceil(float(end) * PM.FRAME_RATE)) + 1)
+        if g1 <= g0:
+            raise ValueError("구간이 비어 있습니다.")
+        off = max(0, g0 - int(round(pad * PM.FRAME_RATE)))  # 문맥 시작 프레임 (샘플 = 프레임 × 홉: 격자가 맞는다)
+        last = min(n_all, g1 + int(round(pad * PM.FRAME_RATE)))
+        seg = y[off * PM.HOP: (last - 1) * PM.HOP + 1]
+    r = PM.run(str(args["model"]), seg, str(args.get("device", "auto")), float(args.get("fmin", 55.0)),
+               float(args.get("fmax", 1400.0)), args.get("threshold"), _progress)
+    a, b = g0 - off, g1 - off
+    np.savez_compressed(os.path.join(args["out_dir"], "pitch_model.npz"), f0_hz=r["f0_hz"][a:b],
+                        confidence=r["confidence"][a:b], voiced=r["voiced"][a:b], start_frame=np.int64(g0))
+    info = {**r["info"], "start_frame": int(g0), "frames": int(b - a), "total_frames": int(n_all),
+            "range": [float(start), float(end)] if start is not None and end is not None else None,
+            "context_frames": [int(g0 - off), int(min(n_all, g1 + int(round(float(args.get("pad", 1.0)) * PM.FRAME_RATE))) - g1)]
+            if start is not None and end is not None else [0, 0], "versions": _versions()}
+    with open(os.path.join(args["out_dir"], "info.json"), "w", encoding="utf-8") as f:
+        json.dump(info, f, ensure_ascii=False)
+    return info
+
+
 def cmd_tempo(args: dict) -> dict:
     from amp.engine.dsp.tempo import estimate_tempo
 
@@ -314,7 +354,8 @@ def cmd_probe(args: dict) -> dict:
     return probe()
 
 
-COMMANDS = {"separate": cmd_separate, "pitch": cmd_pitch, "pitch_region": cmd_pitch_region, "tempo": cmd_tempo, "probe": cmd_probe,
+COMMANDS = {"separate": cmd_separate, "pitch": cmd_pitch, "pitch_region": cmd_pitch_region,
+            "pitch_model": cmd_pitch_model, "tempo": cmd_tempo, "probe": cmd_probe,
             "check_model": cmd_check_model, "asr": cmd_asr,
             "emissions": cmd_emissions, "ctc_align": cmd_ctc_align}
 
@@ -398,10 +439,11 @@ def _resources() -> dict:
 
 def _classify(e: Exception) -> tuple[str, str]:
     from amp.core.errors import AudioLoadError
+    from amp.engine.dsp.pitch_models import PitchModelError
     from amp.engine.dsp.separation import SeparationError
     from amp.lyrics.asr import AsrError
 
-    if isinstance(e, (SeparationError, AsrError)):
+    if isinstance(e, (SeparationError, AsrError, PitchModelError)):
         return e.code, str(e)
     if isinstance(e, KeyboardInterrupt):
         return "cancelled", "취소되었습니다."

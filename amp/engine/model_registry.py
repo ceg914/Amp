@@ -71,6 +71,7 @@ CATALOG: dict[str, ModelInfo] = {m.model_id: m for m in (
               ("whisper", "torch"), ("cpu", "cuda"), weights="처음 쓸 때 앱 모델 폴더에 내려받음", install_hint="lyrics"),
     ModelInfo("mms_fa", "MMS 강제 정렬 (wav2vec2)", "alignment", ("lyrics_alignment",), ("torch",), ("torch",),
               ("cpu", "cuda"), weights="처음 쓸 때 앱 모델 폴더에 내려받음 (약 1.2GB)", install_hint="lyrics",
+              weights_license="CC-BY-NC 4.0 (비상업, install_lyrics 안내 문구)",
               code_license="SONATLAS 구현 (amp/lyrics/mms.py)"),
     ModelInfo("crepe_full", "CREPE full", "pitch", ("mono_pitch",), ("torchcrepe", "torch"), ("torch",),
               ("cpu", "cuda"), weights="torchcrepe 패키지 안의 full.pth", weights_license="torchcrepe 패키지 라이선스와 같음",

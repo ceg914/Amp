@@ -37,6 +37,9 @@ ERROR_HINTS = {
     "model_file": "분석 설정의 보컬 분리에서 RoFormer 모델 파일(.ckpt)을 다시 고르세요.",
     "model_config": "모델과 함께 받은 .yaml 설정 파일을 분석 설정에서 지정하세요. 다른 구조의 RoFormer(BS-RoFormer 등)는 아직 지원하지 않습니다.",
     "disk_full": "디스크 공간을 확보한 뒤 다시 실행하세요. 분리 결과는 곡 1분당 약 30MB가 필요합니다.",
+    "missing_pitch_model": "",  # 메시지에 설치 방법(install_pitch)이 들어 있다 (v0.7.0)
+    "pitch_model_file": "install_pitch로 가중치 패키지를 다시 설치해 보세요. 모델 파일을 직접 바꾸지는 않습니다.",
+    "no_cuda": "",
     "killed": "메모리 부족이나 외부 요인으로 분석 프로세스가 강제 종료되었을 수 있습니다. 다른 프로그램을 닫거나 "
               "처리 장치를 CPU로 바꿔 다시 시도하세요. 완성되지 않은 결과는 저장하지 않았습니다.",
 }
