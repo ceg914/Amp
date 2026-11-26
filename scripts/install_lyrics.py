@@ -24,11 +24,18 @@ JAPANESE = ("fugashi==1.5.2", "unidic-lite==1.0.8")
 
 
 def commands(python: str = sys.executable, japanese: bool = False, dictionaries_only: bool = False) -> list[list[str]]:
-    out = [] if dictionaries_only else [[python, "-m", "pip", "install", "-r", os.path.join(ROOT, "requirements-lyrics.txt")]]
+    out = [] if dictionaries_only else [[python, "-m", "pip", "install", "--prefer-binary", "-r",
+                                         os.path.join(ROOT, "requirements-lyrics.txt")]]
     out.append([python, "-m", "pip", "install", "--no-deps", CMUDICT])
     if japanese:
-        out.append([python, "-m", "pip", "install", "--no-deps", *JAPANESE])
+        out.append(japanese_command(python))
     return out
+
+
+def japanese_command(python: str = sys.executable) -> list[str]:
+    """fugashi(C 확장)는 미리 빌드된 파일(휠)만 받는다. 휠이 없는 Python(예: 3.15)에서 컴파일하다 실패하지 않게.
+    unidic-lite는 사전 자료뿐이라 소스 배포로 설치해도 컴파일하지 않는다."""
+    return [python, "-m", "pip", "install", "--no-deps", "--only-binary=fugashi", *JAPANESE]
 
 
 def has_torch(python: str = sys.executable) -> bool:
@@ -62,15 +69,23 @@ def main(argv: list[str] | None = None) -> int:
         print("[SONATLAS] PyTorch가 없습니다. install_separation.bat 을 먼저 실행해 주세요 (GPU판을 맞춰 설치합니다).")
         print("[SONATLAS] 발음 사전만 설치하려면 --dictionaries-only 를 붙이세요.")
         return 1
+    japanese_failed = False
     for cmd in commands(japanese=args.japanese, dictionaries_only=args.dictionaries_only):
         print("  " + " ".join(f'"{c}"' if " " in c else c for c in cmd))
         if not args.dry_run:
             r = subprocess.run(cmd)
+            if r.returncode != 0 and args.japanese and cmd == japanese_command():
+                japanese_failed = True  # 선택 기능: 나머지 설치는 그대로 둔다
+                print(f"[SONATLAS] 일본어 한자 읽기(fugashi)는 이 Python({sys.version_info[0]}.{sys.version_info[1]})용 미리 빌드된 "
+                      "파일이 없어 설치하지 못했습니다. 한자는 이전처럼 '변환 불가'로 두고 나머지 기능은 그대로 씁니다. "
+                      "fugashi가 이 Python용 파일을 내놓으면 다시 실행하세요.")
+                continue
             if r.returncode != 0:
                 print("[SONATLAS] 설치에 실패했습니다. 인터넷 연결과 위쪽 오류 메시지를 확인하세요.")
                 return r.returncode
     if not args.dry_run and args.dictionaries_only:
-        print("[SONATLAS] 발음 사전을 설치했습니다. SONATLAS를 다시 시작하면 쓰입니다.")
+        print("[SONATLAS] 발음 사전을 설치했습니다" + (" (일본어 한자 읽기 제외)" if japanese_failed else "")
+              + ". SONATLAS를 다시 시작하면 쓰입니다.")
         return 0
     if not args.dry_run:
         ok, msg = verify()

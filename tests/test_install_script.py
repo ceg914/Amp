@@ -101,3 +101,57 @@ def test_batch_files_are_ascii_and_messages_exist():
             raw = open(path, "rb").read()
             assert not raw.startswith(b"\xef\xbb\xbf")  # BOM이 있으면 type이 그대로 찍는다
             raw.decode("utf-8")
+
+
+def test_demucs_without_deps_and_optional_wheels_only():
+    """v0.7.0 사용자 Windows: demucs 4.1이 요구하는 sphn(Rust)에 그 Python용 휠이 없어 소스 빌드에서 실패했다.
+    필요한 패키지(순수 파이썬)를 먼저, demucs는 --no-deps로, sphn 등은 휠이 있을 때만 설치한다."""
+    cmds = inst.commands("cpu", "py", "win32")
+    assert cmds[1][-1].endswith("requirements-separation.txt") and "--prefer-binary" in cmds[1]
+    assert cmds[2] == ["py", "-m", "pip", "install", "--no-deps", "--upgrade", "demucs>=4.1,<5"]
+    req = open(os.path.join(ROOT, "requirements-separation.txt"), encoding="utf-8").read()
+    lines = [ln.split(">")[0].split("=")[0].strip() for ln in req.splitlines() if ln.strip() and not ln.startswith("#")]
+    assert set(lines) == {"numpy", "julius", "einops", "tqdm", "pyyaml"} and "sphn" not in lines and "demucs" not in lines
+    opt = inst.optional_commands("py")
+    assert [c[-1].split(">")[0] for c in opt] == ["sphn", "lameenc", "safetensors", "huggingface-hub"]
+    assert all("--only-binary=:all:" in c for c in opt)
+
+
+def test_optional_failures_are_skipped_but_required_failures_stop(capsys, monkeypatch):
+    monkeypatch.setattr(inst, "find_nvidia_smi", lambda: None)
+    monkeypatch.setattr(inst, "detect_cuda", lambda exe=None: (None, ""))
+    monkeypatch.setattr(inst, "installed_torch", lambda python=None: None)
+    monkeypatch.setattr(inst, "verify", lambda python=None: (False, "GPU를 쓸 수 없습니다"))
+    monkeypatch.setattr(inst, "verify_demucs", lambda python=None: (True, "demucs 4.1.0 설치됨"))
+    runs = []
+
+    def run(cmd, **kw):
+        runs.append(cmd)
+        return _R(returncode=1 if "sphn>=0.1.12" in cmd else 0)  # sphn만 휠이 없음
+
+    monkeypatch.setattr(inst.subprocess, "run", run)
+    assert inst.main(["--cpu"]) == 0
+    out = capsys.readouterr().out
+    assert "건너뛴 선택 패키지: sphn." in out and "demucs 4.1.0 설치됨" in out and "설치를 마쳤습니다" in out
+    assert any("lameenc>=1.2" in c for c in runs)  # 하나가 실패해도 나머지 선택 패키지는 시도
+
+    monkeypatch.setattr(inst.subprocess, "run", lambda cmd, **kw: _R(returncode=1 if "demucs>=4.1,<5" in cmd else 0))
+    assert inst.main(["--cpu"]) == 1  # demucs 자체가 실패하면 멈춘다
+    assert "설치에 실패했습니다" in capsys.readouterr().out
+    monkeypatch.setattr(inst.subprocess, "run", lambda cmd, **kw: _R())
+    monkeypatch.setattr(inst, "verify_demucs", lambda python=None: (False, "demucs를 불러오지 못했습니다: No module named 'julius'"))
+    assert inst.main(["--cpu"]) == 1 and "No module named 'julius'" in capsys.readouterr().out
+
+
+def test_lyrics_japanese_wheel_missing_is_not_fatal(capsys, monkeypatch):
+    spec2 = importlib.util.spec_from_file_location("install_lyrics", os.path.join(ROOT, "scripts", "install_lyrics.py"))
+    lyr = importlib.util.module_from_spec(spec2)
+    spec2.loader.exec_module(lyr)
+    cmd = lyr.japanese_command("py")
+    assert "--only-binary=fugashi" in cmd and "fugashi==1.5.2" in cmd
+    monkeypatch.setattr(lyr.subprocess, "run", lambda c, **kw: _R(returncode=1 if "fugashi==1.5.2" in c else 0))
+    assert lyr.main(["--dictionaries-only", "--japanese"]) == 0
+    out = capsys.readouterr().out
+    assert "일본어 한자 읽기(fugashi)는" in out and "(일본어 한자 읽기 제외)" in out
+    monkeypatch.setattr(lyr.subprocess, "run", lambda c, **kw: _R(returncode=1 if "cmudict==1.1.3" in c else 0))
+    assert lyr.main(["--dictionaries-only"]) == 1  # 영어 사전 자체가 실패하면 실패

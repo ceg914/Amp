@@ -489,6 +489,12 @@ install_separation.bat --build cu126
 
 (`cu126`은 CUDA 12.6 이상, `cu130`은 13.0 이상, `cu132`는 13.2 이상인 드라이버에서 씁니다.)
 
+**`install_separation.bat`에서 `Failed to build sphn`, `maturin failed`, `cargo` 오류** — demucs가 요구하는 sphn(Rust)에
+지금 Python(예: 3.15)용 미리 빌드된 파일이 없어 소스에서 컴파일하려다 실패한 것입니다 (0.7.0 첫 압축 파일). 0.7.0 수정판의
+`install_separation.bat`을 다시 실행하세요. sphn·lameenc 같은 선택 패키지는 미리 빌드된 파일이 있을 때만 설치하고 없으면 건너뜁니다.
+SONATLAS의 보컬·악기 분리는 이 패키지들 없이 동작합니다. 같은 이유로 `install_lyrics.bat --japanese`의 fugashi도 미리 빌드된 파일이 없으면
+건너뛰고 나머지를 설치합니다.
+
 **`보컬 분리에는 PyTorch와 Demucs가 필요합니다`** — `install_separation.bat`을 실행하세요.
 반주 없는 음원이라면 분석 설정의 보컬 분리를 '분리 안 함'으로 바꿔도 됩니다.
 

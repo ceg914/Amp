@@ -6,6 +6,9 @@
 - GPU판을 설치할 때 CPU판 PyTorch가 이미 있으면 먼저 지운다 (같은 버전 번호라 그대로 남는 것을 막는다).
 - 설치 뒤 PyTorch가 실제로 GPU를 인식하는지 확인해 알려 준다.
 - 지금 실행한 Python(가상 환경이라면 그 안)에 설치한다.
+- demucs는 --no-deps로 설치하고, SONATLAS가 쓰는 부분(demucs.apply·demucs.pretrained)에 필요한 패키지만 꼭 설치한다.
+  demucs가 요구하는 sphn(Rust)·lameenc(C) 등은 미리 빌드된 파일(휠)이 있을 때만 설치하고, 없으면 건너뛴다
+  (예: Python 3.15용 sphn 휠이 없어 소스 빌드가 실패하던 문제, v0.7.0 사용자 보고).
 
 사용법: python scripts/install_separation.py [--cpu | --build cu126|cu130|cu132] [--dry-run]
        자동 감지가 안 되면 --build로 GPU판을 직접 고른다 (드라이버가 그 CUDA 버전을 지원해야 한다)
@@ -25,6 +28,12 @@ TORCH_INDEX = "https://download.pytorch.org/whl/"
 # (드라이버가 지원하는 최소 CUDA 버전, 인덱스 이름) — 위에서부터 고른다
 CUDA_BUILDS = [((13, 2), "cu132"), ((13, 0), "cu130"), ((12, 6), "cu126")]
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+DEMUCS = "demucs>=4.1,<5"
+# demucs가 요구하지만 SONATLAS가 쓰는 길(demucs.apply·demucs.pretrained)에는 없어도 되는 패키지.
+# sphn: demucs.api의 파일 읽기, lameenc: MP3 저장, safetensors·huggingface-hub: Hugging Face에서 가중치 받기
+# (없으면 demucs가 예전 저장소에서 받는다). 휠이 있을 때만 설치한다.
+OPTIONAL = ("sphn>=0.1.12", "lameenc>=1.2", "safetensors", "huggingface-hub")
+VERIFY_DEMUCS = "import demucs, demucs.apply, demucs.pretrained; print(demucs.__version__)"
 
 
 def parse_cuda_version(nvidia_smi_output: str) -> tuple[int, int] | None:
@@ -98,8 +107,24 @@ def commands(build: str, python: str = sys.executable, platform: str = sys.platf
         # Windows CPU판은 PyPI 기본 휠. 그 밖에는 PyTorch 인덱스를 지정한다 (Linux PyPI 휠은 CUDA 포함이라 매우 크다)
         torch += ["--index-url", TORCH_INDEX + build]
     cmds.append(torch)
-    cmds.append([python, "-m", "pip", "install", "-r", os.path.join(ROOT, "requirements-separation.txt")])
+    cmds.append([python, "-m", "pip", "install", "--prefer-binary", "-r", os.path.join(ROOT, "requirements-separation.txt")])
+    cmds.append([python, "-m", "pip", "install", "--no-deps", "--upgrade", DEMUCS])
     return cmds
+
+
+def optional_commands(python: str = sys.executable) -> list[list[str]]:
+    """실패해도 되는 설치 (미리 빌드된 파일만. 컴파일하지 않는다)."""
+    return [[python, "-m", "pip", "install", "--only-binary=:all:", pkg] for pkg in OPTIONAL]
+
+
+def verify_demucs(python: str = sys.executable) -> tuple[bool, str]:
+    try:
+        out = subprocess.run([python, "-c", VERIFY_DEMUCS], capture_output=True, text=True, timeout=300)
+    except (OSError, subprocess.SubprocessError) as e:
+        return False, f"demucs를 확인하지 못했습니다: {e}"
+    if out.returncode != 0:
+        return False, "demucs를 불러오지 못했습니다: " + (out.stderr.strip().splitlines() or ["알 수 없는 오류"])[-1]
+    return True, f"demucs {out.stdout.strip()} 설치됨"
 
 
 def verify(python: str = sys.executable) -> tuple[bool, str]:
@@ -151,7 +176,20 @@ def main(argv: list[str] | None = None) -> int:
             if r.returncode != 0:
                 print("[SONATLAS] 설치에 실패했습니다. 인터넷 연결과 위쪽 오류 메시지를 확인하세요.")
                 return r.returncode
+    skipped = []
+    for cmd in optional_commands():
+        print("  " + " ".join(cmd) + "   (선택: 미리 빌드된 파일이 없으면 건너뜀)")
+        if not args.dry_run and subprocess.run(cmd).returncode != 0:
+            skipped.append(cmd[-1].split(">")[0].split("=")[0])
+    if skipped:
+        print(f"[SONATLAS] 이 Python({sys.version_info[0]}.{sys.version_info[1]})용 미리 빌드된 파일이 없어 건너뛴 선택 패키지: "
+              + ", ".join(skipped) + ". SONATLAS의 보컬·악기 분리에는 필요하지 않습니다 (위의 빌드 오류는 무시해도 됩니다).")
     if not args.dry_run:
+        dok, dmsg = verify_demucs()
+        print(f"[SONATLAS] {dmsg}")
+        if not dok:
+            print("[SONATLAS] 설치에 실패했습니다. 위쪽 오류 메시지를 확인하세요.")
+            return 1
         ok, msg = verify()
         print(f"[SONATLAS] {msg}")
         if build != "cpu" and not ok:
